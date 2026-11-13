@@ -210,6 +210,11 @@ fn stress_command(evals: &Path, gate: &GateArgs) -> anyhow::Result<Vec<String>> 
 }
 
 fn audio_command(evals: PathBuf, cache_dir: Option<PathBuf>) -> anyhow::Result<Vec<String>> {
+    // The in-process server logs through `tracing`: its warnings, and the engine's stderr (model
+    // downloads, CUDA errors). `RUST_LOG` overrides this, as for `psst-server`.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,psst_server::engine=info"));
+    let _ = tracing_subscriber::fmt().with_env_filter(filter).with_writer(std::io::stderr).try_init();
     let opts = audio::AudioOptions {
         evals,
         cache_dir: cache_dir.unwrap_or_else(audio::default_model_cache),
