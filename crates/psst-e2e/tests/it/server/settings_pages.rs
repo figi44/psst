@@ -1,7 +1,8 @@
 use psst_config::{ClientConfig, ConfigFile};
 use psst_engine_proto::fake::Script;
 use psst_proto::{
-    api::{AppLayer, encode_segment},
+    Endpoint,
+    api::{AppLayer, encode_segment, routes},
     ws::Feature,
 };
 use psst_testkit::TestServer;
@@ -9,6 +10,7 @@ use serde_json::json;
 
 use super::{
     access::pair,
+    browser::{Browser, login_link},
     harness::*,
     pages::{logged_in, refused_with, see_other},
     settings::{api, connect_accepting, device_view, view},
@@ -145,4 +147,44 @@ async fn a_devices_settings_and_paste_rules_change_through_its_page() {
     let phone = pair(&server).await;
     let unshared = browser.get(&format!("/devices/{}", encode_segment(&phone.device_id))).await;
     assert!(unshared.body.contains("sent its settings"), "{}", unshared.body);
+}
+
+#[tokio::test]
+async fn a_paired_device_is_unpaired_from_its_page() {
+    let server = web_server();
+    let addr = server.tcp_addr().unwrap();
+    let browser = logged_in(&server).await;
+    let phone = pair(&server).await;
+    let mut client = Socket::tcp(addr, Some(phone.token.as_str())).await.hello().await.expect("welcome");
+    let base = format!("/devices/{}", encode_segment(&phone.device_id));
+
+    let page = browser.get(&base).await;
+    assert!(page.body.contains(&format!("action=\"{base}/unpair\"")), "{}", page.body);
+    let local = Client::connect(&server).await;
+    let mine = browser.get(&format!("/devices/{}", encode_segment(&local.welcome().device))).await;
+    assert!(!mine.body.contains("/unpair"), "this machine's users come from server.toml: {}", mine.body);
+
+    see_other(&browser.post(&format!("{base}/unpair"), &[]).await, "/devices");
+    assert!(client.closed().await, "its connection is closed");
+    let list = browser.get("/devices").await;
+    assert!(!list.body.contains(&format!("href=\"{base}\"")), "{}", list.body);
+    assert!(Socket::tcp(addr, Some(phone.token.as_str())).await.hello().await.is_err(), "its token no longer works");
+
+    let again = browser.post(&format!("{base}/unpair"), &[]).await;
+    assert_eq!(again.status, 404, "{}", again.body);
+}
+
+#[tokio::test]
+async fn unpairing_the_device_a_browser_logged_in_through_says_it_logged_out() {
+    let server = web_server();
+    let addr = server.tcp_addr().unwrap();
+    let phone = pair(&server).await;
+    let mut browser = Browser::new(addr);
+    let tcp = Endpoint::Tcp { host: addr.ip().to_string(), port: addr.port() };
+    browser.log_in(&login_link(tcp, Some(phone.token.clone())).await).await;
+
+    let unpaired = browser.post(&format!("/devices/{}/unpair", encode_segment(&phone.device_id)), &[]).await;
+    assert_eq!(unpaired.status, 200, "{}", unpaired.body);
+    assert!(unpaired.body.contains("logged out too") && unpaired.body.contains("psst ui"), "{}", unpaired.body);
+    assert_eq!(browser.get(routes::MODEL).await.status, 401);
 }

@@ -68,5 +68,11 @@
   {%- endif %}
   </div>
   {%- endif %}
+  {%- if not device.local %}
+  <form class="unpair" method="post" action="{{ base }}/unpair">
+    <p class="hint">Unpairing stops {{ device.name }} dictating to this server. To use it again, pair it with a new code from <code>psst-server pair</code>.</p>
+    <button class="btn danger" type="submit" data-confirm="Unpair {{ device.name }}? It can't dictate to this server until it's paired again.">Unpair</button>
+  </form>
+  {%- endif %}
 </div>
 {% endblock %}

@@ -22,7 +22,11 @@ use serde::Deserialize;
 use serde_json::Value as Json;
 
 use super::{Viewer, chrome, dictionary::download, message, render};
-use crate::{api::ApiErr, settings, state::AppState};
+use crate::{
+    api::{self, ApiErr},
+    settings,
+    state::AppState,
+};
 
 type AppRef = Arc<AppState>;
 
@@ -270,6 +274,7 @@ fn device_row(device: &Device, now: Timestamp, tz: &TimeZone) -> Value {
         href => path(format!("/devices/{}", encode_segment(&device.id))),
         name => if local { device.name.trim_start_matches("local:").to_owned() } else { device.name.clone() },
         online => device.online,
+        local,
         seen => seen(device, now, tz),
         how => match (local, device.reports_config) {
             (true, true) => "This machine · settings here",
@@ -355,6 +360,7 @@ fn device_page(state: &AppState, viewer: &Viewer, id: &str, query: &PageQuery, r
         },
         Err(err) if err.status() == StatusCode::NOT_FOUND => context! {
             device => device_row(device, now, &tz),
+            base => path(base),
             unshared => err.message(),
             ..chrome(state, viewer, "devices")
         },
@@ -371,6 +377,21 @@ pub async fn device(
 ) -> Response {
     let Query(query) = query.unwrap_or_default();
     device_page(&state, &viewer, &id, &query, None)
+}
+
+pub async fn unpair(viewer: Viewer, State(state): State<AppRef>, Path(id): Path<String>) -> Response {
+    let name = settings::devices(&state).ok().and_then(|list| list.into_iter().find(|d| d.id == id)).map(|d| d.name);
+    if let Err(err) = api::revoke_device(&state, &id) {
+        let title = if err.status() == StatusCode::NOT_FOUND { "No such device" } else { "Cannot unpair it" };
+        return message(err.status(), title, err.message(), None);
+    }
+    if viewer.device.as_deref() == Some(id.as_str()) {
+        let title = format!("{} is unpaired", name.as_deref().unwrap_or(&id));
+        let text = "This browser logged in through it, so it's logged out too. Log in again with a one-time link: \
+                    run this on the server's machine, or on a device still paired with it.";
+        return message(StatusCode::OK, &title, text, Some("psst ui"));
+    }
+    Redirect::to("/devices").into_response()
 }
 
 pub async fn set_device(

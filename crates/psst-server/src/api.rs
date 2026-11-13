@@ -224,7 +224,6 @@ pub(crate) enum Caller {
     Browser {
         /// The SHA-256 of the session cookie.
         session: String,
-        #[allow(dead_code)]
         device: DeviceId,
     },
 }
@@ -529,11 +528,16 @@ async fn devices(_: Admin, State(state): State<AppRef>) -> Result<Json<Vec<Devic
 }
 
 async fn revoke(_: Admin, State(state): State<AppRef>, Path(id): Path<String>) -> Result<StatusCode, ApiErr> {
-    match state.db.revoke(&id)? {
+    revoke_device(&state, &id)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) fn revoke_device(state: &AppState, id: &str) -> Result<(), ApiErr> {
+    match state.db.revoke(id)? {
         Revoke::Revoked => {
             tracing::info!("revoked device {id}");
-            state.conns.close(&id, "the device was revoked");
-            Ok(StatusCode::NO_CONTENT)
+            state.conns.close(id, "the device was revoked");
+            Ok(())
         }
         Revoke::NotFound => Err(ApiErr::new(ApiErrorCode::NotFound, format!("no device {id}"))),
         Revoke::Local => Err(ApiErr::new(
