@@ -38,7 +38,8 @@ fn raw_text_is_the_trimmed_segments_joined_by_single_spaces() {
 #[test]
 fn the_first_stub_returns_raw_text_unchanged() {
     let profile = ProfilesFile::default().resolve("default").unwrap();
-    let out = run(&trace("en", &[" um hello"]), &profile, &Dictionary::default(), &PipelineOptions { dictionary: false });
+    let out =
+        run(&trace("en", &[" um hello"]), &profile, &Dictionary::default(), &PipelineOptions { dictionary: false });
     assert_eq!(out.text, out.raw_text);
     assert!(out.edits.is_empty());
 }

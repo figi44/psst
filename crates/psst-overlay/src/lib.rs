@@ -9,9 +9,14 @@ pub enum OverlayState {
     /// From `toggle` until the first audio frame, so the overlay never claims to record early.
     Starting,
     /// `level` is the input level, 0.0–1.0.
-    Recording { level: f32 },
+    Recording {
+        level: f32,
+    },
     /// Recording to the file while the server is unreachable or rejected the session.
-    Offline { level: f32, reason: String },
+    Offline {
+        level: f32,
+        reason: String,
+    },
     LoadingModel,
     Processing,
     /// Uploading a recording.
@@ -20,9 +25,15 @@ pub enum OverlayState {
     WaitingForServer,
     NothingHeard,
     Done,
-    Error { message: String },
+    Error {
+        message: String,
+    },
     /// A short notice, for example an ignored toggle or a gapped recording.
-    Flash { message: String },
+    Flash {
+        message: String,
+    },
     /// Shown from 30 s before `max_recording_s`.
-    LimitWarning { seconds_left: u32 },
+    LimitWarning {
+        seconds_left: u32,
+    },
 }

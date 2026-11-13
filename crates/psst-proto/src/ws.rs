@@ -7,8 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    ClientTimings, DeviceId, EngineTrace, ErrorCode, FRAME_MS, Final, HistoryId, SAMPLE_RATE, ServerTimings,
-    SessionId,
+    ClientTimings, DeviceId, EngineTrace, ErrorCode, FRAME_MS, Final, HistoryId, SAMPLE_RATE, ServerTimings, SessionId,
 };
 
 /// A message from the client.
@@ -29,7 +28,7 @@ pub enum ServerMsg {
     Welcome(WelcomeMsg),
     Ready(ReadyMsg),
     Progress(ProgressMsg),
-    Final(FinalMsg),
+    Final(Box<FinalMsg>),
     Error(ErrorMsg),
     Cancelled(CancelledMsg),
 }

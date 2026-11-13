@@ -112,7 +112,9 @@ impl ConfigFile for ProfilesFile {
             if spec.language.is_empty() {
                 return Err(format!("profiles.{name}.language must not be empty"));
             }
-            if let Some(rule) = spec.rules.iter().enumerate().find_map(|(i, r)| spec.rules[..i].contains(r).then_some(r)) {
+            if let Some(rule) =
+                spec.rules.iter().enumerate().find_map(|(i, r)| spec.rules[..i].contains(r).then_some(r))
+            {
                 return Err(format!("profiles.{name}.rules lists {rule:?} twice"));
             }
         }
@@ -123,7 +125,9 @@ impl ConfigFile for ProfilesFile {
         self.profiles
             .iter()
             .filter(|(_, spec)| estimated_tokens(&spec.prompt_style) > 100)
-            .map(|(name, _)| format!("profiles.{name}.prompt_style is over about 100 tokens; it crowds out dictionary terms"))
+            .map(|(name, _)| {
+                format!("profiles.{name}.prompt_style is over about 100 tokens; it crowds out dictionary terms")
+            })
             .collect()
     }
 }

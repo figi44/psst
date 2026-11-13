@@ -70,15 +70,17 @@ fn announces_itself_loads_transcribes_and_shuts_down() {
         }],
         ..Script::default()
     };
-    let (exit, replies) = run(
-        &script,
-        None,
-        input(&[(load(), vec![]), (transcribe(7, true), audio()), (ToEngine::Shutdown, vec![])]),
-    );
+    let (exit, replies) =
+        run(&script, None, input(&[(load(), vec![]), (transcribe(7, true), audio()), (ToEngine::Shutdown, vec![])]));
     assert_eq!(exit, Exit::Shutdown);
 
-    let [FromEngine::Hello(hello), FromEngine::Progress(download), FromEngine::Progress(_), FromEngine::Loaded(loaded), FromEngine::Result(result)] =
-        &replies[..]
+    let [
+        FromEngine::Hello(hello),
+        FromEngine::Progress(download),
+        FromEngine::Progress(_),
+        FromEngine::Loaded(loaded),
+        FromEngine::Result(result),
+    ] = &replies[..]
     else {
         panic!("unexpected replies: {replies:#?}");
     };
@@ -102,10 +104,19 @@ fn announces_itself_loads_transcribes_and_shuts_down() {
 #[test]
 fn words_only_with_word_timestamps_and_empty_text_means_nothing_heard() {
     let script = Script {
-        transcribe: vec![TranscribeStep::Result { text: "".into(), delay_ms: 0, no_speech_prob: None, speech_ms: None }],
+        transcribe: vec![TranscribeStep::Result {
+            text: "".into(),
+            delay_ms: 0,
+            no_speech_prob: None,
+            speech_ms: None,
+        }],
         ..Script::default()
     };
-    let (_, replies) = run(&script, None, input(&[(load(), vec![]), (transcribe(1, false), audio()), (transcribe(2, false), audio())]));
+    let (_, replies) = run(
+        &script,
+        None,
+        input(&[(load(), vec![]), (transcribe(1, false), audio()), (transcribe(2, false), audio())]),
+    );
     let results: Vec<_> = replies
         .iter()
         .filter_map(|r| match r {
@@ -139,7 +150,11 @@ fn answers_unknown_types_malformed_requests_and_early_transcribes_with_errors() 
         .collect();
     assert_eq!(
         codes,
-        [(Some(3), EngineErrorCode::NotLoaded), (Some(4), EngineErrorCode::Unsupported), (None, EngineErrorCode::BadRequest)]
+        [
+            (Some(3), EngineErrorCode::NotLoaded),
+            (Some(4), EngineErrorCode::Unsupported),
+            (None, EngineErrorCode::BadRequest)
+        ]
     );
 }
 

@@ -139,9 +139,16 @@ pub enum TrySendError {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SessionEvent {
-    Ready { resumed: bool, need_audio: bool, model_state: ReadyModelState },
-    Progress { state: ProgressState, received_ms: u64 },
-    Final(FinalMsg),
+    Ready {
+        resumed: bool,
+        need_audio: bool,
+        model_state: ReadyModelState,
+    },
+    Progress {
+        state: ProgressState,
+        received_ms: u64,
+    },
+    Final(Box<FinalMsg>),
     /// An `error` before `ready` (`busy`, `model_unavailable`, `model_unloaded`, `bad_request`).
     Rejected(ErrorMsg),
     /// An `error` after `ready`.
@@ -154,7 +161,9 @@ pub enum SessionEvent {
 pub enum LostReason {
     /// No `progress` for [`PROGRESS_TIMEOUT`].
     ProgressTimeout,
-    ConnectionClosed { reason: String },
+    ConnectionClosed {
+        reason: String,
+    },
 }
 
 /// Uploads a finished recording. Returns at once; a task owned by the session waits for

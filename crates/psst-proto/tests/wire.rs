@@ -154,7 +154,7 @@ fn ready_and_progress() {
 
 #[test]
 fn final_carries_result_timings_and_optional_trace() {
-    let msg = ServerMsg::Final(FinalMsg {
+    let msg = ServerMsg::Final(Box::new(FinalMsg {
         session_id: sid(),
         history_id: 7,
         r#final: Final {
@@ -181,7 +181,7 @@ fn final_carries_result_timings_and_optional_trace() {
             stop_to_final_ms: 190,
         },
         trace: Some(trace()),
-    });
+    }));
     assert_wire(
         &msg,
         json!({"type": "final", "session_id": SID, "history_id": 7,
@@ -224,7 +224,10 @@ fn error_and_cancelled() {
         &ServerMsg::Error(ErrorMsg::new(None, ErrorCode::Protocol, "unsupported protocol 2")),
         json!({"type": "error", "code": "protocol", "message": "unsupported protocol 2", "retryable": false}),
     );
-    assert_wire(&ServerMsg::Cancelled(CancelledMsg { session_id: sid() }), json!({"type": "cancelled", "session_id": SID}));
+    assert_wire(
+        &ServerMsg::Cancelled(CancelledMsg { session_id: sid() }),
+        json!({"type": "cancelled", "session_id": SID}),
+    );
 }
 
 #[test]

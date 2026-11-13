@@ -24,9 +24,18 @@ fn empty_files_mean_every_default() {
 
 #[test]
 fn defaults_round_trip_through_toml() {
-    assert_eq!(ServerConfig::from_toml_str(&ServerConfig::default().to_toml_string()).unwrap(), ServerConfig::default());
-    assert_eq!(ProfilesFile::from_toml_str(&ProfilesFile::default().to_toml_string()).unwrap(), ProfilesFile::default());
-    assert_eq!(ClientConfig::from_toml_str(&ClientConfig::default().to_toml_string()).unwrap(), ClientConfig::default());
+    assert_eq!(
+        ServerConfig::from_toml_str(&ServerConfig::default().to_toml_string()).unwrap(),
+        ServerConfig::default()
+    );
+    assert_eq!(
+        ProfilesFile::from_toml_str(&ProfilesFile::default().to_toml_string()).unwrap(),
+        ProfilesFile::default()
+    );
+    assert_eq!(
+        ClientConfig::from_toml_str(&ClientConfig::default().to_toml_string()).unwrap(),
+        ClientConfig::default()
+    );
 }
 
 #[test]
@@ -205,7 +214,9 @@ fn client_audio_input_forms() {
 
 #[test]
 fn client_overlay_colours() {
-    let config = ClientConfig::from_toml_str("[overlay]\nanchor = \"top\"\nbackground = \"#000000\"\naccent = \"#FF000080\"").unwrap();
+    let config =
+        ClientConfig::from_toml_str("[overlay]\nanchor = \"top\"\nbackground = \"#000000\"\naccent = \"#FF000080\"")
+            .unwrap();
     assert_eq!(config.overlay.background, Color { r: 0, g: 0, b: 0, a: 255 });
     assert_eq!(config.overlay.accent, Color { r: 255, g: 0, b: 0, a: 128 });
     assert_eq!(config.overlay.accent.to_string(), "#ff000080");

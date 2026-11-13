@@ -75,7 +75,9 @@ pub enum LoadOutcome {
         message: String,
     },
     /// Exits with this status without replying.
-    Exit { code: u8 },
+    Exit {
+        code: u8,
+    },
     /// Never replies.
     Hang,
 }
@@ -295,7 +297,8 @@ pub fn run(
 
 /// Appends a request to the log and returns how many `transcribe` requests came before it.
 fn log_request(log: &Path, header: &[u8], samples: usize) -> usize {
-    let header = serde_json::from_slice(header).unwrap_or_else(|_| Value::String(String::from_utf8_lossy(header).into()));
+    let header =
+        serde_json::from_slice(header).unwrap_or_else(|_| Value::String(String::from_utf8_lossy(header).into()));
     let mut line = serde_json::to_vec(&LoggedRequest { header, samples }).expect("log entries serialise");
     line.push(b'\n');
     OpenOptions::new()
@@ -304,7 +307,8 @@ fn log_request(log: &Path, header: &[u8], samples: usize) -> usize {
         .open(log)
         .and_then(|mut file| file.write_all(&line))
         .unwrap_or_else(|err| panic!("fake-engine: cannot write {}: {err}", log.display()));
-    let entries = fs::read_to_string(log).unwrap_or_else(|err| panic!("fake-engine: cannot read {}: {err}", log.display()));
+    let entries =
+        fs::read_to_string(log).unwrap_or_else(|err| panic!("fake-engine: cannot read {}: {err}", log.display()));
     entries
         .lines()
         .filter_map(|line| serde_json::from_str::<LoggedRequest>(line).ok())
@@ -383,7 +387,13 @@ fn segment(text: &str, audio_ms: u32, no_speech_prob: f32, with_words: bool) -> 
             })
             .collect()
     });
-    Segment { text: format!(" {}", text.trim()), start_ms: 0, end_ms: audio_ms, no_speech_prob: Some(no_speech_prob), words }
+    Segment {
+        text: format!(" {}", text.trim()),
+        start_ms: 0,
+        end_ms: audio_ms,
+        no_speech_prob: Some(no_speech_prob),
+        words,
+    }
 }
 
 /// The faster-whisper engine's prompt rule, without its token budget.

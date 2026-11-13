@@ -36,8 +36,15 @@ pub enum WaylandCmd {
 pub enum WaylandEvent {
     /// The overlay's first commit was presented.
     OverlayShown,
-    Pasted { generation: u64 },
-    Copied { generation: u64 },
-    Failed { generation: u64, reason: String },
+    Pasted {
+        generation: u64,
+    },
+    Copied {
+        generation: u64,
+    },
+    Failed {
+        generation: u64,
+        reason: String,
+    },
     Disconnected,
 }

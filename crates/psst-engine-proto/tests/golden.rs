@@ -10,8 +10,8 @@
 use std::{fs, io::Cursor, path::PathBuf};
 
 use psst_engine_proto::{
-    Bias, EngineErrorCode, FrameLimits, FromEngine, LoadPhase, Load, ToEngine, Transcribe, decode, encode,
-    read_frame, samples_to_payload, write_frame,
+    Bias, EngineErrorCode, FrameLimits, FromEngine, Load, LoadPhase, ToEngine, Transcribe, decode, encode, read_frame,
+    samples_to_payload, write_frame,
 };
 use serde_json::json;
 
@@ -52,7 +52,10 @@ fn decodes_engine_frames() {
     assert_eq!(result.timings.bias_terms_used, 3);
     assert!(!result.timings.prompt_truncated);
     let trace = &result.trace;
-    assert_eq!((trace.engine.as_str(), trace.revision.as_str(), trace.path.as_str()), ("faster-whisper", REVISION, "sequential"));
+    assert_eq!(
+        (trace.engine.as_str(), trace.revision.as_str(), trace.path.as_str()),
+        ("faster-whisper", REVISION, "sequential")
+    );
     assert_eq!(trace.prompt, "I'm updating the NixOS config. Hyprland, psst, t3code.");
     assert_eq!(trace.options["beam_size"], 5);
     assert_eq!(trace.result.speech_ms, Some(5200));

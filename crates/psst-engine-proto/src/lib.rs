@@ -233,9 +233,6 @@ pub fn samples_to_payload(samples: &[f32]) -> Vec<u8> {
 
 /// Decodes a frame payload into samples; `None` if its length isn't a multiple of 4.
 pub fn payload_to_samples(payload: &[u8]) -> Option<Vec<f32>> {
-    let chunks = payload.chunks_exact(4);
-    if !chunks.remainder().is_empty() {
-        return None;
-    }
-    Some(chunks.map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+    let (samples, rest) = payload.as_chunks::<4>();
+    rest.is_empty().then(|| samples.iter().map(|bytes| f32::from_le_bytes(*bytes)).collect())
 }

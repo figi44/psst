@@ -157,9 +157,6 @@ pub enum ErrorCode {
 impl ErrorCode {
     /// Whether the same request may succeed if the client sends it again.
     pub fn retryable(self) -> bool {
-        matches!(
-            self,
-            Self::Busy | Self::BadAudio | Self::Timeout | Self::EngineFailed | Self::Oom | Self::Internal
-        )
+        matches!(self, Self::Busy | Self::BadAudio | Self::Timeout | Self::EngineFailed | Self::Oom | Self::Internal)
     }
 }
