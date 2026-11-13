@@ -643,8 +643,11 @@ def main() -> int:
             audio = render_speech(clip, fetch_voice(args.cache, VOICES[clip.voice][0]))
         else:
             audio = render_noise(clip)
+        before = sha256_file(dest) if dest.exists() else None
         write_flac(audio, dest, tag)
-        rendered.add(clip.id)
+        # Identical audio keeps its recorded traces, so that --force doesn't throw them away.
+        if sha256_file(dest) != before:
+            rendered.add(clip.id)
 
     planned = {c.id for c in clips}
     for stale in sorted(clip_dir.glob("syn-*.flac")):
