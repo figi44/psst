@@ -8,6 +8,7 @@
 //! package.
 
 pub mod store;
+pub mod audio;
 
 use std::process::ExitCode;
 
