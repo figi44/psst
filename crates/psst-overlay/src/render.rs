@@ -1,0 +1,534 @@
+//! Drawing: the pill, the status well and its icons, the waveform and the labels.
+//!
+//! Shapes are described in logical pixels and scaled to the buffer by one transform. Text is laid
+//! out and rasterised directly at the physical size, so it stays sharp at fractional scales.
+
+use std::sync::Arc;
+
+use cosmic_text::{
+    Attrs, Buffer, Ellipsize, EllipsizeHeightLimit, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent,
+    Wrap, fontdb,
+};
+use tiny_skia::{FillRule, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, Stroke, Transform};
+
+use crate::{Levels, OverlayState, Rgba, Style, physical_size};
+
+/// Inter 4.1 Medium, SIL Open Font License 1.1 (`fonts/Inter-LICENSE.txt`).
+static INTER: &[u8] = include_bytes!("../fonts/Inter-Medium.ttf");
+const FAMILY: &str = "Inter";
+
+/// Fixed colours for meanings the style doesn't cover.
+const SUCCESS: Rgba = Rgba::new(0x3d, 0xd6, 0x8c, 0xff);
+const WARNING: Rgba = Rgba::new(0xff, 0xb0, 0x3b, 0xff);
+const ERROR: Rgba = Rgba::new(0xff, 0x5f, 0x52, 0xff);
+
+/// Renders overlay frames. Holds the font system (Inter only) and the glyph cache, so build one
+/// and keep it: [`Renderer::new`] is the only place fonts are loaded.
+pub struct Renderer {
+    fonts: FontSystem,
+    glyphs: SwashCache,
+}
+
+impl std::fmt::Debug for Renderer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Renderer").finish_non_exhaustive()
+    }
+}
+
+impl Default for Renderer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Renderer {
+    /// Builds the font system with the embedded font and nothing else (no system fonts).
+    pub fn new() -> Self {
+        let mut db = fontdb::Database::new();
+        db.load_font_source(fontdb::Source::Binary(Arc::new(INTER)));
+        db.set_sans_serif_family(FAMILY);
+        // A fixed locale keeps shaping independent of the machine.
+        let fonts = FontSystem::new_with_locale_and_db("en-US".into(), db);
+        Self { fonts, glyphs: SwashCache::new() }
+    }
+
+    /// Draws `state` on a surface of `width` × `height` logical pixels at `scale`. The pixmap
+    /// has [`physical_size`] pixels, premultiplied RGBA, transparent outside the pill.
+    ///
+    /// `levels` feeds the waveform of the recording states; other states ignore it.
+    pub fn render(
+        &mut self,
+        state: &OverlayState,
+        levels: &Levels,
+        style: &Style,
+        width: u32,
+        height: u32,
+        scale: f64,
+    ) -> Pixmap {
+        let (pw, ph) = physical_size(width, height, scale);
+        let pixmap = Pixmap::new(pw, ph).expect("non-zero size");
+        let (w, h) = (width.max(1) as f32, height.max(1) as f32);
+        let mut frame = Frame { pixmap, w, h, sx: pw as f32 / w, sy: ph as f32 / h, renderer: self, style };
+        frame.draw(state, levels);
+        frame.pixmap
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Align {
+    Left,
+    Right,
+}
+
+/// One frame being drawn. Coordinates are logical pixels unless named `p*`.
+struct Frame<'a> {
+    pixmap: Pixmap,
+    w: f32,
+    h: f32,
+    sx: f32,
+    sy: f32,
+    renderer: &'a mut Renderer,
+    style: &'a Style,
+}
+
+/// What the well and the content area show.
+enum Content<'s> {
+    Label {
+        text: &'s str,
+        color: Rgba,
+    },
+    Waveform {
+        color: Rgba,
+    },
+    /// A short waveform followed by text.
+    WaveAndText {
+        wave: Rgba,
+        text: &'s str,
+        color: Rgba,
+        align: Align,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum Icon {
+    Dot(Rgba),
+    Ring(Rgba),
+    Arc,
+    Dots,
+    Arrow,
+    Retry,
+    Clock,
+    Flat,
+    Check,
+    Bang,
+    Info,
+}
+
+impl Frame<'_> {
+    fn draw(&mut self, state: &OverlayState, levels: &Levels) {
+        let fg = self.style.foreground;
+        let muted = fg.faded(0.62);
+        let accent = self.style.accent;
+        let latest = levels.iter().last().unwrap_or(0.0);
+        let countdown;
+        // (well tint, icon, content)
+        let (tint, icon, content) = match state {
+            OverlayState::Starting => {
+                (None, Icon::Ring(accent), Content::Label { text: "Starting\u{2026}", color: muted })
+            }
+            OverlayState::Recording { .. } => {
+                (Some(accent.faded(0.16 + 0.5 * curve(latest))), Icon::Dot(accent), Content::Waveform { color: fg })
+            }
+            OverlayState::Offline { reason, .. } => (
+                Some(WARNING.faded(0.18)),
+                Icon::Dot(WARNING),
+                Content::WaveAndText { wave: fg.faded(0.8), text: reason, color: muted, align: Align::Left },
+            ),
+            OverlayState::LoadingModel => {
+                (None, Icon::Arc, Content::Label { text: "Loading model\u{2026}", color: fg })
+            }
+            OverlayState::Processing => (None, Icon::Dots, Content::Label { text: "Transcribing\u{2026}", color: fg }),
+            OverlayState::Sending => (None, Icon::Arrow, Content::Label { text: "Sending\u{2026}", color: fg }),
+            OverlayState::Retrying => (None, Icon::Retry, Content::Label { text: "Retrying\u{2026}", color: fg }),
+            OverlayState::WaitingForServer => {
+                (None, Icon::Clock, Content::Label { text: "Waiting for server\u{2026}", color: fg })
+            }
+            OverlayState::NothingHeard => (None, Icon::Flat, Content::Label { text: "Nothing heard", color: muted }),
+            OverlayState::Done => (Some(SUCCESS.faded(0.2)), Icon::Check, Content::Label { text: "Done", color: fg }),
+            OverlayState::Error { message } => {
+                (Some(ERROR.faded(0.22)), Icon::Bang, Content::Label { text: message, color: fg })
+            }
+            OverlayState::Flash { message } => (None, Icon::Info, Content::Label { text: message, color: fg }),
+            OverlayState::LimitWarning { seconds_left } => {
+                countdown = format_countdown(*seconds_left);
+                (
+                    Some(WARNING.faded(0.2)),
+                    Icon::Dot(WARNING),
+                    Content::WaveAndText { wave: fg, text: &countdown, color: WARNING, align: Align::Right },
+                )
+            }
+        };
+
+        self.pill();
+        self.well(tint);
+        self.icon(icon);
+        let (x0, x1) = (self.h + 1.0, self.w - self.h * 0.45);
+        match content {
+            Content::Label { text, color } => {
+                self.text(text, x0, x1 - x0, color, Align::Left);
+            }
+            Content::Waveform { color } => self.waveform(levels, x0, x1, color),
+            Content::WaveAndText { wave, text, color, align: Align::Left } => {
+                let split = x0 + ((x1 - x0) * 0.3).max(self.h);
+                self.waveform(levels, x0, split, wave);
+                self.text(text, split + self.h * 0.25, x1 - split - self.h * 0.25, color, Align::Left);
+            }
+            Content::WaveAndText { wave, text, color, align: Align::Right } => {
+                let used = self.text(text, x0, x1 - x0, color, Align::Right);
+                self.waveform(levels, x0, x1 - used - self.h * 0.3, wave);
+            }
+        }
+    }
+
+    fn transform(&self) -> Transform {
+        Transform::from_scale(self.sx, self.sy)
+    }
+
+    fn fill(&mut self, path: &Path, color: Rgba) {
+        let paint = paint(color);
+        let t = self.transform();
+        self.pixmap.fill_path(path, &paint, FillRule::Winding, t, None);
+    }
+
+    fn stroke(&mut self, path: &Path, color: Rgba, width: f32) {
+        let paint = paint(color);
+        let stroke = Stroke { width, line_cap: LineCap::Round, line_join: LineJoin::Round, ..Stroke::default() };
+        let t = self.transform();
+        self.pixmap.stroke_path(path, &paint, &stroke, t, None);
+    }
+
+    /// The background: a fully rounded rectangle with a faint hairline edge, so it reads on dark
+    /// and light windows alike.
+    fn pill(&mut self) {
+        let (w, h) = (self.w, self.h);
+        if let Some(p) = rounded_rect(0.0, 0.0, w, h, h / 2.0) {
+            self.fill(&p, self.style.background);
+        }
+        let hair = 1.0 / self.sy;
+        if let Some(p) = rounded_rect(hair / 2.0, hair / 2.0, w - hair, h - hair, (h - hair) / 2.0) {
+            self.stroke(&p, self.style.foreground.faded(0.10), hair);
+        }
+    }
+
+    fn well_radius(&self) -> f32 {
+        self.h * 0.36
+    }
+
+    /// The round well that holds the status icon, tinted for states with a meaning.
+    fn well(&mut self, tint: Option<Rgba>) {
+        let c = self.h / 2.0;
+        let fill = tint.unwrap_or(self.style.foreground.faded(0.07));
+        if let Some(p) = PathBuilder::from_circle(c, c, self.well_radius()) {
+            self.fill(&p, fill);
+        }
+    }
+
+    /// Icons are drawn in a 32-unit box centred in the well (unit = well radius / 16).
+    fn icon(&mut self, icon: Icon) {
+        let c = self.h / 2.0;
+        let u = self.well_radius() / 16.0;
+        let at = |x: f32, y: f32| (c + x * u, c + y * u);
+        let fg = self.style.foreground;
+        let line = 2.0 * u;
+        match icon {
+            Icon::Dot(color) => self.circle(at(0.0, 0.0), 5.5 * u, color),
+            Icon::Ring(color) => {
+                if let Some(p) = PathBuilder::from_circle(c, c, 5.5 * u) {
+                    self.stroke(&p, color, line);
+                }
+            }
+            Icon::Arc => {
+                let mut pb = PathBuilder::new();
+                arc(&mut pb, c, c, 6.0 * u, -90.0, 180.0);
+                if let Some(p) = pb.finish() {
+                    self.stroke(&p, fg, line);
+                }
+            }
+            Icon::Dots => {
+                for (i, alpha) in [0.4, 0.7, 1.0].into_iter().enumerate() {
+                    self.circle(at(-5.5 + 5.5 * i as f32, 0.0), 1.9 * u, fg.faded(alpha));
+                }
+            }
+            Icon::Arrow => {
+                self.polyline(&[at(0.0, 6.0), at(0.0, -5.5)], fg, line);
+                self.polyline(&[at(-4.5, -1.0), at(0.0, -5.5), at(4.5, -1.0)], fg, line);
+            }
+            Icon::Retry => {
+                // A refresh arrow: an open circle, clockwise, with the head at its upper right.
+                let (r, end) = (6.0 * u, 300.0_f32);
+                let mut pb = PathBuilder::new();
+                arc(&mut pb, c, c, r, 30.0, end);
+                if let Some(p) = pb.finish() {
+                    self.stroke(&p, fg, line);
+                }
+                let (ex, ey) = polar(c, c, r, end);
+                let a = end.to_radians();
+                let (dx, dy) = (-a.sin(), a.cos());
+                let (head, back) = (3.6 * u, 1.2 * u);
+                let mut pb = PathBuilder::new();
+                pb.move_to(ex + dx * head, ey + dy * head);
+                pb.line_to(ex - dy * head * 0.8 - dx * back, ey + dx * head * 0.8 - dy * back);
+                pb.line_to(ex + dy * head * 0.8 - dx * back, ey - dx * head * 0.8 - dy * back);
+                pb.close();
+                if let Some(p) = pb.finish() {
+                    self.fill(&p, fg);
+                }
+            }
+            Icon::Clock => {
+                if let Some(p) = PathBuilder::from_circle(c, c, 6.5 * u) {
+                    self.stroke(&p, fg, 1.8 * u);
+                }
+                self.polyline(&[at(0.0, -3.8), at(0.0, 0.0), at(3.0, 1.6)], fg, 1.8 * u);
+            }
+            Icon::Flat => {
+                self.polyline(&[at(-6.0, 0.0), at(6.0, 0.0)], fg.faded(0.62), line);
+            }
+            Icon::Check => {
+                self.polyline(&[at(-5.0, 0.5), at(-1.5, 4.0), at(5.5, -3.8)], SUCCESS, 2.3 * u);
+            }
+            Icon::Bang => {
+                self.polyline(&[at(0.0, -5.5), at(0.0, 1.2)], ERROR, 2.3 * u);
+                self.circle(at(0.0, 5.0), 1.35 * u, ERROR);
+            }
+            Icon::Info => {
+                self.circle(at(0.0, -5.0), 1.35 * u, fg);
+                self.polyline(&[at(0.0, -1.2), at(0.0, 5.5)], fg, 2.3 * u);
+            }
+        }
+    }
+
+    fn circle(&mut self, (x, y): (f32, f32), r: f32, color: Rgba) {
+        if let Some(p) = PathBuilder::from_circle(x, y, r) {
+            self.fill(&p, color);
+        }
+    }
+
+    fn polyline(&mut self, points: &[(f32, f32)], color: Rgba, width: f32) {
+        let mut pb = PathBuilder::new();
+        let Some((&(x, y), rest)) = points.split_first() else { return };
+        pb.move_to(x, y);
+        for &(x, y) in rest {
+            pb.line_to(x, y);
+        }
+        if let Some(p) = pb.finish() {
+            self.stroke(&p, color, width);
+        }
+    }
+
+    /// Vertical bars between `x0` and `x1`, newest on the right; older bars fade out. Without
+    /// enough history the remaining bars rest as dots.
+    fn waveform(&mut self, levels: &Levels, x0: f32, x1: f32, color: Rgba) {
+        let bar = (self.h * 0.068).max(2.0);
+        let gap = (self.h * 0.068).max(1.5);
+        let pitch = bar + gap;
+        let n = ((x1 - x0 + gap) / pitch).floor().max(0.0) as usize;
+        if n == 0 {
+            return;
+        }
+        let start = x1 - (n as f32 * pitch - gap);
+        let mid = self.h / 2.0;
+        let max_h = self.h * 0.55;
+        let have: Vec<f32> = levels.iter().rev().take(n).collect();
+        for i in 0..n {
+            // i = 0 is the leftmost bar; the newest level is the rightmost.
+            let age = n - 1 - i;
+            let x = start + i as f32 * pitch;
+            let fade = 0.22 + 0.78 * ((i + 1) as f32 / n as f32).powf(1.3);
+            let (height, alpha) = match have.get(age) {
+                Some(&level) => ((curve(level) * max_h).max(bar), fade),
+                None => (bar, fade * 0.45),
+            };
+            if let Some(p) = rounded_rect(x, mid - height / 2.0, bar, height, bar / 2.0) {
+                self.fill(&p, color.faded(alpha));
+            }
+        }
+    }
+
+    /// One line of text starting at `x` (logical), at most `max_w` wide, ellipsized at the end.
+    /// Right-aligned text ends at `x + max_w`. Returns the drawn width in logical pixels.
+    fn text(&mut self, text: &str, x: f32, max_w: f32, color: Rgba, align: Align) -> f32 {
+        if max_w <= 0.0 || text.is_empty() {
+            return 0.0;
+        }
+        let size = (self.h * 0.31).clamp(9.0, 24.0);
+        let (sx, sy) = (self.sx, self.sy);
+        let Renderer { fonts, glyphs } = &mut *self.renderer;
+        let metrics = Metrics::new(size * sy, size * 1.25 * sy);
+        let mut buffer = Buffer::new(fonts, metrics);
+        buffer.set_wrap(Wrap::None);
+        buffer.set_ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1)));
+        buffer.set_size(Some(max_w * sx), None);
+        // Newlines would start lines nobody sees; the overlay shows one.
+        let one_line: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        buffer.set_text(&one_line, &Attrs::new().family(Family::Name(FAMILY)), Shaping::Advanced, None);
+        buffer.shape_until_scroll(fonts, false);
+        let Some(run) = buffer.layout_runs().next() else { return 0.0 };
+        let width = run.line_w.min(max_w * sx);
+        let px = match align {
+            Align::Left => x * sx,
+            Align::Right => (x + max_w) * sx - width,
+        };
+        // Centre the capitals: Inter's cap height is 0.727 em.
+        let baseline = (self.h / 2.0 + 0.36 * size) * sy;
+        for glyph in run.glyphs {
+            let pg = glyph.physical((px, baseline.round()), 1.0);
+            let Some(image) = glyphs.get_image(fonts, pg.cache_key) else { continue };
+            let left = pg.x + image.placement.left;
+            let top = pg.y - image.placement.top;
+            let (gw, gh) = (image.placement.width, image.placement.height);
+            match image.content {
+                SwashContent::Mask => blit_mask(&mut self.pixmap, left, top, gw, gh, &image.data, color),
+                SwashContent::Color => blit_rgba(&mut self.pixmap, left, top, gw, gh, &image.data, color.a),
+                SwashContent::SubpixelMask => {}
+            }
+        }
+        width / sx
+    }
+}
+
+/// Perceptual curve for levels: quiet speech still moves the bars.
+fn curve(level: f32) -> f32 {
+    level.clamp(0.0, 1.0).sqrt()
+}
+
+fn format_countdown(seconds: u32) -> String {
+    if seconds >= 60 { format!("{}:{:02} left", seconds / 60, seconds % 60) } else { format!("{seconds} s left") }
+}
+
+fn paint(color: Rgba) -> Paint<'static> {
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(color.r, color.g, color.b, color.a);
+    paint.anti_alias = true;
+    paint
+}
+
+fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<Path> {
+    if w <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    let r = r.min(w / 2.0).min(h / 2.0).max(0.0);
+    // Cubic approximation of a quarter circle.
+    let k = r * 0.552_284_8;
+    let mut pb = PathBuilder::new();
+    pb.move_to(x + r, y);
+    pb.line_to(x + w - r, y);
+    pb.cubic_to(x + w - r + k, y, x + w, y + r - k, x + w, y + r);
+    pb.line_to(x + w, y + h - r);
+    pb.cubic_to(x + w, y + h - r + k, x + w - r + k, y + h, x + w - r, y + h);
+    pb.line_to(x + r, y + h);
+    pb.cubic_to(x + r - k, y + h, x, y + h - r + k, x, y + h - r);
+    pb.line_to(x, y + r);
+    pb.cubic_to(x, y + r - k, x + r - k, y, x + r, y);
+    pb.close();
+    pb.finish()
+}
+
+fn polar(cx: f32, cy: f32, r: f32, deg: f32) -> (f32, f32) {
+    let a = deg.to_radians();
+    (cx + r * a.cos(), cy + r * a.sin())
+}
+
+/// Appends a circular arc from `from` to `to` degrees (clockwise on screen), in cubic segments
+/// of at most 90°.
+fn arc(pb: &mut PathBuilder, cx: f32, cy: f32, r: f32, from: f32, to: f32) {
+    let (x, y) = polar(cx, cy, r, from);
+    pb.move_to(x, y);
+    let segments = ((to - from).abs() / 90.0).ceil().max(1.0) as usize;
+    let step = (to - from) / segments as f32;
+    for i in 0..segments {
+        let a0 = (from + step * i as f32).to_radians();
+        let a1 = (from + step * (i + 1) as f32).to_radians();
+        let k = 4.0 / 3.0 * ((a1 - a0) / 4.0).tan() * r;
+        let (x0, y0) = (cx + r * a0.cos(), cy + r * a0.sin());
+        let (x3, y3) = (cx + r * a1.cos(), cy + r * a1.sin());
+        pb.cubic_to(x0 - k * a0.sin(), y0 + k * a0.cos(), x3 + k * a1.sin(), y3 - k * a1.cos(), x3, y3);
+    }
+}
+
+fn mul255(a: u32, b: u32) -> u32 {
+    (a * b + 127) / 255
+}
+
+/// Source-over blend of a coverage mask in `color` onto the premultiplied pixmap.
+fn blit_mask(pixmap: &mut Pixmap, x: i32, y: i32, w: u32, h: u32, mask: &[u8], color: Rgba) {
+    let (pw, ph) = (pixmap.width() as i32, pixmap.height() as i32);
+    let data = pixmap.data_mut();
+    for j in 0..h as i32 {
+        let py = y + j;
+        if !(0..ph).contains(&py) {
+            continue;
+        }
+        for i in 0..w as i32 {
+            let px = x + i;
+            if !(0..pw).contains(&px) {
+                continue;
+            }
+            let cov = mask[(j * w as i32 + i) as usize] as u32;
+            if cov == 0 {
+                continue;
+            }
+            let a = mul255(cov, color.a as u32);
+            let src = [mul255(color.r as u32, a), mul255(color.g as u32, a), mul255(color.b as u32, a), a];
+            blend(&mut data[((py * pw + px) * 4) as usize..][..4], src);
+        }
+    }
+}
+
+/// Source-over blend of straight-alpha RGBA glyph pixels (colour fonts), with extra `alpha`.
+fn blit_rgba(pixmap: &mut Pixmap, x: i32, y: i32, w: u32, h: u32, rgba: &[u8], alpha: u8) {
+    let (pw, ph) = (pixmap.width() as i32, pixmap.height() as i32);
+    let data = pixmap.data_mut();
+    for j in 0..h as i32 {
+        let py = y + j;
+        if !(0..ph).contains(&py) {
+            continue;
+        }
+        for i in 0..w as i32 {
+            let px = x + i;
+            if !(0..pw).contains(&px) {
+                continue;
+            }
+            let s = &rgba[((j * w as i32 + i) * 4) as usize..][..4];
+            let a = mul255(s[3] as u32, alpha as u32);
+            let src = [mul255(s[0] as u32, a), mul255(s[1] as u32, a), mul255(s[2] as u32, a), a];
+            blend(&mut data[((py * pw + px) * 4) as usize..][..4], src);
+        }
+    }
+}
+
+fn blend(dst: &mut [u8], src: [u32; 4]) {
+    let inv = 255 - src[3];
+    for c in 0..4 {
+        dst[c] = (src[c] + mul255(dst[c] as u32, inv)).min(255) as u8;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn countdown_reads_naturally() {
+        assert_eq!(format_countdown(28), "28 s left");
+        assert_eq!(format_countdown(65), "1:05 left");
+    }
+
+    #[test]
+    fn outside_the_pill_stays_transparent() {
+        let mut r = Renderer::new();
+        let p = r.render(&OverlayState::Done, &Levels::new(), &Style::default(), 240, 44, 1.0);
+        assert_eq!(p.pixel(0, 0).unwrap().alpha(), 0);
+        assert_eq!(p.pixel(239, 43).unwrap().alpha(), 0);
+        assert!(p.pixel(120, 22).unwrap().alpha() > 200);
+    }
+}
