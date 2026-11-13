@@ -295,6 +295,7 @@ pub async fn devices(viewer: Viewer, State(state): State<AppRef>) -> Response {
     rows.sort_by_key(|d| (!d.online, std::cmp::Reverse(d.last_seen)));
     let ctx = context! {
         devices => rows.into_iter().map(|d| device_row(d, now, &tz)).collect::<Vec<_>>(),
+        pairs => viewer.local,
         ..chrome(&state, &viewer, "devices")
     };
     render(StatusCode::OK, "devices.html", ctx)

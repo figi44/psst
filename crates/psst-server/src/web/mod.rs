@@ -51,6 +51,7 @@ const TEMPLATES: &[(&str, &str)] = &[
     ("rows.html", include_str!("../../../../web/templates/rows.html")),
     ("settings.html", include_str!("../../../../web/templates/settings.html")),
     ("devices.html", include_str!("../../../../web/templates/devices.html")),
+    ("pairing.html", include_str!("../../../../web/templates/pairing.html")),
     ("device.html", include_str!("../../../../web/templates/device.html")),
 ];
 
@@ -101,6 +102,7 @@ pub fn router() -> Router<AppRef> {
         .route("/settings/{key}", post(settings::set))
         .route("/settings/{key}/reset", post(settings::reset))
         .route("/devices", get(settings::devices))
+        .route("/devices/pair", post(pair::create))
         .route("/devices/{id}", get(settings::device))
         .route("/devices/{id}/client.toml", get(settings::export_device))
         .route("/devices/{id}/unpair", post(settings::unpair))
@@ -265,6 +267,8 @@ pub(crate) struct Viewer {
     session: Option<String>,
     /// The device whose login link this browser used, whose unpairing logs it out.
     device: Option<psst_proto::DeviceId>,
+    /// One of this machine's users, or a browser one of them logged in, rather than a paired device.
+    local: bool,
 }
 
 impl FromRequestParts<AppRef> for Viewer {
@@ -272,8 +276,14 @@ impl FromRequestParts<AppRef> for Viewer {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppRef) -> Result<Self, Response> {
         match api::authenticate(state, parts) {
-            Ok(Caller::Browser { session, device }) => Ok(Viewer { session: Some(session), device: Some(device) }),
-            Ok(Caller::Identity(_)) => Ok(Viewer { session: None, device: None }),
+            Ok(Caller::Browser { session, device }) => {
+                let local = device.starts_with("local:");
+                Ok(Viewer { session: Some(session), device: Some(device), local })
+            }
+            Ok(Caller::Identity(identity)) => {
+                let local = matches!(identity, crate::auth::Identity::Local { .. });
+                Ok(Viewer { session: None, device: None, local })
+            }
             Err(Refusal::Unauthorized) => Err(log_in_first()),
             Err(Refusal::Forbidden) => {
                 Err(message(StatusCode::FORBIDDEN, "Not allowed", "This user isn't in the server's local_users.", None))
