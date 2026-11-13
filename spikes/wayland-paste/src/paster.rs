@@ -518,6 +518,10 @@ impl DcHandler for State {
     }
 
     fn dc_cancelled(&mut self, source: &DcSource) {
+        // Drop our handle too: its user data holds the served bytes.
+        if self.latest.as_ref().is_some_and(|(s, _)| s == source) {
+            self.latest = None;
+        }
         source.destroy();
     }
 }
