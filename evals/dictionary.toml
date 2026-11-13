@@ -5,9 +5,8 @@
 # evals/sentences/*.txt must be here (scripts/synth-evals.sh checks it). Changing this file means re-running the audio
 # eval (plan 7.3).
 #
-# The fields follow plan 7.1. Defaults: sounds_like = [], languages = any (["en"] or ["cs"] restricts a term),
-# fuzzy = true (English only), pin = false. psst-config is the implementation of this format; if it ends up different,
-# this file follows psst-config.
+# The format is docs/config.md's. Defaults: sounds_like = [], languages = "any" ("en" or "cs" restricts a term),
+# fuzzy = true (English only), pin = false.
 #
 # sounds_like holds spellings Whisper actually produced for these terms during Phase 0. Common words that a term
 # sounds like (Traefik → "traffic", Flox → "flocks") are left out on purpose: as exact spellings they would rewrite
@@ -74,7 +73,7 @@ sounds_like = ["age nix"]
 
 [[terms]]
 text = "Alza"
-languages = ["cs"]
+languages = "cs"
 
 [[terms]]
 text = "Ansible"
@@ -133,7 +132,7 @@ sounds_like = ["container d"]
 
 [[terms]]
 text = "ČSOB"
-languages = ["cs"]
+languages = "cs"
 
 [[terms]]
 text = "CTranslate2"
@@ -162,7 +161,7 @@ sounds_like = ["E T C D"]
 
 [[terms]]
 text = "Fable"
-languages = ["en"]
+languages = "en"
 
 [[terms]]
 text = "faster-whisper"
@@ -284,7 +283,7 @@ sounds_like = ["open tofu"]
 
 [[terms]]
 text = "Opus"
-languages = ["en"]
+languages = "en"
 
 [[terms]]
 text = "Penpot"

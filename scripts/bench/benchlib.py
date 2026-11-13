@@ -136,7 +136,7 @@ def fillers_for(lang: str) -> list[str]:
 def bias_terms(lang: str) -> list[str]:
     """Dictionary::bias_terms: valid for the language, pinned first, then the rest, each alphabetical."""
     terms = tomllib.loads((EVALS / "dictionary.toml").read_text(encoding="utf-8"))["terms"]
-    valid = [t for t in terms if "any" in t.get("languages", ["any"]) or lang in t.get("languages", [])]
+    valid = [t for t in terms if t.get("languages", "any") in ("any", lang)]
     key = lambda t: (t["text"].casefold(), t["text"])  # noqa: E731
     return [t["text"] for t in sorted((t for t in valid if t.get("pin")), key=key)] + [
         t["text"] for t in sorted((t for t in valid if not t.get("pin")), key=key)

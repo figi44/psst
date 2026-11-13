@@ -171,7 +171,7 @@ def parse_sentences(path: Path) -> list[Entry]:
     return entries
 
 
-def check_entries(entries: list[Entry], dictionary: dict[str, set[str]]) -> None:
+def check_entries(entries: list[Entry], dictionary: dict[str, str]) -> None:
     seen: set[str] = set()
     for e in entries:
         if e.id in seen:
@@ -189,13 +189,14 @@ def check_entries(entries: list[Entry], dictionary: dict[str, set[str]]) -> None
             langs = dictionary.get(term)
             if langs is None:
                 raise InputError(f"{e.source_line}: {e.id}: [[{term}]] isn't in evals/dictionary.toml")
-            if "any" not in langs and e.lang not in langs:
+            if langs not in ("any", e.lang):
                 raise InputError(f"{e.source_line}: {e.id}: [[{term}]] isn't valid for {e.lang}")
 
 
-def load_dictionary(path: Path) -> dict[str, set[str]]:
+def load_dictionary(path: Path) -> dict[str, str]:
+    """Term text -> its `languages`: "any" or one language code (docs/config.md)."""
     terms = tomllib.loads(path.read_text(encoding="utf-8"))["terms"]
-    return {t["text"]: set(t.get("languages", ["any"])) for t in terms}
+    return {t["text"]: t.get("languages", "any") for t in terms}
 
 
 def voice_for(e: Entry) -> str:
