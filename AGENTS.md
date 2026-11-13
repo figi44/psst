@@ -38,7 +38,8 @@ git diff --exit-code -- engines/faster-whisper/tests/golden   # golden frames un
   `env!("CARGO_BIN_EXE_psst-server-e2e")` and `env!("CARGO_BIN_EXE_psst-e2e-daemon")` through
   `psst-testkit`, so they always run freshly built binaries. Evals run the server in-process with
   `psst_server::serve_in_process`.
-- **Regenerate `evals/baseline.json` after a rebase.**
+- **Regenerate `evals/baseline.json` after a rebase:** `cargo run -p psst-eval -- replay --write`
+  (`docs/evals.md`).
 - Add dependencies with `cargo add`, not by editing manifests.
 
 ## Contracts
