@@ -295,7 +295,8 @@ async fn page(state: &AppRef, viewer: &Viewer, error: Option<String>) -> Respons
     if email.is_some() {
         chatgpt::warm(state);
     }
-    let pending = state.tidy.pending().as_ref().map(|p| context! { url => p.url.clone(), listening => p.listening });
+    let pending =
+        state.tidy.sign_in().pending.as_ref().map(|p| context! { url => p.url.clone(), listening => p.listening });
     let (models, models_error) = match &email {
         Some(_) => match chatgpt::models(state).await {
             Ok(models) => (models, None),
