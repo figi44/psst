@@ -10,6 +10,7 @@ pub use sandbox::{Compositor, Sandbox, headless_sway, nested_niri};
 use std::{
     ffi::OsString,
     fs,
+    hash::{BuildHasher, RandomState},
     net::{SocketAddr, TcpListener},
     os::unix::net::UnixStream,
     path::{Path, PathBuf},
@@ -278,8 +279,19 @@ impl Drop for TestDaemon {
     }
 }
 
+/// Below the kernel's ephemeral range, which binding port 0 picks from: the server binds the port a
+/// moment later, and by then another test's port 0 or a connection's source port may have it.
 fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0").and_then(|l| l.local_addr()).expect("bind a free port").port()
+    let ephemeral: u16 = fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
+        .ok()
+        .and_then(|range| range.split_whitespace().next()?.parse().ok())
+        .unwrap_or(32_768);
+    let ports = 1_024..ephemeral.max(1_025);
+    let random = RandomState::new();
+    (0..1_000)
+        .map(|n: u64| ports.start + (random.hash_one(n) % ports.len() as u64) as u16)
+        .find(|&port| TcpListener::bind(("127.0.0.1", port)).is_ok())
+        .expect("a free port below the ephemeral range")
 }
 
 fn wait_for_socket(child: &mut Child, socket: &Path, log: &Path) {
