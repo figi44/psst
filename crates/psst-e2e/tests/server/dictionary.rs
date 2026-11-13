@@ -397,3 +397,21 @@ async fn paired_devices_reach_the_dictionary_with_their_token() {
 async fn view_result(api: &ApiClient) -> Result<DictionaryView, ApiCallError> {
     api.call(Method::Get, routes::DICTIONARY, None::<&()>).await
 }
+
+#[tokio::test]
+async fn any_spelling_of_an_identity_reaches_its_term_through_the_route() {
+    let server = dictionary_server(&[]);
+    let api = api(&server);
+    for text in ["C/C++", "C#", "Dvořák", "t3 code?"] {
+        add(&api, json!({"text": text})).await.unwrap();
+    }
+    let decomposed = "DVOR\u{30c}A\u{301}K";
+    assert_eq!(
+        replace(&api, decomposed, json!({"text": "Dvořák", "pin": true})).await.unwrap().term.unwrap().id,
+        "dvořák"
+    );
+    for spelling in ["c/c++", "c#", decomposed, "T3 CODE?"] {
+        assert_eq!(remove(&api, spelling).await.unwrap().term, None, "{spelling}");
+    }
+    assert_eq!(layers(&api).await.len(), 3, "only the file's terms are left");
+}
