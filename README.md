@@ -6,6 +6,12 @@ shared, centrally managed dictionary applied.
 
 Status: early development.
 
+## Documentation
+
+- [docs/protocol.md](docs/protocol.md): the client ↔ server and server ↔ engine protocols.
+- [docs/config.md](docs/config.md): every configuration key with its default.
+- [AGENTS.md](AGENTS.md): how to build, test and contribute.
+
 ## License
 
 Licensed under either of

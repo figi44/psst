@@ -1,0 +1,13 @@
+[package]
+name = "psst-dict"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+psst-config = { version = "0.1.0", path = "../psst-config" }
+psst-proto = { version = "0.1.0", path = "../psst-proto" }
+thiserror = "2.0.21"

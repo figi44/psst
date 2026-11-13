@@ -1,0 +1,62 @@
+{
+  description = "psst: self-hosted dictation for Linux";
+
+  # Pinned to the revision the host config uses, so builds hit derivations already in the local store and
+  # in the caches the host config uses (plan section 11).
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/1d060086d60cb76a40cf37109f979d88a5bd6396";
+
+  outputs =
+    { self, nixpkgs }:
+    let
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+      ];
+      forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+    in
+    {
+      # Packages, the GPU dev shell, and the NixOS and Home Manager modules come with the Nix
+      # work package.
+
+      devShells = forAllSystems (pkgs: {
+        default = pkgs.mkShell {
+          packages = [
+            pkgs.cargo
+            pkgs.rustc
+            pkgs.clippy
+            pkgs.rustfmt
+            pkgs.cargo-nextest
+            pkgs.sccache
+            pkgs.mold
+            pkgs.pkg-config
+            (pkgs.python3.withPackages (ps: [ ps.pytest ]))
+          ];
+          nativeBuildInputs = [ pkgs.rustPlatform.bindgenHook ];
+          # The system libraries the crates link: PipeWire and ALSA for audio, Wayland and
+          # xkbcommon for the overlay and virtual keyboard, SQLite for the server.
+          buildInputs = [
+            pkgs.pipewire
+            pkgs.alsa-lib
+            pkgs.wayland
+            pkgs.libxkbcommon
+            pkgs.sqlite
+          ];
+          RUSTFLAGS = "-C link-arg=-fuse-ld=mold";
+          RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
+          # sccache shares compiled crates across worktrees (~/.cache/sccache). CI uses its own
+          # build cache instead.
+          shellHook = ''
+            if [ -z "''${CI:-}" ]; then
+              export RUSTC_WRAPPER=sccache
+            fi
+          '';
+        };
+      });
+
+      checks = forAllSystems (pkgs: {
+        devShell = self.devShells.${pkgs.stdenv.hostPlatform.system}.default;
+      });
+
+      formatter = forAllSystems (pkgs: pkgs.nixfmt);
+    };
+}

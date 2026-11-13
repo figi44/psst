@@ -1,0 +1,39 @@
+# The engine's pytest and the Python half of the golden frames. Runs only when the engine, its
+# golden frames or the pinned Python change.
+name: Engine
+
+on:
+  pull_request:
+    paths:
+      - engines/**
+      - flake.nix
+      - flake.lock
+      - .github/workflows/engine.yml
+  push:
+    branches: [main]
+    paths:
+      - engines/**
+      - flake.nix
+      - flake.lock
+      - .github/workflows/engine.yml
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    name: pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+      - name: pytest
+        working-directory: engines/faster-whisper
+        run: nix shell --inputs-from ../.. nixpkgs#python3Packages.pytest --command pytest
+      - name: Golden frames match the committed ones
+        run: git diff --exit-code -- engines/faster-whisper/tests/golden

@@ -1,0 +1,287 @@
+use std::{collections::BTreeMap, env, fmt, path::PathBuf, str::FromStr};
+
+use psst_proto::{DEFAULT_SOCKET, Endpoint};
+use serde::{Deserialize, Serialize};
+
+use crate::{ConfigFile, DEFAULT_PROFILE};
+
+/// `client.toml`, read by the `psst` daemon.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ClientConfig {
+    pub server: Endpoint,
+    /// Profile used by `toggle` without `--profile`.
+    pub profile: String,
+    /// The error sound. `false` for tests.
+    pub sounds: bool,
+    pub audio: AudioConfig,
+    pub overlay: OverlayConfig,
+    /// Paste rules by Wayland app id.
+    pub apps: BTreeMap<String, AppRule>,
+}
+
+impl Default for ClientConfig {
+    fn default() -> Self {
+        Self {
+            server: Endpoint::Unix(DEFAULT_SOCKET.into()),
+            profile: DEFAULT_PROFILE.into(),
+            sounds: true,
+            audio: AudioConfig::default(),
+            overlay: OverlayConfig::default(),
+            apps: BTreeMap::new(),
+        }
+    }
+}
+
+impl ClientConfig {
+    /// `$XDG_CONFIG_HOME/psst/client.toml`, else `~/.config/psst/client.toml`.
+    pub fn default_path() -> Option<PathBuf> {
+        let config_home = env::var_os("XDG_CONFIG_HOME")
+            .filter(|dir| !dir.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
+        Some(config_home.join("psst").join(Self::FILE_NAME))
+    }
+
+    /// How to insert text into the app with this id (`None` when the focused window is unknown).
+    ///
+    /// An `[apps]` rule wins; otherwise [`KNOWN_TERMINALS`] get Ctrl+Shift+V and everything else
+    /// gets Ctrl+V.
+    pub fn paste_for(&self, app_id: Option<&str>) -> PasteRule {
+        let rule = app_id.and_then(|id| self.apps.get(id));
+        let fallback = match app_id {
+            Some(id) if KNOWN_TERMINALS.contains(&id) => PasteAction::CtrlShiftV,
+            _ => PasteAction::CtrlV,
+        };
+        PasteRule {
+            action: rule.and_then(|r| r.paste).unwrap_or(fallback),
+            delay_ms: rule.map_or(0, |r| r.paste_delay_ms),
+        }
+    }
+}
+
+/// App ids that get Ctrl+Shift+V unless an `[apps]` rule says otherwise.
+pub const KNOWN_TERMINALS: &[&str] = &[
+    "com.mitchellh.ghostty",
+    "Alacritty",
+    "kitty",
+    "foot",
+    "footclient",
+    "org.wezfurlong.wezterm",
+    "org.gnome.Console",
+    "org.gnome.Ptyxis",
+    "org.kde.konsole",
+    "xterm",
+];
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AudioConfig {
+    pub input: AudioInput,
+}
+
+/// Where audio comes from: `"default"`, a capture device's name, or `"file:<path>"`.
+///
+/// `file:<path>` is the test seam: each recording replays the WAV file (16 kHz mono 16-bit) from
+/// its start, paced in real time, then silence until the recording stops.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub enum AudioInput {
+    #[default]
+    Default,
+    Device(String),
+    File(PathBuf),
+}
+
+impl FromStr for AudioInput {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "" => Err("audio.input must not be empty".into()),
+            "default" => Ok(Self::Default),
+            _ => match s.strip_prefix("file:") {
+                Some(path) if path.starts_with('/') => Ok(Self::File(path.into())),
+                Some(_) => Err(format!("audio.input `{s}`: file: needs an absolute path")),
+                None => Ok(Self::Device(s.into())),
+            },
+        }
+    }
+}
+
+impl fmt::Display for AudioInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Default => f.write_str("default"),
+            Self::Device(name) => f.write_str(name),
+            Self::File(path) => write!(f, "file:{}", path.display()),
+        }
+    }
+}
+
+impl TryFrom<String> for AudioInput {
+    type Error = String;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        s.parse()
+    }
+}
+
+impl From<AudioInput> for String {
+    fn from(input: AudioInput) -> Self {
+        input.to_string()
+    }
+}
+
+/// The overlay's look. Sizes are in logical pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct OverlayConfig {
+    pub anchor: Anchor,
+    /// Distance from the anchored screen edge.
+    pub margin: u32,
+    pub width: u32,
+    pub height: u32,
+    pub background: Color,
+    pub foreground: Color,
+    /// The recording indicator and level meter.
+    pub accent: Color,
+}
+
+impl Default for OverlayConfig {
+    fn default() -> Self {
+        Self {
+            anchor: Anchor::Bottom,
+            margin: 130,
+            width: 240,
+            height: 44,
+            background: Color { r: 0x1c, g: 0x1c, b: 0x1e, a: 0xe6 },
+            foreground: Color { r: 0xf5, g: 0xf5, b: 0xf7, a: 0xff },
+            accent: Color { r: 0xff, g: 0x45, b: 0x3a, a: 0xff },
+        }
+    }
+}
+
+/// Screen edge the overlay sits on, centred horizontally.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Anchor {
+    Top,
+    Bottom,
+}
+
+/// An sRGB colour written `#rrggbb` or `#rrggbbaa`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Color {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+    pub a: u8,
+}
+
+impl FromStr for Color {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let err = || format!("colour `{s}`: expected #rrggbb or #rrggbbaa");
+        let hex = s.strip_prefix('#').filter(|h| matches!(h.len(), 6 | 8) && h.is_ascii()).ok_or_else(err)?;
+        let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).map_err(|_| err());
+        Ok(Self { r: byte(0)?, g: byte(2)?, b: byte(4)?, a: if hex.len() == 8 { byte(6)? } else { 0xff } })
+    }
+}
+
+impl fmt::Display for Color {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self { r, g, b, a } = self;
+        match a {
+            0xff => write!(f, "#{r:02x}{g:02x}{b:02x}"),
+            _ => write!(f, "#{r:02x}{g:02x}{b:02x}{a:02x}"),
+        }
+    }
+}
+
+impl TryFrom<String> for Color {
+    type Error = String;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        s.parse()
+    }
+}
+
+impl From<Color> for String {
+    fn from(color: Color) -> Self {
+        color.to_string()
+    }
+}
+
+/// `[apps."<app id>"]`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AppRule {
+    /// `"ctrl+v"`, `"ctrl+shift+v"`, or `false` to copy only. Unset keeps the built-in choice.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub paste: Option<PasteAction>,
+    /// Pause between setting the clipboard and pressing the chord; for XWayland apps.
+    pub paste_delay_ms: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "PasteValue", into = "PasteValue")]
+pub enum PasteAction {
+    CtrlV,
+    CtrlShiftV,
+    /// Copy to the clipboard without pasting or restoring.
+    CopyOnly,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum PasteValue {
+    Chord(String),
+    Enabled(bool),
+}
+
+impl TryFrom<PasteValue> for PasteAction {
+    type Error = String;
+
+    fn try_from(value: PasteValue) -> Result<Self, Self::Error> {
+        match value {
+            PasteValue::Chord(chord) if chord == "ctrl+v" => Ok(Self::CtrlV),
+            PasteValue::Chord(chord) if chord == "ctrl+shift+v" => Ok(Self::CtrlShiftV),
+            PasteValue::Enabled(false) => Ok(Self::CopyOnly),
+            _ => Err("paste must be \"ctrl+v\", \"ctrl+shift+v\" or false".into()),
+        }
+    }
+}
+
+impl From<PasteAction> for PasteValue {
+    fn from(action: PasteAction) -> Self {
+        match action {
+            PasteAction::CtrlV => Self::Chord("ctrl+v".into()),
+            PasteAction::CtrlShiftV => Self::Chord("ctrl+shift+v".into()),
+            PasteAction::CopyOnly => Self::Enabled(false),
+        }
+    }
+}
+
+/// The resolved way to insert text into one app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PasteRule {
+    pub action: PasteAction,
+    pub delay_ms: u32,
+}
+
+impl ConfigFile for ClientConfig {
+    const FILE_NAME: &'static str = "client.toml";
+
+    fn check(&self) -> Result<(), String> {
+        if self.profile.is_empty() {
+            return Err("profile must not be empty".into());
+        }
+        if self.overlay.width == 0 || self.overlay.height == 0 {
+            return Err("overlay.width and overlay.height must be at least 1".into());
+        }
+        Ok(())
+    }
+}

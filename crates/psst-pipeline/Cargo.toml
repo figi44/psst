@@ -1,0 +1,16 @@
+[package]
+name = "psst-pipeline"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+psst-config = { version = "0.1.0", path = "../psst-config" }
+psst-dict = { version = "0.1.0", path = "../psst-dict" }
+psst-proto = { version = "0.1.0", path = "../psst-proto" }
+
+[dev-dependencies]
+serde_json = "1.0.154"
