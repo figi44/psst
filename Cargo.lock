@@ -1966,6 +1966,7 @@ dependencies = [
  "psst-config",
  "psst-engine-proto",
  "psst-proto",
+ "rustix",
  "serde_json",
  "tempfile",
  "tokio",
