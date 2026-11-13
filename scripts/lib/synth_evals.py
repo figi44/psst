@@ -1,7 +1,8 @@
-"""Render the synthetic eval clips with Piper and write evals/cases.jsonl.
+"""Render the synthetic eval clips with Piper and Qwen3-TTS, and write evals/cases.jsonl.
 
 Piper adds random noise inside its ONNX model, so each segment seeds onnxruntime from the clip id: the same inputs
-give byte-identical audio.
+give byte-identical audio. Qwen3-TTS samples on the GPU and is seeded the same way, but its audio repeats only on the
+same GPU and software, so its committed clips are the reference.
 """
 
 from __future__ import annotations
@@ -57,6 +58,29 @@ VOICES = {
     "cori": ("en_GB-cori-high", 1.0),
 }
 EN_VOICES = ["lj", "norman", "cori"]
+
+# Cloning needs about 5 GB of GPU memory. The voices are designed once, so that model runs on the CPU and needn't fit
+# beside it.
+QWEN_BASE = ("Qwen/Qwen3-TTS-12Hz-1.7B-Base", "fd4b254389122332181a7c3db7f27e918eec64e3", "cuda:0")
+QWEN_DESIGN = ("Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign", "5ecdb67327fd37bb2e042aab12ff7391903235d3", "cpu")
+# Each voice is designed once from its description into evals/voices/<tag>.flac, and every clip clones that recording:
+# designing each segment from the description would give a different speaker every time.
+QWEN_VOICES = {
+    "qwen-usf": "A woman in her early thirties with a General American accent. A clear, mid-pitched voice, calm and "
+                "natural, at an everyday conversational pace, like someone dictating a note at her desk.",
+    "qwen-usm": "A man in his mid-forties with a General American accent. A warm, slightly low voice, relaxed, at an "
+                "everyday conversational pace, like someone dictating an email at his desk.",
+    "qwen-gbm": "A man in his fifties with a Southern British English accent. A clear, measured voice at an everyday "
+                "conversational pace, like someone dictating a memo at his desk.",
+}
+QWEN_EN_VOICES = list(QWEN_VOICES)
+QWEN_REFERENCE_TEXT = ("I usually start the morning by reading through my messages, and then I make a short list of "
+                       "what has to get done before lunch.")
+QWEN_TOKENS_PER_S = 12.5
+# Seconds per word outside this range means the model dropped or invented speech. Shorter segments are left out: the
+# model's own silence around a word or two outweighs it.
+QWEN_PACE = (0.2, 0.9)
+QWEN_PACE_MIN_WORDS = 3
 
 LEAD_IN_S = 0.3
 TAIL_S = 0.5
@@ -125,11 +149,20 @@ class Clip:
             "must_pass": self.must_pass,
         }
 
-    def render_key(self) -> str:
-        if self.voice:
+    @property
+    def qwen(self) -> bool:
+        return self.voice in QWEN_VOICES
+
+    def tail(self) -> float:
+        return LONG_TAIL_S if self.id.split("-")[2] == "long" else TAIL_S
+
+    def render_key(self, voice_sha: str = "") -> str:
+        if self.qwen:
+            what = {"model": QWEN_BASE[1], "voice": voice_sha, "segments": self.segments, "tail": self.tail()}
+        elif self.voice:
             model, length_scale = VOICES[self.voice]
             what = {"model": MODELS[model][1], "length_scale": length_scale, "segments": self.segments,
-                    "tail": LONG_TAIL_S if self.id.split("-")[2] == "long" else TAIL_S}
+                    "tail": self.tail()}
         else:
             what = {"noise": self.noise, "seconds": self.noise_seconds}
         what |= {"version": RENDER_VERSION, "seed": self.seed}
@@ -311,6 +344,11 @@ def voice_for(e: Entry) -> str:
     return EN_VOICES[(e.number - 1) % len(EN_VOICES)]
 
 
+def qwen_voice_for(e: Entry) -> str:
+    # One step ahead of Piper's rotation, so no entry gets the same accent and sex twice.
+    return QWEN_EN_VOICES[e.number % len(QWEN_EN_VOICES)]
+
+
 # The guard must leave these empty.
 NOISE_CASES = {
     "en": [("silence", "silence", 5.0), ("roomtone", "roomtone", 8.0), ("fan", "fan", 6.0),
@@ -318,16 +356,16 @@ NOISE_CASES = {
 }
 
 
-def plan_clips(entries: list[Entry], noise: bool = True) -> list[Clip]:
+def plan_clips(entries: list[Entry], probe: bool = False) -> list[Clip]:
     clips = []
     for e in entries:
-        voice = voice_for(e)
-        clips.append(Clip(
-            id=f"syn-{e.id}-{voice}", lang=e.lang, split="tune" if e.number % 2 else "holdout",
-            reference=e.reference, terms=e.terms, must_pass=e.kind != "regular", voice=voice,
-            segments=e.spoken_segments(),
-        ))
-    for lang, cases in NOISE_CASES.items() if noise else ():
+        for voice in [voice_for(e)] if probe else [voice_for(e), qwen_voice_for(e)]:
+            clips.append(Clip(
+                id=f"syn-{e.id}-{voice}", lang=e.lang, split="tune" if e.number % 2 else "holdout",
+                reference=e.reference, terms=e.terms, must_pass=e.kind != "regular", voice=voice,
+                segments=e.spoken_segments(),
+            ))
+    for lang, cases in NOISE_CASES.items() if not probe else ():
         for i, (name, kind, seconds) in enumerate(cases):
             clips.append(Clip(
                 id=f"syn-{lang}-{name}", lang=lang, split="tune" if i % 2 == 0 else "holdout", reference="",
@@ -389,9 +427,80 @@ def render_speech(clip: Clip, model_path: Path) -> np.ndarray:
         pieces.append(soxr.resample(np.concatenate(chunks), rate, SR, quality="VHQ").astype(np.float32))
         if pause:
             pieces.append(silence(pause))
-    pieces.append(silence(LONG_TAIL_S if clip.id.split("-")[2] == "long" else TAIL_S))
-    audio = np.concatenate(pieces)
+    pieces.append(silence(clip.tail()))
+    return peak_normalise(np.concatenate(pieces))
+
+
+def peak_normalise(audio: np.ndarray) -> np.ndarray:
     return audio * (PEAK / max(float(np.abs(audio).max()), 1e-9))
+
+
+class Qwen:
+    """Loads each model once, on first use, and holds one at a time."""
+
+    def __init__(self, cache: Path, voices: Path):
+        self.cache = cache
+        self.voices = voices
+        self.loaded: tuple[str, object] | None = None
+        self.prompts: dict[str, object] = {}
+
+    def model(self, repo: tuple[str, str, str]):
+        import torch
+        from huggingface_hub import snapshot_download
+        from qwen_tts import Qwen3TTSModel
+
+        if self.loaded and self.loaded[0] == repo[0]:
+            return self.loaded[1]
+        self.loaded = None
+        self.prompts.clear()
+        torch.cuda.empty_cache()
+        path = snapshot_download(repo[0], revision=repo[1], cache_dir=self.cache / "hf")
+        # sdpa rather than the flash-attn the README suggests: that would be a CUDA build.
+        model = Qwen3TTSModel.from_pretrained(path, device_map=repo[2], attn_implementation="sdpa",
+                                              dtype=torch.float32 if repo[2] == "cpu" else torch.bfloat16)
+        self.loaded = (repo[0], model)
+        return model
+
+    def voice_path(self, tag: str) -> Path:
+        return self.voices / f"{tag}.flac"
+
+    def design(self, tag: str) -> None:
+        seed_torch(zlib.crc32(tag.encode()) & 0x7FFFFFFF)
+        wavs, rate = self.model(QWEN_DESIGN).generate_voice_design(
+            text=QWEN_REFERENCE_TEXT, instruct=QWEN_VOICES[tag], language="English")
+        self.voices.mkdir(parents=True, exist_ok=True)
+        write_flac(peak_normalise(wavs[0].astype(np.float32)), self.voice_path(tag), f"design:{QWEN_DESIGN[1]}", rate)
+
+    def render(self, clip: Clip) -> tuple[np.ndarray, list[str]]:
+        import soxr
+
+        model = self.model(QWEN_BASE)
+        if clip.voice not in self.prompts:
+            self.prompts[clip.voice] = model.create_voice_clone_prompt(
+                ref_audio=str(self.voice_path(clip.voice)), ref_text=QWEN_REFERENCE_TEXT)
+        pieces = [silence(LEAD_IN_S)]
+        warnings = []
+        for i, (text, pause) in enumerate(clip.segments):
+            seed_torch(clip.seed + i)
+            words = len(text.split())
+            wavs, rate = model.generate_voice_clone(
+                text=text, language="English", voice_clone_prompt=self.prompts[clip.voice],
+                max_new_tokens=int(QWEN_TOKENS_PER_S * (3 + 1.5 * words)))
+            speech = soxr.resample(wavs[0].astype(np.float32), rate, SR, quality="VHQ").astype(np.float32)
+            pace = len(speech) / SR / words
+            if words >= QWEN_PACE_MIN_WORDS and not QWEN_PACE[0] <= pace <= QWEN_PACE[1]:
+                warnings.append(f"{clip.id}: segment {i + 1} took {pace:.2f} s a word: {text!r}")
+            pieces.append(speech)
+            if pause:
+                pieces.append(silence(pause))
+        pieces.append(silence(clip.tail()))
+        return peak_normalise(np.concatenate(pieces)), warnings
+
+
+def seed_torch(seed: int) -> None:
+    import torch
+
+    torch.manual_seed(seed)
 
 
 def dbfs(x: np.ndarray, level_db: float) -> np.ndarray:
@@ -434,14 +543,14 @@ def render_noise(clip: Clip) -> np.ndarray:
     raise ValueError(clip.noise)
 
 
-def write_flac(audio: np.ndarray, dest: Path, tag: str) -> None:
+def write_flac(audio: np.ndarray, dest: Path, tag: str, rate: int = SR) -> None:
     pcm = np.clip(np.round(audio * 32767), -32768, 32767).astype("<i2")
     with tempfile.TemporaryDirectory() as tmp:
         wav_path = Path(tmp) / "clip.wav"
         with wave.open(str(wav_path), "wb") as w:
             w.setnchannels(1)
             w.setsampwidth(2)
-            w.setframerate(SR)
+            w.setframerate(rate)
             w.writeframes(pcm.tobytes())
         subprocess.run(["flac", "--silent", "--force", "--best", "--no-padding", f"--tag=PSST_SYNTH={tag}",
                         "-o", str(dest), str(wav_path)], check=True)
@@ -463,15 +572,23 @@ def flac_seconds(path: Path) -> float:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--repo", type=Path, required=True)
-    ap.add_argument("--cache", type=Path, required=True, help="the psst cache directory (voices go under piper/)")
-    ap.add_argument("--piper-site", required=True, help="site-packages of the piper-tts package")
+    ap.add_argument("--cache", type=Path, required=True,
+                    help="the psst cache directory (Piper voices go under piper/, Qwen3-TTS models under hf/)")
+    ap.add_argument("--piper-site", help="site-packages of the piper-tts package")
+    ap.add_argument("--qwen", action="store_true",
+                    help="render the Qwen3-TTS clips (GPU) instead of the Piper and noise ones")
     ap.add_argument("--force", action="store_true", help="re-render every clip, even if its tag matches")
     ap.add_argument("--check", action="store_true", help="only check the sentences and list the plan")
     ap.add_argument("--evals", type=Path, help="the eval set to render (default: evals/ in --repo)")
     ap.add_argument("--probe", action="store_true",
                     help="the set is a term probe from scripts/lib/eval_terms.py: no noise cases, no rules")
     args = ap.parse_args()
-    sys.path.insert(0, args.piper_site)
+    if not args.qwen and not args.piper_site:
+        ap.error("--piper-site is needed without --qwen")
+    if args.qwen and args.probe:
+        ap.error("probes are rendered with Piper only")
+    if args.piper_site:
+        sys.path.insert(0, args.piper_site)
 
     evals = args.evals or args.repo / "evals"
     try:
@@ -485,7 +602,7 @@ def main() -> int:
         for problem in problems:
             print(f"error: {problem}", file=sys.stderr)
         return 1
-    clips = plan_clips(entries, noise=not args.probe)
+    clips = plan_clips(entries, probe=args.probe)
 
     if args.check:
         for c in clips:
@@ -494,14 +611,35 @@ def main() -> int:
 
     clip_dir = evals / "clips"
     clip_dir.mkdir(parents=True, exist_ok=True)
+    qwen = Qwen(args.cache, evals / "voices")
+    if args.qwen:
+        for voice in QWEN_VOICES:
+            if not qwen.voice_path(voice).exists():
+                print(f"designing the voice {voice}", file=sys.stderr)
+                qwen.design(voice)
+        for stale in sorted(qwen.voices.glob("*.flac")):
+            if stale.stem not in QWEN_VOICES:
+                print(f"removing {stale}", file=sys.stderr)
+                stale.unlink()
+    voice_shas = {v: sha256_file(qwen.voice_path(v)) for v in QWEN_VOICES if qwen.voice_path(v).exists()}
+
     rendered: set[str] = set()
+    skipped: set[str] = set()
+    warnings: list[str] = []
     for i, clip in enumerate(clips, 1):
         dest = clip_dir / f"{clip.id}.flac"
-        tag = clip.render_key()
+        tag = clip.render_key(voice_shas.get(clip.voice or "", ""))
+        if clip.qwen != args.qwen:
+            if clip_tag(dest) != tag:
+                skipped.add(clip.id)
+            continue
         if not args.force and clip_tag(dest) == tag:
             continue
         print(f"[{i}/{len(clips)}] {clip.id}", file=sys.stderr)
-        if clip.voice:
+        if clip.qwen:
+            audio, clip_warnings = qwen.render(clip)
+            warnings += clip_warnings
+        elif clip.voice:
             audio = render_speech(clip, fetch_voice(args.cache, VOICES[clip.voice][0]))
         else:
             audio = render_noise(clip)
@@ -526,13 +664,24 @@ def main() -> int:
     for clip in clips:
         base = clip.case()
         prev = old.get(clip.id)
+        if clip.id in skipped:
+            # The other engine's run renders it; until then its case stays as it was.
+            if (clip_dir / f"{clip.id}.flac").exists():
+                cases[clip.id] = prev or base
+            continue
         keep = prev and clip.id not in rendered and all(prev.get(k) == v for k, v in base.items())
         cases[clip.id] = prev if keep else base
     with open(cases_path, "w", encoding="utf-8") as f:
         for cid in sorted(cases):
             f.write(json.dumps(cases[cid], ensure_ascii=False, separators=(",", ":")) + "\n")
 
-    summarize(clips, clip_dir)
+    summarize([c for c in clips if (clip_dir / f"{c.id}.flac").exists()], clip_dir)
+    for warning in warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+    if skipped:
+        other = "scripts/synth-evals.sh" if args.qwen else "scripts/synth-evals.sh --qwen"
+        print(f"{len(skipped)} clips are missing or out of date and render with `{other}`, "
+              f"for example {min(skipped)}", file=sys.stderr)
     return 0
 
 
