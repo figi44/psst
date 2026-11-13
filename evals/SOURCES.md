@@ -87,7 +87,7 @@ attribution or share-alike terms. Voices with non-commercial data (`ryan`, `hfc_
 **The Czech voice is a caveat to settle before the repository goes public.** Piper has only one Czech voice. Its data
 is CC0 and the model is published under MIT, but it was fine-tuned from the `lessac` checkpoint, whose data (Blizzard
 2013, Voice Factory and Lessac Technologies) is under a [research-only licence](https://www.cstr.ed.ac.uk/projects/blizzard/2013/lessac_blizzard2013/license.html).
-Whether that reaches audio rendered by the fine-tuned model is unclear. If it's a problem, the 35 Czech clips
+Whether that reaches audio rendered by the fine-tuned model is unclear. If it's a problem, the 36 Czech clips
 (`syn-cs-*`) can be dropped or replaced by the author's own recordings without touching anything else.
 
 ### What is in the set
