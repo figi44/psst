@@ -322,6 +322,10 @@ async fn the_export_is_the_database_layer_in_dictionary_toml_format() {
         assert!(export.toml.lines().any(|l| l == line), "{line:?} in:\n{}", export.toml);
     }
     assert!(!export.toml.contains("fuzzy"), "keys at their default are left out:\n{}", export.toml);
+
+    let printed = admin(&server, &["dict", "export"]);
+    assert!(printed.status.success(), "{}", String::from_utf8_lossy(&printed.stderr));
+    assert_eq!(String::from_utf8(printed.stdout).unwrap(), export.toml, "`psst-server dict export` prints it");
 }
 
 #[tokio::test]

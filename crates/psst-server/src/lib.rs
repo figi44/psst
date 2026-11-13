@@ -300,6 +300,13 @@ enum Command {
         #[command(flatten)]
         connection: Connection,
     },
+    /// The dictionary's database layer.
+    Dict {
+        #[command(subcommand)]
+        action: DictAction,
+        #[command(flatten)]
+        connection: Connection,
+    },
     /// Print recent dictations.
     History {
         #[arg(long, default_value_t = 20)]
@@ -331,6 +338,13 @@ enum ModelAction {
     Unload,
     /// Show the model's state.
     Status,
+}
+
+#[derive(Debug, Subcommand)]
+enum DictAction {
+    /// Print the database layer in dictionary.toml's format, for moving it into the file
+    /// (the host config's settings.dictionary).
+    Export,
 }
 
 #[derive(Debug, Subcommand)]
@@ -366,6 +380,7 @@ pub fn main() -> ExitCode {
                 DevicesAction::Revoke { id } => admin::Action::DevicesRevoke { id },
             },
         ),
+        Command::Dict { action: DictAction::Export, connection } => admin(connection, admin::Action::DictExport),
         Command::Stats { connection } => admin(connection, admin::Action::Stats),
         Command::History { limit, connection } => admin(connection, admin::Action::History { limit }),
     }
