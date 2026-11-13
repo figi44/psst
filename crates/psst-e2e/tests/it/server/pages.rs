@@ -65,8 +65,12 @@ async fn every_dictionary_action_works_through_the_pages() {
     {
         assert!(page.body.contains(text), "{text} on the page: {}", page.body);
     }
+    assert!(page.body.contains("3 words psst spells your way"), "built-in words don't count: {}", page.body);
+    let built_in = page.body.find("Built into psst").expect("built-in words are listed apart");
+    assert!(page.body.find(">Kubernetes</a>") < Some(built_in), "{}", page.body);
+    assert!(page.body.find(">psst</a>") > Some(built_in), "{}", page.body);
     let panel = browser.get("/dictionary?word=hyprland").await;
-    assert!(panel.body.contains("value=\"hyper land\""), "the panel shows the heard spellings: {}", panel.body);
+    assert!(panel.body.contains("value=\"hyper land\" checked"), "the panel shows the misspellings: {}", panel.body);
     let found = browser.get("/dictionary?q=HYPER").await;
     let listed = |text: &str| found.body.contains(&format!(">{text}</a>"));
     assert!(listed("Hyprland") && !listed("Kubernetes"), "{}", found.body);
@@ -74,7 +78,8 @@ async fn every_dictionary_action_works_through_the_pages() {
 
     let fields = [
         ("text", "t3code"),
-        ("sounds_like", "t3 code, tee three code,"),
+        ("sounds_like", "t3 code"),
+        ("sounds_like", "tee three code, T3 Code,"),
         ("languages", ""),
         ("fuzzy", "on"),
         ("pin", "on"),
@@ -89,10 +94,12 @@ async fn every_dictionary_action_works_through_the_pages() {
     let refused = browser.post("/dictionary/terms", &[("text", "Hypr"), ("sounds_like", "hyper land")]).await;
     refused_with(&refused, "claim the spelling");
     assert!(refused.body.contains("value=\"Hypr\""), "the entered values are kept");
+    assert!(refused.body.contains("value=\"hyper land\" checked"), "the misspellings are kept");
 
     let edit = browser.get("/dictionary?word=HYPRLAND").await;
     assert!(edit.body.contains("action=\"/dictionary/terms/hyprland\""), "{}", edit.body);
-    let save = [("text", "Hyprland"), ("sounds_like", "hyper land, hyperland"), ("languages", "any")];
+    let save =
+        [("text", "Hyprland"), ("sounds_like", "hyper land"), ("sounds_like", "hyperland"), ("languages", "any")];
     see_other(&browser.post("/dictionary/terms/hyprland", &save).await, "/dictionary");
     let hyprland = view(&server).await.terms.into_iter().find(|t| t.id == "hyprland").unwrap();
     assert_eq!(hyprland.layer, TermLayer::Replaced);

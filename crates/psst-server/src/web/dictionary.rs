@@ -36,42 +36,23 @@ pub struct PageQuery {
     text: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct TermForm {
-    #[serde(default)]
     text: String,
-    #[serde(default)]
-    sounds_like: String,
-    #[serde(default)]
+    sounds_like: Vec<String>,
     languages: String,
-    #[serde(default, with = "checkbox")]
     fuzzy: bool,
-    #[serde(default, with = "checkbox")]
     pin: bool,
-    #[serde(default)]
     notes: String,
-    #[serde(default, skip_serializing)]
+    #[serde(skip_serializing)]
     q: String,
-}
-
-/// HTML forms send a ticked checkbox as `on` and leave an unticked one out.
-mod checkbox {
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S: Serializer>(value: &bool, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_bool(*value)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
-        Ok(!String::deserialize(deserializer)?.is_empty())
-    }
 }
 
 impl TermForm {
     fn of(term: &Term) -> TermForm {
         TermForm {
             text: term.text.clone(),
-            sounds_like: term.sounds_like.join(", "),
+            sounds_like: term.sounds_like.clone(),
             languages: term.languages.clone(),
             fuzzy: term.fuzzy,
             pin: term.pin,
@@ -80,17 +61,37 @@ impl TermForm {
         }
     }
 
+    /// Each misspelling comes as its own `sounds_like` field, and the one still being typed may hold
+    /// several, comma-separated, when the page runs without JavaScript. A ticked checkbox comes as
+    /// `on`; an unticked one doesn't come at all.
+    fn read(fields: Vec<(String, String)>) -> TermForm {
+        let mut form = TermForm::default();
+        for (name, value) in fields {
+            match name.as_str() {
+                "text" => form.text = value,
+                "sounds_like" => {
+                    for spelling in value.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                        if !form.sounds_like.iter().any(|s| term_id(s) == term_id(spelling)) {
+                            form.sounds_like.push(spelling.to_owned());
+                        }
+                    }
+                }
+                "languages" => form.languages = value,
+                "fuzzy" => form.fuzzy = !value.is_empty(),
+                "pin" => form.pin = !value.is_empty(),
+                "notes" => form.notes = value,
+                "q" => form.q = value,
+                _ => {}
+            }
+        }
+        form
+    }
+
     fn term(&self) -> Term {
         let languages = self.languages.trim();
         Term {
             text: self.text.trim().to_owned(),
-            sounds_like: self
-                .sounds_like
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(String::from)
-                .collect(),
+            sounds_like: self.sounds_like.clone(),
             languages: if languages.is_empty() { "any".into() } else { languages.to_owned() },
             fuzzy: self.fuzzy,
             pin: self.pin,
@@ -123,6 +124,8 @@ struct Row {
     text: String,
     hidden: bool,
     problem: bool,
+    #[serde(skip)]
+    built_in: bool,
 }
 
 fn row(term: &DictionaryTerm) -> Row {
@@ -131,6 +134,7 @@ fn row(term: &DictionaryTerm) -> Row {
         text: term.term.as_ref().map_or_else(|| term.id.clone(), |t| t.text.clone()),
         hidden: term.layer == TermLayer::Hidden,
         problem: term.problem.is_some(),
+        built_in: term.built_in,
     }
 }
 
@@ -189,10 +193,10 @@ fn page(state: &AppState, viewer: &Viewer, query: &PageQuery, outcome: Outcome) 
     let new = query.new.is_some() || outcome.error_for.as_deref() == Some("new");
 
     let listed: Vec<&DictionaryTerm> = view.terms.iter().filter(|t| t.term.is_some() && matches(t, q)).collect();
-    let mut shown: Vec<Row> = listed.iter().filter(|t| t.layer != TermLayer::Hidden).map(|t| row(t)).collect();
-    shown.sort_by_key(|r| r.id.clone());
-    let mut hidden: Vec<Row> = listed.iter().filter(|t| t.layer == TermLayer::Hidden).map(|t| row(t)).collect();
-    hidden.sort_by_key(|r| r.id.clone());
+    let mut rows: Vec<Row> = listed.iter().map(|t| row(t)).collect();
+    rows.sort_by_key(|r| r.id.clone());
+    let (hidden, shown): (Vec<Row>, Vec<Row>) = rows.into_iter().partition(|r| r.hidden);
+    let (built_in, mine): (Vec<Row>, Vec<Row>) = shown.into_iter().partition(|r| r.built_in);
     let attention: Vec<&DictionaryTerm> = view.terms.iter().filter(|t| t.problem.is_some()).collect();
     let exact = view.terms.iter().any(|t| t.term.as_ref().is_some_and(|term| term.text.eq_ignore_ascii_case(q.trim())));
 
@@ -225,8 +229,9 @@ fn page(state: &AppState, viewer: &Viewer, query: &PageQuery, outcome: Outcome) 
         .count();
     let ctx = context! {
         q,
-        total => view.terms.iter().filter(|t| t.term.is_some() && t.layer != TermLayer::Hidden).count(),
-        words => Value::from(Serde(shown)),
+        total => view.terms.iter().filter(|t| t.term.is_some() && t.layer != TermLayer::Hidden && !t.built_in).count(),
+        words => Value::from(Serde(mine)),
+        built_in => Value::from(Serde(built_in)),
         hidden => Value::from(Serde(hidden)),
         attention => attention.first().map(|t| t.id.clone()),
         attention_count => attention.len(),
@@ -341,9 +346,13 @@ fn bad_form(state: &AppState, viewer: &Viewer, err: FormRejection) -> Response {
     page(state, viewer, &PageQuery::default(), outcome)
 }
 
-pub async fn add(viewer: Viewer, State(state): State<AppRef>, form: Result<Form<TermForm>, FormRejection>) -> Response {
-    let Form(form) = match form {
-        Ok(form) => form,
+pub async fn add(
+    viewer: Viewer,
+    State(state): State<AppRef>,
+    form: Result<Form<Vec<(String, String)>>, FormRejection>,
+) -> Response {
+    let form = match form {
+        Ok(Form(fields)) => TermForm::read(fields),
         Err(err) => return bad_form(&state, &viewer, err),
     };
     match dictionary::change_term(&state.live, &state.db, Change::Add(form.term().into())) {
@@ -367,10 +376,10 @@ pub async fn save(
     viewer: Viewer,
     State(state): State<AppRef>,
     Path(id): Path<String>,
-    form: Result<Form<TermForm>, FormRejection>,
+    form: Result<Form<Vec<(String, String)>>, FormRejection>,
 ) -> Response {
-    let Form(form) = match form {
-        Ok(form) => form,
+    let form = match form {
+        Ok(Form(fields)) => TermForm::read(fields),
         Err(err) => return bad_form(&state, &viewer, err),
     };
     let id = term_id(&id);

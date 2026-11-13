@@ -5,6 +5,9 @@
 {%- macro chevron() -%}<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>{%- endmacro %}
 {%- macro alert() -%}<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4 2.8 19.5h18.4L12 4Z"/><path d="M12 10v4.5M12 17.2v.3"/></svg>{%- endmacro %}
 {%- macro close_icon() -%}<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>{%- endmacro %}
+{%- macro pill(spelling) -%}
+<li class="pill"><label><input type="checkbox" name="sounds_like" value="{{ spelling }}" checked><span>{{ spelling }}</span></label><button class="pill-x" type="button" aria-label="Remove “{{ spelling }}”">{{ close_icon() }}</button></li>
+{%- endmacro %}
 {%- macro word_link(w, q) -%}
 <li><a class="word{% if w.hidden %} off{% endif %}" href="/dictionary?word={{ w.id|segment }}{% if q %}&amp;q={{ q|segment }}{% endif %}">{{ w.text }}{% if w.problem %}{{ alert() }}<span class="state">not in use</span>{% endif %}</a></li>
 {%- endmacro %}
@@ -41,8 +44,15 @@
     {%- endif %}
     {%- if offer_add %}
     <p class="nomatch">{% if not words %}No word matches “{{ q }}”.{% endif %} <a class="btn" href="/dictionary?new=1&amp;text={{ q|segment }}&amp;q={{ q|segment }}">Add “{{ q }}”</a></p>
-    {%- elif not words and not hidden %}
+    {%- elif not words and not q %}
     <p class="sub">No words yet. Add one here, or fix a word from History.</p>
+    {%- endif %}
+    {%- if built_in %}
+    <section class="group" aria-labelledby="built-in-h">
+      <h2 class="group-h" id="built-in-h">Built into psst</h2>
+      <p class="hint">Every psst server knows these. Open one to change or hide it.</p>
+      <ul class="words">{% for w in built_in %}{{ word_link(w, q) }}{% endfor %}</ul>
+    </section>
     {%- endif %}
     {%- if hidden %}
     <details class="adv hidden-words"{% if q %} open{% endif %}>
@@ -76,14 +86,21 @@
       <p class="sub">{{ panel.source }}</p>
       {%- else %}
       <div class="field">
-        <label for="w-text">Write it as</label>
+        <label for="w-text">Word</label>
         <input class="input" id="w-text" name="text" value="{{ panel.fields.text }}" required autocomplete="off" spellcheck="false"{% if panel.new %} autofocus{% endif %}>
         <p class="hint">Exactly as psst should write it.</p>
       </div>
       <div class="field">
-        <label for="w-heard">Whisper hears it as</label>
-        <input class="input" id="w-heard" name="sounds_like" value="{{ panel.fields.sounds_like }}" autocomplete="off" spellcheck="false" placeholder="e.g. hyper land">
-        <p class="hint">psst replaces these with {{ panel.fields.text or "this word" }}. Separate them with commas.</p>
+        <label for="w-heard">Misspellings to correct <span class="opt">Optional</span></label>
+        <div class="pills" data-pills>
+          <ul class="pills-list">
+            {%- for spelling in panel.fields.sounds_like %}{{ pill(spelling) }}{% endfor -%}
+          </ul>
+          <input id="w-heard" name="sounds_like" autocomplete="off" spellcheck="false" enterkeyhint="done" aria-describedby="w-heard-hint"
+                 placeholder="{% if panel.fields.sounds_like %}Add another{% else %}e.g. hyper land{% endif %}" data-empty="e.g. hyper land" data-more="Add another">
+          <template>{{ pill("") }}</template>
+        </div>
+        <p class="hint" id="w-heard-hint">{% if panel.new %}Leave it empty to just add the word. {% endif %}psst writes <b data-echo="w-text" data-fallback="the word">{{ panel.fields.text or "the word" }}</b> in place of each of these<span class="if-js">; press Enter after each one</span><span class="if-nojs">; separate them with commas</span>.</p>
         {%- if panel.common %}
         <p class="hint">“{{ panel.common|join("”, “") }}” {% if panel.common|length == 1 %}is a common word{% else %}are common words{% endif %}, so psst changes {% if panel.common|length == 1 %}it{% else %}them{% endif %} every time you say {% if panel.common|length == 1 %}it{% else %}them{% endif %}.</p>
         {%- endif %}
@@ -97,7 +114,7 @@
             <datalist id="languages">{% for language in languages %}<option value="{{ language }}">{% endfor %}</datalist>
             <p class="hint">“any”, or one code like en or cs to use it only in dictations in that language.</p>
           </div>
-          <label class="check"><input type="checkbox" name="fuzzy" value="on"{% if panel.fields.fuzzy %} checked{% endif %}><span class="t">Catch close spellings</span><span class="d">Also fixes spellings close to {{ panel.fields.text or "the word" }}, even ones not listed above. Works in English dictations.</span></label>
+          <label class="check"><input type="checkbox" name="fuzzy" value="on"{% if panel.fields.fuzzy %} checked{% endif %}><span class="t">Catch close spellings</span><span class="d">Also fixes spellings close to <span data-echo="w-text" data-fallback="the word">{{ panel.fields.text or "the word" }}</span>, even ones not listed above. Works in English dictations.</span></label>
           <label class="check"><input type="checkbox" name="pin" value="on"{% if panel.fields.pin %} checked{% endif %}><span class="t">Always hint it to Whisper</span><span class="d">Whisper gets a short list of your words before it listens. Words with this on always make the list.</span></label>
           <div class="field">
             <label for="w-notes">Notes</label>

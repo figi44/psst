@@ -118,10 +118,45 @@
     paint();
   }
 
+  // A word's misspellings: Enter or a comma turns what's typed into a pill.
+  var entryOf = function (box) { return $(":scope > input", box); };
+  function placeholder(box) {
+    var entry = entryOf(box);
+    entry.placeholder = $(".pill", box) ? entry.dataset.more : entry.dataset.empty;
+  }
+  function addPills(box, typed) {
+    typed.split(",").forEach(function (part) {
+      var text = part.replace(/\s+/g, " ").trim();
+      if (!text) return;
+      var same = $$(".pill input", box).filter(function (el) { return norm(el.value) === norm(text); })[0];
+      if (same) {
+        var old = same.closest(".pill");
+        old.classList.remove("dup");
+        void old.offsetWidth;
+        old.classList.add("dup");
+        return;
+      }
+      var pill = $("template", box).content.firstElementChild.cloneNode(true);
+      $("input", pill).value = text;
+      $("span", pill).textContent = text;
+      $(".pill-x", pill).setAttribute("aria-label", "Remove “" + text + "”");
+      $(".pills-list", box).appendChild(pill);
+    });
+    placeholder(box);
+  }
+
   document.addEventListener("click", function (ev) {
     var t = ev.target;
     var menu = $("details.menu[open]");
     if (menu && !t.closest("details.menu")) menu.open = false;
+
+    var pills = t.closest("[data-pills]");
+    if (pills) {
+      var x = t.closest(".pill-x");
+      if (x) x.closest(".pill").remove();
+      if (x || !t.closest(".pill")) { placeholder(pills); entryOf(pills).focus(); }
+      return;
+    }
 
     var grow = t.closest("[data-grow]");
     if (grow && pick) {
@@ -173,6 +208,15 @@
   });
 
   document.addEventListener("input", function (ev) {
+    var t = ev.target;
+    var box = t.closest && t.closest("[data-pills]");
+    if (box && t === entryOf(box) && t.value.indexOf(",") >= 0) {
+      var parts = t.value.split(",");
+      t.value = parts.pop().replace(/^\s+/, "");
+      addPills(box, parts.join(","));
+    }
+    if (t.id) $$("[data-echo]").forEach(function (el) { if (el.dataset.echo === t.id) el.textContent = t.value.trim() || el.dataset.fallback; });
+
     var form = ev.target.closest && ev.target.closest("form.fix");
     if (form) {
       if (ev.target.name === "written") form.dataset.prefill = "";
@@ -215,6 +259,25 @@
         drop();
         if (box) box.open = false;
         text.focus();
+      }
+      return;
+    }
+    var pills = t.closest && t.closest("[data-pills]");
+    if (pills && t === entryOf(pills) && !ev.isComposing) {
+      // Enter with nothing typed is left to submit the form.
+      if (ev.key === "Enter" && t.value.trim()) {
+        ev.preventDefault();
+        addPills(pills, t.value);
+        t.value = "";
+      } else if (ev.key === "Backspace" && !t.value) {
+        // Takes the last pill back into the field, to fix it rather than lose it.
+        var last = $$(".pill", pills).pop();
+        if (last) {
+          ev.preventDefault();
+          t.value = $("input", last).value;
+          last.remove();
+          placeholder(pills);
+        }
       }
       return;
     }
