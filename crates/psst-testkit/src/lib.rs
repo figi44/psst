@@ -7,13 +7,15 @@
 //! [`fake_server`] is a scripted stand-in for the server, for client and daemon tests that need
 //! to stall it, delay `ready` or refuse connections on demand.
 //!
-//! Wayland tests run in a [`Sandbox`] ([`nested_niri`] or [`headless_sway`]). Nothing here ever
-//! connects to the live session.
+//! Wayland tests run in a [`Sandbox`] ([`nested_niri`] or [`headless_sway`]); [`wayland`] has
+//! in-process clients that stand in for apps, clipboard managers, a keyboard and a screenshot
+//! tool. Nothing here ever connects to the live session.
 
 pub mod fake_server;
 pub mod guard;
 mod sandbox;
 mod tools;
+pub mod wayland;
 
 pub use sandbox::{Compositor, Sandbox, headless_sway, nested_niri};
 

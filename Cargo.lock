@@ -1973,6 +1973,10 @@ dependencies = [
  "tokio-tungstenite 0.30.0",
  "toml",
  "uuid",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-misc",
+ "wayland-protocols-wlr",
 ]
 
 [[package]]
