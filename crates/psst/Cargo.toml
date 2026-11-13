@@ -10,7 +10,25 @@ publish.workspace = true
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
+cpal = { version = "0.18.2", features = ["pipewire"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
+jiff = { version = "0.2.39", features = ["serde"] }
 psst-client = { version = "0.1.0", path = "../psst-client" }
 psst-config = { version = "0.1.0", path = "../psst-config" }
 psst-proto = { version = "0.1.0", path = "../psst-proto" }
 psst-wayland = { version = "0.1.0", path = "../psst-wayland" }
+rtrb = "0.4.1"
+rubato = "5.0.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["rt", "net", "sync", "time", "macros", "signal", "fs", "io-util"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+uuid = { version = "1.29.0", features = ["v4", "serde"] }
+zbus = { version = "6.2.1", default-features = false, features = ["proxy", "tokio"] }
+
+[dev-dependencies]
+psst-testkit = { path = "../psst-testkit" }
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time"] }

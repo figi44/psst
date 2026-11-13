@@ -3,12 +3,17 @@
 //!
 //! Tests pass freshly built binaries: `psst-e2e` gives `env!("CARGO_BIN_EXE_psst-server-e2e")`
 //! and `env!("CARGO_BIN_EXE_psst-e2e-daemon")`.
+//!
+//! [`fake_server`] is a scripted stand-in for the server, for client and daemon tests that need
+//! to stall it, delay `ready` or refuse connections on demand.
+
+pub mod fake_server;
 
 use std::{
     ffi::{OsStr, OsString},
     fs,
     net::{SocketAddr, TcpListener},
-    os::unix::net::UnixStream,
+    os::unix::{fs::PermissionsExt, net::UnixStream},
     path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
     thread,
@@ -203,12 +208,36 @@ impl Sandbox {
         PathBuf::from(self.var(name).unwrap_or_else(|| panic!("sandbox has no {name}")))
     }
 
-    /// A command with the sandbox's environment, and `WAYLAND_SOCKET` and `DISPLAY` cleared.
+    /// A command with the sandbox's environment. `WAYLAND_SOCKET` and `DISPLAY` are cleared, and
+    /// so are `WAYLAND_DISPLAY` and `NIRI_SOCKET` unless the sandbox sets them.
     pub fn command(&self, program: impl AsRef<OsStr>) -> Command {
         let mut command = Command::new(program);
-        command.env_remove("WAYLAND_SOCKET").env_remove("DISPLAY").envs(self.env.iter().map(|(k, v)| (k, v)));
+        isolate(&mut command, &self.env);
         command
     }
+
+    /// A sandbox without a compositor: its own `XDG_RUNTIME_DIR`, `XDG_STATE_HOME` and
+    /// `XDG_CONFIG_HOME`, and no `WAYLAND_DISPLAY` or `NIRI_SOCKET`. For daemon tests that use
+    /// the `[insert] record` seam instead of Wayland.
+    pub fn headless() -> Sandbox {
+        let root = tempfile::Builder::new().prefix("psst-sandbox-").tempdir().expect("temp dir");
+        let mut env = Vec::new();
+        for (var, sub) in [("XDG_RUNTIME_DIR", "runtime"), ("XDG_STATE_HOME", "state"), ("XDG_CONFIG_HOME", "config")] {
+            let dir = root.path().join(sub);
+            fs::create_dir(&dir).expect("create sandbox dir");
+            env.push((OsString::from(var), dir.into_os_string()));
+        }
+        fs::set_permissions(root.path().join("runtime"), fs::Permissions::from_mode(0o700)).expect("chmod runtime");
+        Sandbox { root, env, compositor: None }
+    }
+}
+
+/// Clears every variable that could reach the live session, then applies `env`.
+fn isolate(command: &mut Command, env: &[(OsString, OsString)]) {
+    for var in ["WAYLAND_SOCKET", "DISPLAY", "WAYLAND_DISPLAY", "NIRI_SOCKET"] {
+        command.env_remove(var);
+    }
+    command.envs(env.iter().map(|(k, v)| (k, v)));
 }
 
 impl Drop for Sandbox {
@@ -286,13 +315,9 @@ pub fn spawn_daemon(bin: &Path, sandbox: &Sandbox, cfg: TestClientConfig) -> Tes
 impl TestDaemon {
     /// Runs `psst <args>` (for example `toggle`) against this daemon and waits for it.
     pub fn run(&self, args: &[&str]) -> Output {
-        Command::new(&self.bin)
-            .args(args)
-            .env_remove("WAYLAND_SOCKET")
-            .env_remove("DISPLAY")
-            .envs(self.command_env.iter().map(|(k, v)| (k, v)))
-            .output()
-            .unwrap_or_else(|err| panic!("cannot run {}: {err}", self.bin.display()))
+        let mut command = Command::new(&self.bin);
+        isolate(&mut command, &self.command_env);
+        command.args(args).output().unwrap_or_else(|err| panic!("cannot run {}: {err}", self.bin.display()))
     }
 
     /// `$XDG_STATE_HOME/psst`: recordings, `last.json`, credentials.
@@ -339,4 +364,32 @@ fn wait_for_socket(child: &mut Child, socket: &Path, log: &Path) {
         }
         thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// Writes `samples` as a 16 kHz mono 16-bit WAV file, like the daemon's recordings.
+pub fn write_wav(path: &Path, samples: &[i16]) {
+    let data_len = (samples.len() * 2) as u32;
+    let mut bytes = Vec::with_capacity(44 + samples.len() * 2);
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    bytes.extend_from_slice(&1u16.to_le_bytes()); // mono
+    bytes.extend_from_slice(&16_000u32.to_le_bytes());
+    bytes.extend_from_slice(&32_000u32.to_le_bytes());
+    bytes.extend_from_slice(&2u16.to_le_bytes());
+    bytes.extend_from_slice(&16u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&data_len.to_le_bytes());
+    for sample in samples {
+        bytes.extend_from_slice(&sample.to_le_bytes());
+    }
+    fs::write(path, bytes).unwrap_or_else(|err| panic!("cannot write {}: {err}", path.display()));
+}
+
+/// `ms` milliseconds of distinct, recognisable 16 kHz audio: a ramp that never repeats within
+/// 4 s, so order and gaps show up when comparing.
+pub fn test_audio(ms: u32) -> Vec<i16> {
+    (0..ms as usize * 16).map(|i| ((i % 64_000) as i32 - 32_000) as i16).collect()
 }

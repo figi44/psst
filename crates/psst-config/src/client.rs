@@ -18,6 +18,9 @@ pub struct ClientConfig {
     pub overlay: OverlayConfig,
     /// Paste rules by Wayland app id.
     pub apps: BTreeMap<String, AppRule>,
+    /// Test seam: where inserted text goes instead of Wayland.
+    #[serde(skip_serializing_if = "InsertConfig::is_default")]
+    pub insert: InsertConfig,
 }
 
 impl Default for ClientConfig {
@@ -29,6 +32,7 @@ impl Default for ClientConfig {
             audio: AudioConfig::default(),
             overlay: OverlayConfig::default(),
             apps: BTreeMap::new(),
+            insert: InsertConfig::default(),
         }
     }
 }
@@ -130,6 +134,23 @@ impl TryFrom<String> for AudioInput {
 impl From<AudioInput> for String {
     fn from(input: AudioInput) -> Self {
         input.to_string()
+    }
+}
+
+/// `[insert]`, a test seam.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct InsertConfig {
+    /// When set, the daemon never connects to Wayland: every command it would send the Wayland
+    /// thread (overlay, clipboard snapshot, paste, copy) is appended to this file as one JSON
+    /// line, and pastes and copies succeed at once.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record: Option<PathBuf>,
+}
+
+impl InsertConfig {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
     }
 }
 
@@ -281,6 +302,9 @@ impl ConfigFile for ClientConfig {
         }
         if self.overlay.width == 0 || self.overlay.height == 0 {
             return Err("overlay.width and overlay.height must be at least 1".into());
+        }
+        if self.insert.record.as_ref().is_some_and(|path| !path.is_absolute()) {
+            return Err("insert.record must be an absolute path".into());
         }
         Ok(())
     }

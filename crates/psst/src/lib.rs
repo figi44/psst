@@ -2,15 +2,36 @@
 //! talks to it over `$XDG_RUNTIME_DIR/psst/daemon.sock` (plan 9).
 //!
 //! [`main`] is the whole `psst` program, so the thin binary and `psst-e2e`'s `psst-e2e-daemon`
-//! run the same code.
+//! run the same code. [`daemon::spawn`] runs the daemon inside another program with its
+//! dependencies ([`daemon::Deps`]) swapped for tests.
 //!
-//! This is the contract stub: the commands parse; their behaviour arrives with the client work
-//! package.
+//! | Module | What |
+//! |---|---|
+//! | [`daemon`] | the state machine, connection and delivery |
+//! | [`audio`] | capture (cpal, or a WAV file), resampling, the recording file |
+//! | [`store`] | recordings, `last.json`, recovery and retention |
+//! | [`ipc`] | the command socket |
+//! | [`ui`] | the seam to the Wayland thread |
+//! | [`niri`] | the focused window, for the paste chord |
+//! | [`pair`] | `psst pair` and the credentials file |
 
-use std::process::ExitCode;
+pub mod audio;
+pub mod daemon;
+pub mod ipc;
+mod logind;
+pub mod niri;
+pub mod pair;
+mod sound;
+pub mod store;
+pub mod ui;
+
+use std::{env, path::PathBuf, process::ExitCode, sync::Arc};
 
 use clap::{Parser, Subcommand};
+use psst_config::{ClientConfig, ConfigFile};
 use psst_proto::{Endpoint, SessionId};
+
+use crate::ipc::Request;
 
 #[derive(Debug, Parser)]
 #[command(name = "psst", version, about = "Dictation for Wayland, transcribed by a psst server")]
@@ -66,19 +87,109 @@ enum Command {
 
 /// The `psst` program.
 pub fn main() -> ExitCode {
-    let command = match Cli::parse().command {
-        Command::Daemon => "daemon",
-        Command::Toggle { .. } => "toggle",
-        Command::Start => "start",
-        Command::Stop => "stop",
-        Command::Cancel => "cancel",
-        Command::Retry { .. } => "retry",
-        Command::PasteLast { .. } => "paste-last",
-        Command::CopyLast { .. } => "copy-last",
-        Command::Discard { .. } => "discard",
-        Command::Status { .. } => "status",
-        Command::Pair { .. } => "pair",
+    let cli = Cli::parse();
+    let result = match cli.command {
+        Command::Daemon => run_daemon(),
+        Command::Pair { server, code } => pair(&server, &code),
+        Command::Toggle { profile } => command(Request::Toggle { profile }, false),
+        Command::Start => command(Request::Start, false),
+        Command::Stop => command(Request::Stop, false),
+        Command::Cancel => command(Request::Cancel, false),
+        Command::Retry { session } => command(Request::Retry { session }, false),
+        Command::PasteLast { session } => command(Request::PasteLast { session }, false),
+        Command::CopyLast { session } => command(Request::CopyLast { session }, false),
+        Command::Discard { session } => command(Request::Discard { session }, false),
+        Command::Status { json } => command(Request::Status, json),
     };
-    eprintln!("psst: `{command}` is not implemented yet");
-    ExitCode::FAILURE
+    match result {
+        Ok(code) => code,
+        Err(err) => {
+            eprintln!("psst: {err:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `$XDG_STATE_HOME/psst`, else `~/.local/state/psst`.
+pub fn state_dir() -> anyhow::Result<PathBuf> {
+    let base = env::var_os("XDG_STATE_HOME")
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
+        .ok_or_else(|| anyhow::anyhow!("neither XDG_STATE_HOME nor HOME is set"))?;
+    Ok(base.join("psst"))
+}
+
+/// `$XDG_RUNTIME_DIR/psst/daemon.sock`.
+pub fn socket_path() -> anyhow::Result<PathBuf> {
+    let runtime = env::var_os("XDG_RUNTIME_DIR")
+        .filter(|dir| !dir.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("XDG_RUNTIME_DIR isn't set"))?;
+    Ok(PathBuf::from(runtime).join("psst").join("daemon.sock"))
+}
+
+fn command(request: Request, json: bool) -> anyhow::Result<ExitCode> {
+    let socket = socket_path()?;
+    let response = ipc::call(&socket, &request).map_err(|err| {
+        anyhow::anyhow!("cannot reach the daemon at {} ({err}); is `psst daemon` running?", socket.display())
+    })?;
+    match (&response.status, json) {
+        (Some(status), true) => println!("{}", serde_json::to_string_pretty(status)?),
+        (Some(status), false) => print!("{}", status.render()),
+        (None, _) if response.ok => println!("{}", response.message),
+        (None, _) => eprintln!("psst: {}", response.message),
+    }
+    Ok(if response.ok { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+}
+
+fn pair(server: &Endpoint, code: &str) -> anyhow::Result<ExitCode> {
+    let creds = pair::redeem(server, code, &pair::hostname()).map_err(anyhow::Error::msg)?;
+    let dir = state_dir()?;
+    store::Store::open(&dir)?;
+    let path = dir.join("credentials");
+    creds.save(&path)?;
+    println!("paired with {server} as device {}; token saved in {}", creds.device_id, path.display());
+    if let Some(config) = ClientConfig::default_path()
+        && let Ok(cfg) = ClientConfig::load_or_default(&config)
+        && cfg.server != *server
+    {
+        println!("note: client.toml uses server = \"{}\"; set it to \"{server}\" to use this pairing", cfg.server);
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_daemon() -> anyhow::Result<ExitCode> {
+    let filter = tracing_subscriber::EnvFilter::try_from_env("PSST_LOG")
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    tracing_subscriber::fmt().with_env_filter(filter).with_writer(std::io::stderr).with_target(false).init();
+
+    let config_path = ClientConfig::default_path().ok_or_else(|| anyhow::anyhow!("cannot find client.toml"))?;
+    let cfg = ClientConfig::load_or_default(&config_path)?;
+    let paths = daemon::Paths { state_dir: state_dir()?, socket: socket_path()? };
+    let wayland: Box<dyn ui::Wayland> = match &cfg.insert.record {
+        Some(path) => Box::new(ui::RecordingWayland { path: path.clone() }),
+        None => Box::new(ui::DesktopWayland),
+    };
+    let deps = daemon::Deps {
+        audio: audio::source_for(&cfg.audio.input),
+        wayland,
+        sound: Arc::new(sound::play_error),
+        niri_socket: env::var_os("NIRI_SOCKET").filter(|s| !s.is_empty()).map(PathBuf::from),
+        timing: daemon::Timing::default(),
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    runtime.block_on(async {
+        let handle = daemon::spawn(cfg, paths.clone(), deps).await?;
+        tracing::info!("psst daemon listening on {}", paths.socket.display());
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            _ = term.recv() => {}
+            _ = tokio::signal::ctrl_c() => {}
+        }
+        tracing::info!("stopping");
+        handle.shutdown().await;
+        let _ = std::fs::remove_file(&paths.socket);
+        Ok::<_, anyhow::Error>(())
+    })?;
+    Ok(ExitCode::SUCCESS)
 }
