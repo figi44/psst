@@ -1888,6 +1888,7 @@ dependencies = [
  "psst-wayland",
  "rtrb",
  "rubato",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

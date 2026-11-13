@@ -16,6 +16,13 @@
 //! connection, a rejection, `ready` later than 1 s, a lost session, a full frame buffer) goes
 //! offline and keeps recording to its file; at `stop` it's uploaded once with its own
 //! `session_id` and `resume: true`. If that fails too, it stays on disk for `psst retry`.
+//!
+//! **Followers.** `psst status --follow` subscribes on the command socket. After every input the
+//! daemon compares a cheap summary of its state with the last one it published, and only when it
+//! differs builds the full [`Status`] (which reads the recordings directory) and publishes it on a
+//! watch channel. Each follower's connection task writes the latest status, at most once per
+//! [`Timing::follow_interval`], so bursts arrive as one line and a follower that stops reading
+//! stalls only its own task.
 
 use std::{collections::VecDeque, path::PathBuf, sync::Arc, time::Duration};
 
@@ -31,7 +38,7 @@ use psst_proto::{
 use psst_wayland::{Chord, OverlayState, WaylandCmd, WaylandEvent};
 use tokio::{
     net::UnixListener,
-    sync::{mpsc, oneshot},
+    sync::{mpsc, oneshot, watch},
     time::{Instant, sleep_until},
 };
 use tracing::{debug, info, warn};
@@ -73,6 +80,9 @@ pub struct Timing {
     /// Longest the focused-window lookup over niri's IPC may take before the paste falls back to
     /// Ctrl+V.
     pub niri_lookup: Duration,
+    /// Least time between two status lines to a follower (`psst status --follow`); changes in
+    /// between are coalesced into the next line.
+    pub follow_interval: Duration,
 }
 
 impl Default for Timing {
@@ -89,6 +99,7 @@ impl Default for Timing {
             done_shown: Duration::from_millis(800),
             notice_shown: Duration::from_secs(4),
             niri_lookup: niri::TIMEOUT,
+            follow_interval: Duration::from_millis(100),
         }
     }
 }
@@ -117,6 +128,7 @@ pub struct Paths {
 pub struct DaemonHandle {
     tx: mpsc::UnboundedSender<Input>,
     task: tokio::task::JoinHandle<()>,
+    listener: tokio::task::JoinHandle<()>,
 }
 
 impl DaemonHandle {
@@ -129,13 +141,16 @@ impl DaemonHandle {
         rx.await.unwrap_or_else(|_| Response::err("the daemon has stopped"))
     }
 
-    /// Stops: a recording in progress is finished and kept for `psst retry`.
+    /// Stops: a recording in progress is finished and kept for `psst retry`, followers are
+    /// disconnected, and the command socket stops accepting connections.
     pub async fn shutdown(self) {
         let (tx, rx) = oneshot::channel();
         if self.tx.send(Input::Shutdown(tx)).is_ok() {
             let _ = rx.await;
         }
         let _ = self.task.await;
+        self.listener.abort();
+        let _ = self.listener.await;
     }
 }
 
@@ -154,7 +169,7 @@ pub async fn spawn(cfg: ClientConfig, paths: Paths, deps: Deps) -> anyhow::Resul
     }
     let (tx, rx) = mpsc::unbounded_channel();
     let (wayland_tx, wayland_rx) = mpsc::unbounded_channel();
-    tokio::spawn(serve_socket(listener, tx.clone()));
+    let listener = tokio::spawn(serve_socket(listener, tx.clone(), deps.timing.follow_interval));
     let (resumed_tx, mut resumed_rx) = mpsc::unbounded_channel();
     tokio::spawn(crate::logind::watch(resumed_tx));
     let resumed_input = tx.clone();
@@ -168,7 +183,7 @@ pub async fn spawn(cfg: ClientConfig, paths: Paths, deps: Deps) -> anyhow::Resul
     let mut core = Core::new(cfg, store, deps, tx.clone(), wayland_tx, paths);
     core.connect(core.t.resume_budget, AttemptKind::Connect);
     let task = tokio::spawn(core.run(rx, wayland_rx));
-    Ok(DaemonHandle { tx, task })
+    Ok(DaemonHandle { tx, task, listener })
 }
 
 fn bind_socket(path: &std::path::Path) -> anyhow::Result<UnixListener> {
@@ -184,18 +199,29 @@ fn bind_socket(path: &std::path::Path) -> anyhow::Result<UnixListener> {
     Ok(UnixListener::bind(path)?)
 }
 
-async fn serve_socket(listener: UnixListener, tx: mpsc::UnboundedSender<Input>) {
+async fn serve_socket(listener: UnixListener, tx: mpsc::UnboundedSender<Input>, follow_interval: Duration) {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     loop {
         let Ok((stream, _)) = listener.accept().await else { continue };
         let tx = tx.clone();
         tokio::spawn(async move {
             let (read, mut write) = stream.into_split();
+            let mut read = BufReader::new(read);
             let mut line = String::new();
-            if BufReader::new(read).read_line(&mut line).await.is_err() {
+            if read.read_line(&mut line).await.is_err() {
                 return;
             }
             let response = match serde_json::from_str::<Request>(&line) {
+                Ok(Request::Follow) => {
+                    let (reply_tx, reply_rx) = oneshot::channel();
+                    // A stopping daemon drops the reply, which closes the connection.
+                    if tx.send(Input::Follow(reply_tx)).is_ok()
+                        && let Ok(status) = reply_rx.await
+                    {
+                        serve_follower(status, read, write, follow_interval).await;
+                    }
+                    return;
+                }
                 Ok(request) => {
                     let (reply_tx, reply_rx) = oneshot::channel();
                     if tx.send(Input::Request(request, reply_tx)).is_err() {
@@ -209,6 +235,40 @@ async fn serve_socket(listener: UnixListener, tx: mpsc::UnboundedSender<Input>) 
             out.push('\n');
             let _ = write.write_all(out.as_bytes()).await;
         });
+    }
+}
+
+/// One `follow` connection: the status now, then after each change, at most once per `interval`.
+/// Only this task waits on a follower that stops reading; the watch channel keeps just the latest
+/// status, so the daemon never does. It ends when the follower hangs up or the daemon stops.
+async fn serve_follower(
+    mut status: watch::Receiver<Status>,
+    mut read: impl tokio::io::AsyncRead + Unpin,
+    mut write: impl tokio::io::AsyncWrite + Unpin,
+    interval: Duration,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut buf = [0u8; 64];
+    loop {
+        let mut line = serde_json::to_string(&*status.borrow_and_update()).expect("statuses serialise");
+        line.push('\n');
+        if write.write_all(line.as_bytes()).await.is_err() {
+            return;
+        }
+        let earliest = Instant::now() + interval;
+        loop {
+            tokio::select! {
+                changed = status.changed() => match changed {
+                    Ok(()) => break,
+                    Err(_) => return,
+                },
+                // The follower sends nothing after its request: this is it hanging up.
+                read = read.read(&mut buf) => if matches!(read, Ok(0) | Err(_)) {
+                    return;
+                },
+            }
+        }
+        sleep_until(earliest).await;
     }
 }
 
@@ -235,6 +295,8 @@ enum Input {
         app_id: Option<String>,
     },
     Resumed,
+    /// A follower subscribes to the status.
+    Follow(oneshot::Sender<watch::Receiver<Status>>),
     Shutdown(oneshot::Sender<()>),
 }
 
@@ -428,6 +490,12 @@ struct Core {
     awaiting_shown: Option<SessionId>,
     last_timings: Option<ClientTimings>,
     stopping: Option<(oneshot::Sender<()>, Instant)>,
+
+    /// The status followers see.
+    follow: watch::Sender<Status>,
+    /// What the published status was built from: [`Core::status_summary`] and the store's
+    /// revision.
+    published: Option<(Status, u64)>,
 }
 
 impl Core {
@@ -470,6 +538,8 @@ impl Core {
             awaiting_shown: None,
             last_timings: None,
             stopping: None,
+            follow: watch::Sender::new(Status::stopped()),
+            published: None,
         }
     }
 
@@ -495,6 +565,7 @@ impl Core {
                 }
             }
             self.pump();
+            self.publish();
         }
         if let Some((reply, _)) = self.stopping.take() {
             let _ = reply.send(());
@@ -522,6 +593,13 @@ impl Core {
                     client.close();
                 }
                 self.connect(self.t.resume_budget, AttemptKind::Connect);
+            }
+            Input::Follow(reply) => {
+                if self.stopping.is_none() {
+                    let status = self.follow.subscribe();
+                    self.publish();
+                    let _ = reply.send(status);
+                }
             }
             Input::Shutdown(reply) => {
                 if let Some(rec) = &mut self.recording {
@@ -563,6 +641,7 @@ impl Core {
             Request::CopyLast { session } => self.redeliver(session, true),
             Request::Discard { session } => self.discard(session),
             Request::Status => Response { status: Some(self.status()), ..Response::ok("ok") },
+            Request::Follow => Response::err("follow works only over the command socket"),
         }
     }
 
@@ -747,6 +826,11 @@ impl Core {
     }
 
     fn status(&self) -> Status {
+        self.complete_status(self.status_summary())
+    }
+
+    /// The status without the saved recordings and their warnings, which come from the disk.
+    fn status_summary(&self) -> Status {
         let state = if self.inserting.is_some() {
             "inserting"
         } else if let Some(rec) = &self.recording {
@@ -762,16 +846,44 @@ impl Core {
             (_, _, Some(err)) => format!("offline: {err}"),
             _ => "offline".into(),
         };
-        let info = |d: &Dictation| ActiveInfo { session_id: d.id, profile: d.profile.clone(), phase: d.phase_text() };
+        let info = |d: &Dictation| ActiveInfo {
+            session_id: d.id,
+            profile: d.profile.clone(),
+            phase: d.phase_text(),
+            offline: match &d.net {
+                Net::Offline(reason) => Some(reason.clone()),
+                _ => None,
+            },
+        };
+        let now = Instant::now();
+        let error = match &self.notice {
+            Some((OverlayState::Error { message }, until)) if *until > now => Some(message.clone()),
+            _ => None,
+        };
+        Status {
+            state: state.into(),
+            connection,
+            error,
+            recording: self.recording.as_ref().map(info),
+            finishing: self.pipeline.iter().map(info).collect(),
+            retained: Vec::new(),
+            warnings: Vec::new(),
+            last_timings: self.last_timings,
+        }
+    }
+
+    /// `summary` with the saved recordings and their warnings.
+    fn complete_status(&self, mut summary: Status) -> Status {
         let retained = self.store.list();
-        let warnings = self.store.warnings(&retained);
-        let retained = retained
+        summary.warnings = self.store.warnings(&retained);
+        summary.retained = retained
             .into_iter()
             .map(|r| {
+                let in_progress = self.in_flight(r.id);
                 let hint = match r.meta.state {
                     RecState::Transcribed => format!("psst paste-last --session {}", r.id),
-                    RecState::Recording if self.in_flight(r.id) => "recording now".into(),
-                    _ if self.in_flight(r.id) => "in progress".into(),
+                    RecState::Recording if in_progress => "recording now".into(),
+                    _ if in_progress => "in progress".into(),
                     _ => format!("psst retry --session {}", r.id),
                 };
                 RetainedInfo {
@@ -786,18 +898,34 @@ impl Core {
                     gapped: r.meta.gapped,
                     text: r.meta.final_text,
                     hint,
+                    in_progress,
                 }
             })
             .collect();
-        Status {
-            state: state.into(),
-            connection,
-            recording: self.recording.as_ref().map(info),
-            finishing: self.pipeline.iter().map(info).collect(),
-            retained,
-            warnings,
-            last_timings: self.last_timings,
+        summary
+    }
+
+    /// Publishes the status to followers if it changed. The summary is cheap, so this runs after
+    /// every input (audio frames included); the recordings directory is read only when the
+    /// summary or the store changed.
+    fn publish(&mut self) {
+        if self.follow.receiver_count() == 0 {
+            self.published = None;
+            return;
         }
+        let key = (self.status_summary(), self.store.revision());
+        if self.published.as_ref() == Some(&key) {
+            return;
+        }
+        let status = self.complete_status(key.0.clone());
+        self.published = Some(key);
+        self.follow.send_if_modified(|current| {
+            let changed = *current != status;
+            if changed {
+                *current = status;
+            }
+            changed
+        });
     }
 
     // ---- the connection ----

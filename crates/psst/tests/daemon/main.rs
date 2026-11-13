@@ -1,8 +1,10 @@
 //! The daemon's behaviour (plan 9.1–9.4) through its command interface, with the scripted
 //! server, audio replayed from a WAV, and a fake Wayland thread that records what it's asked.
 
+mod follow;
+
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -139,6 +141,8 @@ impl FakeWayland {
 
 struct Daemon {
     handle: Option<DaemonHandle>,
+    /// The command socket.
+    socket: PathBuf,
     wayland: FakeWayland,
     sounds: Arc<AtomicUsize>,
     store: Store,
@@ -174,11 +178,13 @@ async fn daemon_in(root: &Path, server: &FakeServer, tweak: impl FnOnce(&mut Cli
     };
     tweak(&mut cfg, &mut deps);
     let paths = Paths { state_dir: root.join("state"), socket: root.join("runtime/daemon.sock") };
+    let socket = paths.socket.clone();
     let handle = daemon::spawn(cfg, paths, deps).await.unwrap();
     // Let the start-up connection settle.
     wait_until(|| server.connections() > 0).await;
     Daemon {
         handle: Some(handle),
+        socket,
         wayland,
         sounds,
         store: Store::open(&root.join("state")).unwrap(),
