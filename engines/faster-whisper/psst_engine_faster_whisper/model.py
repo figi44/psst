@@ -123,6 +123,8 @@ class Backend:
     """Language codes Whisper knows."""
     audio: Callable[[array], Any]
     """Turns f32 samples into what ``transcribe`` takes."""
+    warm_up: Callable[[Any], None]
+    """Runs a loaded model once, so the first dictation doesn't pay for CUDA's one-off setup."""
 
     @classmethod
     def faster_whisper(cls) -> Backend:
@@ -138,7 +140,21 @@ class Backend:
             aliases=_MODELS,
             languages=_LANGUAGE_CODES,
             audio=lambda samples: numpy.frombuffer(samples, dtype=numpy.float32),
+            warm_up=_warm_up,
         )
+
+
+def _warm_up(model: Any) -> None:
+    """One second of silence through the encoder and decoder, without VAD (which would skip both).
+
+    On the RTX 3060 Ti this moves about 300 ms from turbo's first request into its load.
+    """
+    import numpy
+
+    silence = numpy.zeros(SAMPLE_RATE, dtype=numpy.float32)
+    segments, _ = model.transcribe(silence, language="en", beam_size=5, vad_filter=False, condition_on_previous_text=False)
+    for _ in segments:
+        pass
 
 
 def log(message: str) -> None:
@@ -267,8 +283,11 @@ class FasterWhisperModel:
         return self._backend
 
     def _open(self, backend: Backend, snapshot: str, request: LoadRequest) -> str:
-        """Loads a snapshot directory and returns its revision, the commit it's named after."""
-        self._model = backend.whisper_model(snapshot, device=request.device, compute_type=request.compute_type)
+        """Loads a snapshot directory, warms the model up, and returns the snapshot's revision (the
+        commit it's named after)."""
+        model = backend.whisper_model(snapshot, device=request.device, compute_type=request.compute_type)
+        backend.warm_up(model)
+        self._model = model
         return os.path.basename(os.path.normpath(snapshot))
 
     def _release(self) -> None:

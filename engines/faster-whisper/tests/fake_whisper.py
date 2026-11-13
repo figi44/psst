@@ -49,6 +49,8 @@ class FakeWhisper:
     models: list[dict[str, Any]] = field(default_factory=list)
     runs: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     """``(path, kwargs)`` of every ``transcribe`` call, ``path`` being sequential or batched."""
+    warmed_up: list[Any] = field(default_factory=list)
+    warm_up_error: Exception | None = None
 
     def backend(self) -> Backend:
         return Backend(
@@ -58,7 +60,13 @@ class FakeWhisper:
             aliases=ALIASES,
             languages={"en", "cs", "de"},
             audio=lambda samples: samples,
+            warm_up=self._warm_up,
         )
+
+    def _warm_up(self, model: Any) -> None:
+        if self.warm_up_error is not None:
+            raise self.warm_up_error
+        self.warmed_up.append(model)
 
     def _snapshot(
         self, repo: str, revision: str | None, *, local_files_only: bool = False, force_download: bool = False, transfer: Any = None

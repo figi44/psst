@@ -80,6 +80,17 @@ def test_a_cached_model_loads_without_downloading():
     ]
     assert fake.downloads == []
     assert fake.models == [{"path": TURBO_DIR, "device": "cuda", "compute_type": "int8_float16"}]
+    assert len(fake.warmed_up) == 1
+
+
+def test_running_out_of_gpu_memory_while_warming_up_fails_the_load():
+    fake = FakeWhisper(cached={TURBO}, warm_up_error=RuntimeError("CUDA failed with error out of memory"))
+    error = serve(fake, LOAD, transcribe())
+    assert [(r["type"], r.get("code")) for r in error] == [
+        ("progress", None), ("error", "load_failed"), ("error", "not_loaded")
+    ]  # fmt: skip
+    assert "out of memory" in error[1]["message"]
+    assert fake.downloads == []
 
 
 def test_a_missing_model_is_downloaded_reporting_the_transferred_bytes():
