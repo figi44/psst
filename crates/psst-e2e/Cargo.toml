@@ -10,6 +10,11 @@ publish.workspace = true
 [dependencies]
 psst = { version = "0.1.0", path = "../psst" }
 psst-server = { version = "0.1.0", path = "../psst-server" }
+psst-testkit = { version = "0.1.0", path = "../psst-testkit" }
+rustix = { version = "1.1.6", features = ["time"] }
+serde_json = "1.0.154"
+smithay-client-toolkit = "0.21.1"
+wayland-client = "0.31.15"
 
 [dev-dependencies]
 futures-util = "0.3.34"
@@ -18,8 +23,6 @@ psst-client = { path = "../psst-client" }
 psst-config = { path = "../psst-config" }
 psst-engine-proto = { path = "../psst-engine-proto" }
 psst-proto = { path = "../psst-proto" }
-psst-testkit = { path = "../psst-testkit" }
-serde_json = "1.0.154"
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "io-util"] }
 tokio-tungstenite = "0.29"
@@ -33,4 +36,9 @@ test = false
 [[bin]]
 name = "psst-e2e-daemon"
 path = "src/bin/psst-e2e-daemon.rs"
+test = false
+
+[[bin]]
+name = "psst-paste-target"
+path = "src/bin/psst-paste-target.rs"
 test = false
