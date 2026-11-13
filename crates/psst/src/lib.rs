@@ -25,12 +25,7 @@ mod sound;
 pub mod store;
 pub mod ui;
 
-use std::{
-    env,
-    path::PathBuf,
-    process::ExitCode,
-    sync::Arc,
-};
+use std::{env, path::PathBuf, process::ExitCode, sync::Arc};
 
 use clap::{Parser, Subcommand};
 use psst_config::{ClientConfig, ConfigFile};

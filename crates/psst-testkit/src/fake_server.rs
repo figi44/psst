@@ -179,14 +179,8 @@ impl FakeServer {
         let (disconnect, _) = broadcast::channel(4);
         let (replaced, _) = broadcast::channel(16);
         let (listening, _) = tokio::sync::watch::channel(true);
-        let inner = Arc::new(Inner {
-            cfg,
-            state: Mutex::default(),
-            disconnect,
-            replaced,
-            listening,
-            shutdown: Notify::new(),
-        });
+        let inner =
+            Arc::new(Inner { cfg, state: Mutex::default(), disconnect, replaced, listening, shutdown: Notify::new() });
         let thread_inner = inner.clone();
         let thread = thread::Builder::new()
             .name("fake-server".into())

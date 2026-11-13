@@ -68,7 +68,8 @@ pub fn start(
     wav: PathBuf,
     emit: impl Fn(RecEvent) + Send + 'static,
 ) -> io::Result<Recorder> {
-    let writer = WavWriter::create(&wav).map_err(|err| io::Error::new(err.kind(), format!("{}: {err}", wav.display())))?;
+    let writer =
+        WavWriter::create(&wav).map_err(|err| io::Error::new(err.kind(), format!("{}: {err}", wav.display())))?;
     let stop = Arc::new(AtomicBool::new(false));
     let abort = Arc::new(AtomicBool::new(false));
     let (thread_stop, thread_abort) = (stop.clone(), abort.clone());
@@ -78,7 +79,13 @@ pub fn start(
     Ok(Recorder { stop, abort, thread: handle.thread().clone() })
 }
 
-fn run(source: Arc<dyn AudioSource>, mut wav: WavWriter, stop: &AtomicBool, abort: &AtomicBool, emit: &dyn Fn(RecEvent)) {
+fn run(
+    source: Arc<dyn AudioSource>,
+    mut wav: WavWriter,
+    stop: &AtomicBool,
+    abort: &AtomicBool,
+    emit: &dyn Fn(RecEvent),
+) {
     let (producer, mut ring) = rtrb::RingBuffer::new(RING_SAMPLES);
     let shared = Arc::new(FeedShared::default());
     let capture = match source.open(Feed::new(producer, shared.clone())) {
@@ -184,10 +191,9 @@ fn run(source: Arc<dyn AudioSource>, mut wav: WavWriter, stop: &AtomicBool, abor
 /// Writes every whole frame in `pending` and emits it; keeps the remainder.
 fn send_frames(pending: &mut Vec<i16>, wav: &mut WavWriter, emit: &dyn Fn(RecEvent)) -> Result<(), String> {
     let whole = pending.len() / FRAME_SAMPLES * FRAME_SAMPLES;
-    for chunk in pending[..whole].chunks_exact(FRAME_SAMPLES) {
-        wav.write(chunk).map_err(|err| format!("cannot write the recording: {err}"))?;
-        let frame: AudioFrame = chunk.try_into().expect("a whole frame");
-        emit(RecEvent::Frame { frame: Box::new(frame), level: level(chunk) });
+    for frame in pending[..whole].as_chunks::<FRAME_SAMPLES>().0 {
+        wav.write(frame).map_err(|err| format!("cannot write the recording: {err}"))?;
+        emit(RecEvent::Frame { frame: Box::new(*frame), level: level(frame) });
     }
     pending.drain(..whole);
     Ok(())
@@ -240,7 +246,15 @@ impl Converter {
             if self.input.len() < need {
                 break;
             }
-            Self::process(resampler, &self.input[..need], None, &mut self.out, &mut self.skip, &mut self.out_total, frames);
+            Self::process(
+                resampler,
+                &self.input[..need],
+                None,
+                &mut self.out,
+                &mut self.skip,
+                &mut self.out_total,
+                frames,
+            );
             self.input.drain(..need);
         }
     }
@@ -391,13 +405,20 @@ mod tests {
     }
 
     fn audio_of(events: &[RecEvent]) -> Vec<i16> {
-        events.iter().filter_map(|e| if let RecEvent::Frame { frame, .. } = e { Some(frame.to_vec()) } else { None }).flatten().collect()
+        events
+            .iter()
+            .filter_map(|e| if let RecEvent::Frame { frame, .. } = e { Some(frame.to_vec()) } else { None })
+            .flatten()
+            .collect()
     }
 
     #[test]
     fn sixteen_khz_input_is_written_and_framed_unchanged() {
         let signal: Vec<f32> = (0..16_100).map(|i| ((i % 200) as f32 - 100.0) / 200.0).collect();
-        let (events, wav, _dir) = record(Scripted { rate: 16_000, samples: signal.clone(), overflow: 0, fail: None }, Duration::from_millis(50));
+        let (events, wav, _dir) = record(
+            Scripted { rate: 16_000, samples: signal.clone(), overflow: 0, fail: None },
+            Duration::from_millis(50),
+        );
         assert_eq!(events.last(), Some(&RecEvent::Finished { samples: 16_100, gapped: false }));
         let expected: Vec<i16> = signal.iter().map(|&s| to_i16(s)).collect();
         let sent = audio_of(&events);
@@ -413,8 +434,10 @@ mod tests {
     #[test]
     fn other_rates_are_resampled_to_the_exact_length_with_the_tail_kept() {
         // One second of a 440 Hz tone at 48 kHz, loud until the very end.
-        let signal: Vec<f32> = (0..48_000).map(|i| (i as f32 * 440.0 * std::f32::consts::TAU / 48_000.0).sin() * 0.5).collect();
-        let (events, _wav, _dir) = record(Scripted { rate: 48_000, samples: signal, overflow: 0, fail: None }, Duration::from_millis(50));
+        let signal: Vec<f32> =
+            (0..48_000).map(|i| (i as f32 * 440.0 * std::f32::consts::TAU / 48_000.0).sin() * 0.5).collect();
+        let (events, _wav, _dir) =
+            record(Scripted { rate: 48_000, samples: signal, overflow: 0, fail: None }, Duration::from_millis(50));
         assert_eq!(events.last(), Some(&RecEvent::Finished { samples: 16_000, gapped: false }));
         let sent = audio_of(&events);
         // The tone reaches the last 10 ms instead of being cut off with the resampler's delay.
@@ -426,7 +449,10 @@ mod tests {
 
     #[test]
     fn overflow_is_filled_with_silence_and_flagged() {
-        let (events, _wav, _dir) = record(Scripted { rate: 16_000, samples: vec![0.25; 3_200], overflow: 1_600, fail: None }, Duration::from_millis(50));
+        let (events, _wav, _dir) = record(
+            Scripted { rate: 16_000, samples: vec![0.25; 3_200], overflow: 1_600, fail: None },
+            Duration::from_millis(50),
+        );
         assert!(events.contains(&RecEvent::Gap));
         assert_eq!(events.last(), Some(&RecEvent::Finished { samples: 4_800, gapped: true }));
     }

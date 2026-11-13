@@ -319,7 +319,15 @@ mod tests {
     use super::*;
 
     fn meta(state: RecState, started_at: Timestamp) -> Meta {
-        Meta { profile: "default".into(), started_at, samples: 0, gapped: false, state, final_text: None, finalized_at: None }
+        Meta {
+            profile: "default".into(),
+            started_at,
+            samples: 0,
+            gapped: false,
+            state,
+            final_text: None,
+            finalized_at: None,
+        }
     }
 
     fn store() -> (tempfile::TempDir, Store) {
@@ -375,7 +383,11 @@ mod tests {
         assert_eq!(fs::metadata(store.last_path()).unwrap().permissions().mode() & 0o777, 0o600);
 
         // last.json is already newer than every recording: left alone.
-        let later = Last { session_id: SessionId::new_v4(), finalized_at: new + jiff::SignedDuration::from_secs(5), text: "latest".into() };
+        let later = Last {
+            session_id: SessionId::new_v4(),
+            finalized_at: new + jiff::SignedDuration::from_secs(5),
+            text: "latest".into(),
+        };
         store.write_last(&later).unwrap();
         assert_eq!(store.recover("default").unwrap().last_from, None);
         assert_eq!(store.read_last().unwrap(), later);

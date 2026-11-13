@@ -36,10 +36,7 @@ async fn query(socket: &Path) -> std::io::Result<Option<String>> {
     BufReader::new(stream).read_line(&mut line).await?;
     let reply: Value = serde_json::from_str(&line).map_err(std::io::Error::other)?;
     // {"Ok":{"FocusedWindow":{"app_id":"…", …}}}, or null when nothing is focused.
-    Ok(reply
-        .pointer("/Ok/FocusedWindow/app_id")
-        .and_then(Value::as_str)
-        .map(str::to_owned))
+    Ok(reply.pointer("/Ok/FocusedWindow/app_id").and_then(Value::as_str).map(str::to_owned))
 }
 
 #[cfg(test)]

@@ -17,12 +17,7 @@
 //! offline and keeps recording to its file; at `stop` it's uploaded once with its own
 //! `session_id` and `resume: true`. If that fails too, it stays on disk for `psst retry`.
 
-use std::{
-    collections::VecDeque,
-    path::PathBuf,
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::VecDeque, path::PathBuf, sync::Arc, time::Duration};
 
 use jiff::Timestamp;
 use psst_client::{
@@ -215,11 +210,25 @@ async fn serve_socket(listener: UnixListener, tx: mpsc::UnboundedSender<Input>) 
 enum Input {
     Request(Request, oneshot::Sender<Response>),
     Rec(SessionId, RecEvent),
-    Session { id: SessionId, seq: u64, event: SessionEvent },
-    Conn { attempt: u64, result: Result<Client, String>, fresh: bool },
-    ConnClosed { epoch: u64, reason: String },
+    Session {
+        id: SessionId,
+        seq: u64,
+        event: SessionEvent,
+    },
+    Conn {
+        attempt: u64,
+        result: Result<Client, String>,
+        fresh: bool,
+    },
+    ConnClosed {
+        epoch: u64,
+        reason: String,
+    },
     /// The focused window's app id for a paste.
-    Focus { generation: u64, app_id: Option<String> },
+    Focus {
+        generation: u64,
+        app_id: Option<String>,
+    },
     Resumed,
     Shutdown(oneshot::Sender<()>),
 }
@@ -459,7 +468,11 @@ impl Core {
         }
     }
 
-    async fn run(mut self, mut rx: mpsc::UnboundedReceiver<Input>, mut wayland_rx: mpsc::UnboundedReceiver<WaylandEvent>) {
+    async fn run(
+        mut self,
+        mut rx: mpsc::UnboundedReceiver<Input>,
+        mut wayland_rx: mpsc::UnboundedReceiver<WaylandEvent>,
+    ) {
         loop {
             let deadline = self.next_deadline();
             tokio::select! {
@@ -639,18 +652,19 @@ impl Core {
 
     fn retry(&mut self, session: Option<SessionId>) -> Response {
         let retained = self.store.list();
-        let target = match session {
-            Some(id) => match retained.iter().find(|r| r.id == id) {
-                Some(rec) => rec,
-                None => return Response::err(format!("no saved recording {id}")),
-            },
-            None => match retained.iter().rev().find(|r| {
-                matches!(r.meta.state, RecState::Complete | RecState::Incomplete) && !self.in_flight(r.id)
-            }) {
-                Some(rec) => rec,
-                None => return Response::err("no saved recording to retry"),
-            },
-        };
+        let target =
+            match session {
+                Some(id) => match retained.iter().find(|r| r.id == id) {
+                    Some(rec) => rec,
+                    None => return Response::err(format!("no saved recording {id}")),
+                },
+                None => match retained.iter().rev().find(|r| {
+                    matches!(r.meta.state, RecState::Complete | RecState::Incomplete) && !self.in_flight(r.id)
+                }) {
+                    Some(rec) => rec,
+                    None => return Response::err("no saved recording to retry"),
+                },
+            };
         let id = target.id;
         if self.in_flight(id) {
             return Response::err(format!("{id} is still in progress"));
@@ -690,16 +704,17 @@ impl Core {
                     Some(rec) if rec.meta.state == RecState::Transcribed => {
                         (rec.meta.final_text.clone().unwrap_or_default(), Some(id))
                     }
-                    Some(_) => return Response::err(format!("{id} isn't transcribed yet: run psst retry --session {id}")),
+                    Some(_) => {
+                        return Response::err(format!("{id} isn't transcribed yet: run psst retry --session {id}"));
+                    }
                     None => return Response::err(format!("no saved recording {id}")),
                 }
             }
             None => match self.store.read_last() {
                 Some(last) => {
-                    let retained_too = retained
-                        .iter()
-                        .any(|r| r.id == last.session_id && r.meta.state == RecState::Transcribed)
-                        && !self.in_flight(last.session_id);
+                    let retained_too =
+                        retained.iter().any(|r| r.id == last.session_id && r.meta.state == RecState::Transcribed)
+                            && !self.in_flight(last.session_id);
                     (last.text, retained_too.then_some(last.session_id))
                 }
                 None => return Response::err("nothing dictated yet"),
@@ -959,8 +974,13 @@ impl Core {
     fn start_live(&mut self, client: &mut Client) {
         let Some(rec) = &mut self.recording else { return };
         let (id, profile) = (rec.id, rec.profile.clone());
-        let session =
-            client.start(StartOpts { session_id: id, profile: Some(profile), mode: Mode::Live, resume: false, eval: None });
+        let session = client.start(StartOpts {
+            session_id: id,
+            profile: Some(profile),
+            mode: Mode::Live,
+            resume: false,
+            eval: None,
+        });
         let ctl = self.spawn_session(id, session);
         let rec = self.recording.as_mut().expect("checked");
         rec.max_recording_s = client.welcome().limits.max_recording_s;
@@ -1252,8 +1272,7 @@ impl Core {
             self.begin_insert(generation, copy);
             return;
         }
-        if self.pipeline.front().is_some_and(|d| d.phase == Phase::Ready) {
-            let d = self.pipeline.pop_front().expect("checked");
+        if let Some(d) = self.pipeline.pop_front_if(|d| d.phase == Phase::Ready) {
             let (generation, copy) = (d.generation, d.copy_only);
             self.inserting = Some(Inserting { generation, what: Delivering::Dictation(Box::new(d)) });
             self.begin_insert(generation, copy);
@@ -1403,7 +1422,10 @@ impl Core {
     }
 
     fn flash(&mut self, message: &str) {
-        self.notice(OverlayState::Flash { message: message.into() }, self.t.notice_shown.min(Duration::from_millis(1500)));
+        self.notice(
+            OverlayState::Flash { message: message.into() },
+            self.t.notice_shown.min(Duration::from_millis(1500)),
+        );
     }
 
     fn error_notice(&mut self, message: &str) {
@@ -1547,20 +1569,14 @@ impl Core {
         if let Some(mut client) = self.usable_client()
             && self.slot.is_none()
         {
-            if let Some(index) =
-                self.pipeline.iter().position(|d| d.phase == Phase::Uploading && d.session.is_none())
-            {
+            if let Some(index) = self.pipeline.iter().position(|d| d.phase == Phase::Uploading && d.session.is_none()) {
                 self.start_upload(&mut client, index);
             } else if self.recording.as_ref().is_some_and(|r| r.net == Net::Pending) {
                 self.start_live(&mut client);
             }
         }
-        let waiting: Vec<SessionId> = self
-            .pipeline
-            .iter()
-            .filter(|d| d.phase == Phase::Uploading && d.session.is_none())
-            .map(|d| d.id)
-            .collect();
+        let waiting: Vec<SessionId> =
+            self.pipeline.iter().filter(|d| d.phase == Phase::Uploading && d.session.is_none()).map(|d| d.id).collect();
         for id in waiting {
             let has_client = self.client.is_some();
             let attempting = self.attempt.is_some();
