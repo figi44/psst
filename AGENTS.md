@@ -34,6 +34,12 @@ git diff --exit-code -- engines/faster-whisper/tests/golden   # golden frames un
 
 - **Tests run without a GPU**, through `psst-server __fake-engine` (`psst_engine_proto::fake`).
   GPU tests are marked as such and run locally inside `scripts/gpu-session.sh`.
+- **Wayland tests run by default.** Each starts its own offscreen nested niri
+  (`psst_testkit::nested_niri()`); sway, niri and mesa come from `PATH`, or from the flake's nixpkgs
+  on the first run. In-process clients connect to `Sandbox::wayland_socket()` by path, never through
+  this process's `WAYLAND_DISPLAY`.
+- **Overlay snapshots:** after an intended change to the overlay's look, regenerate them with
+  `PSST_UPDATE_SNAPSHOTS=1 cargo nextest run -p psst-overlay` and review the PNGs.
 - **End-to-end tests live only in `psst-e2e`.** They start
   `env!("CARGO_BIN_EXE_psst-server-e2e")` and `env!("CARGO_BIN_EXE_psst-e2e-daemon")` through
   `psst-testkit`, so they always run freshly built binaries. Evals run the server in-process with

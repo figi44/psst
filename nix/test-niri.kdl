@@ -1,0 +1,30 @@
+// The nested niri that tests run in (`psst_testkit::nested_niri()`, plan 12). It spawns nothing,
+// runs no XWayland, has no binds and no animations. Layout 0 is English (US) and layout 1 Czech
+// (QWERTY), like the owner's setup; tests switch with `niri msg action switch-layout`. The
+// background is a flat blue, so a screenshot shows the overlay pill clearly.
+input {
+    keyboard {
+        xkb {
+            layout "us,cz"
+            variant ",qwerty"
+        }
+    }
+}
+
+layout {
+    background-color "#4a6fa5"
+}
+
+hotkey-overlay {
+    skip-at-startup
+}
+
+xwayland-satellite {
+    off
+}
+
+animations {
+    off
+}
+
+screenshot-path null

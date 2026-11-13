@@ -6,14 +6,24 @@
 //!
 //! [`fake_server`] is a scripted stand-in for the server, for client and daemon tests that need
 //! to stall it, delay `ready` or refuse connections on demand.
+//!
+//! Wayland tests run in a [`Sandbox`] ([`nested_niri`] or [`headless_sway`]); [`wayland`] has
+//! in-process clients that stand in for apps, clipboard managers, a keyboard and a screenshot
+//! tool. Nothing here ever connects to the live session.
 
 pub mod fake_server;
+pub mod guard;
+mod sandbox;
+mod tools;
+pub mod wayland;
+
+pub use sandbox::{Compositor, Sandbox, headless_sway, nested_niri};
 
 use std::{
-    ffi::{OsStr, OsString},
+    ffi::OsString,
     fs,
     net::{SocketAddr, TcpListener},
-    os::unix::{fs::PermissionsExt, net::UnixStream},
+    os::unix::net::UnixStream,
     path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
     thread,
@@ -186,73 +196,12 @@ impl Drop for TestServer {
     }
 }
 
-/// An isolated session for clients: its own XDG directories and, for nested niri, its own
-/// compositor. Clients started through [`Sandbox::command`] never see the live session.
-#[derive(Debug)]
-pub struct Sandbox {
-    /// Holds the sandbox's directories; removed on drop.
-    pub root: TempDir,
-    /// Set for every client: `WAYLAND_DISPLAY`, `NIRI_SOCKET`, `XDG_RUNTIME_DIR`,
-    /// `XDG_STATE_HOME` and `XDG_CONFIG_HOME`.
-    pub env: Vec<(OsString, OsString)>,
-    /// The sandbox's compositor; killed on drop.
-    pub compositor: Option<Child>,
-}
-
-impl Sandbox {
-    pub fn var(&self, name: &str) -> Option<&OsStr> {
-        self.env.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_os_str())
-    }
-
-    fn dir(&self, name: &str) -> PathBuf {
-        PathBuf::from(self.var(name).unwrap_or_else(|| panic!("sandbox has no {name}")))
-    }
-
-    /// A command with the sandbox's environment. `WAYLAND_SOCKET` and `DISPLAY` are cleared, and
-    /// so are `WAYLAND_DISPLAY` and `NIRI_SOCKET` unless the sandbox sets them.
-    pub fn command(&self, program: impl AsRef<OsStr>) -> Command {
-        let mut command = Command::new(program);
-        isolate(&mut command, &self.env);
-        command
-    }
-
-    /// A sandbox without a compositor: its own `XDG_RUNTIME_DIR`, `XDG_STATE_HOME` and
-    /// `XDG_CONFIG_HOME`, and no `WAYLAND_DISPLAY` or `NIRI_SOCKET`. For daemon tests that use
-    /// the `[insert] record` seam instead of Wayland.
-    pub fn headless() -> Sandbox {
-        let root = tempfile::Builder::new().prefix("psst-sandbox-").tempdir().expect("temp dir");
-        let mut env = Vec::new();
-        for (var, sub) in [("XDG_RUNTIME_DIR", "runtime"), ("XDG_STATE_HOME", "state"), ("XDG_CONFIG_HOME", "config")] {
-            let dir = root.path().join(sub);
-            fs::create_dir(&dir).expect("create sandbox dir");
-            env.push((OsString::from(var), dir.into_os_string()));
-        }
-        fs::set_permissions(root.path().join("runtime"), fs::Permissions::from_mode(0o700)).expect("chmod runtime");
-        Sandbox { root, env, compositor: None }
-    }
-}
-
 /// Clears every variable that could reach the live session, then applies `env`.
-fn isolate(command: &mut Command, env: &[(OsString, OsString)]) {
-    for var in ["WAYLAND_SOCKET", "DISPLAY", "WAYLAND_DISPLAY", "NIRI_SOCKET"] {
+pub(crate) fn isolate(command: &mut Command, env: &[(OsString, OsString)]) {
+    for var in guard::CLEARED_VARS.iter().chain(&["WAYLAND_DISPLAY", "NIRI_SOCKET"]) {
         command.env_remove(var);
     }
     command.envs(env.iter().map(|(k, v)| (k, v)));
-}
-
-impl Drop for Sandbox {
-    fn drop(&mut self) {
-        if let Some(compositor) = &mut self.compositor {
-            let _ = compositor.kill();
-            let _ = compositor.wait();
-        }
-    }
-}
-
-/// Starts nested niri with `nix/test-niri.kdl` and returns its sandbox (plan 12). Refuses to run
-/// if any client variable would point at the live session.
-pub fn nested_niri() -> Sandbox {
-    todo!("psst-testkit: nested_niri (Phase 0, Wayland work package)")
 }
 
 /// What [`spawn_daemon`] writes as `client.toml`.
