@@ -8,15 +8,29 @@
   outputs =
     { self, nixpkgs }:
     let
+      inherit (nixpkgs) lib;
       systems = [
         "x86_64-linux"
         "aarch64-linux"
       ];
-      forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+      # nixpkgs as the host config configures it (only `allowUnfree`), plus psst.
+      pkgsFor = lib.genAttrs systems (
+        system:
+        import nixpkgs {
+          inherit system;
+          config.allowUnfree = true;
+          overlays = [ self.overlays.default ];
+        }
+      );
+      forAllSystems = f: lib.genAttrs systems (system: f pkgsFor.${system});
     in
     {
-      # Packages, the GPU dev shell, and the NixOS and Home Manager modules come with the Nix
-      # work package.
+      overlays.default = import ./nix/overlay.nix;
+
+      packages = forAllSystems (pkgs: {
+        inherit (pkgs) psst psst-server;
+        default = pkgs.psst;
+      });
 
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
@@ -55,6 +69,7 @@
 
       checks = forAllSystems (pkgs: {
         devShell = self.devShells.${pkgs.stdenv.hostPlatform.system}.default;
+        inherit (pkgs) psst psst-server;
       });
 
       formatter = forAllSystems (pkgs: pkgs.nixfmt);
