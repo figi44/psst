@@ -1,0 +1,13 @@
+# The eval server (plan 7.3): what `psst-eval audio` runs in-process, and what replay recomputes
+# each case's engine request from. Every key not set here takes its default (docs/config.md), so
+# the eval follows the production model and options; changing them, here or in psst-config, means
+# re-running the audio eval (docs/evals.md).
+
+# Accept `start.eval` (`bias = false` for the raw traces) and send the trace with every `final`.
+eval_mode = true
+# Only the socket psst-eval passes in: no TCP port that could clash with a running server.
+listen = []
+
+[model]
+# The engine from this worktree, with the CUDA package's Python (`nix develop .#gpu`).
+command = ["psst-engine-dev"]

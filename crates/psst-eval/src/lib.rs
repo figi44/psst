@@ -6,10 +6,13 @@
 //!   against main's baseline. CI, no GPU.
 //! - [`stress`]: ordinary sentences through the dictionary, where every dictionary edit is a
 //!   false correction. CI.
+//! - [`audio`]: every clip through the worktree's server, started in-process, to record the
+//!   traces. Local, GPU, inside `scripts/gpu-session.sh`.
 //!
 //! [`main`] is the whole program; the binary only calls it.
 
 pub mod align;
+pub mod audio;
 pub mod baseline;
 pub mod cases;
 pub mod gate;
@@ -64,6 +67,18 @@ enum Command {
         #[command(flatten)]
         gate: GateArgs,
     },
+    /// Transcribe every clip with the worktree's server and engine, and record the traces (local,
+    /// GPU, inside scripts/gpu-session.sh).
+    Audio {
+        #[command(flatten)]
+        evals: EvalsArg,
+        /// The model cache (default: ~/.cache/psst/hf).
+        #[arg(long)]
+        cache_dir: Option<PathBuf>,
+    },
+    /// Run the scripted test engine (see psst_engine_proto::fake).
+    #[command(name = "__fake-engine", hide = true)]
+    FakeEngine { script: PathBuf },
 }
 
 #[derive(Debug, Args)]
@@ -95,6 +110,8 @@ pub fn main() -> ExitCode {
     let result = match Cli::parse().command {
         Command::Replay { evals, write, gate } => replay_command(&evals.evals, write, &gate),
         Command::Stress { evals, gate } => stress_command(&evals.evals, &gate),
+        Command::Audio { evals, cache_dir } => audio_command(evals.evals, cache_dir),
+        Command::FakeEngine { script } => return psst_engine_proto::fake::main(&script),
     };
     match result {
         Ok(failures) if failures.is_empty() => {
@@ -190,6 +207,17 @@ fn stress_command(evals: &Path, gate: &GateArgs) -> anyhow::Result<Vec<String>> 
     }
     floors(gate::stress_floors(&results), gate, &mut failures);
     Ok(failures)
+}
+
+fn audio_command(evals: PathBuf, cache_dir: Option<PathBuf>) -> anyhow::Result<Vec<String>> {
+    let opts = audio::AudioOptions {
+        evals,
+        cache_dir: cache_dir.unwrap_or_else(audio::default_model_cache),
+        require_gpu_session: true,
+    };
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().context("cannot start tokio")?;
+    runtime.block_on(audio::run(&opts))?;
+    Ok(Vec::new())
 }
 
 fn read_main(path: &Path) -> anyhow::Result<Baseline> {
