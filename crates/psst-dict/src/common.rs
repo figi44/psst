@@ -45,6 +45,9 @@ pub fn is_common_word(language: &str, word: &str) -> bool {
     if word.chars().any(char::is_whitespace) {
         return false;
     }
-    let word = fold(word).replace(['\u{2019}', '\u{2018}', '\u{02bc}'], "'");
+    let word = match word.is_ascii() {
+        true => word.to_ascii_lowercase(),
+        false => fold(word).replace(['\u{2019}', '\u{2018}', '\u{02bc}'], "'"),
+    };
     list.set.contains(word.as_str())
 }
