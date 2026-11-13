@@ -3,16 +3,39 @@
 //!
 //! The library reports problems and never retries or reconnects on its own; the daemon decides.
 //!
-//! This is the contract stub: the types and signatures are final, the bodies arrive with the
-//! client work package.
+//! # Shape
+//!
+//! [`Client::connect`] opens the WebSocket, exchanges `hello`/`welcome` and spawns one task that
+//! owns the connection. A [`Client`] is a cheap handle to that task, and so are the
+//! [`Session`]s it starts and their [`FrameSender`]s. Everything a session does arrives through
+//! [`Session::next_event`].
+//!
+//! - **One session at a time.** The protocol allows one active session per connection, so a
+//!   `start` made while another session is active is sent once that session has ended.
+//! - **`progress` silence.** A session that hears nothing for [`PROGRESS_TIMEOUT`] after its
+//!   `start` was sent, or after the last `ready`/`progress`, is [`SessionEvent::Lost`]. That ends
+//!   the connection: every session on it is lost and [`Client::closed`] resolves.
+//! - **Lifetime.** The connection stays open while a `Client`, a `Session`, a `FrameSender` or an
+//!   upload still needs it, and while queued audio is still being sent. Dropping a session never
+//!   cancels it; disconnecting doesn't cancel on the server either.
+//!
+//! Everything here must run inside a tokio runtime.
 
-use std::{io, path::Path, time::Duration};
+mod connection;
+mod upload;
+mod wav;
 
-pub use psst_proto::{Endpoint, Token};
+use std::{fmt, io, path::Path, sync::Arc, time::Duration};
+
 use psst_proto::{
-    FRAME_SAMPLES, SessionId,
-    ws::{ErrorMsg, EvalOpts, FinalMsg, Mode, ProgressState, ReadyModelState, WelcomeMsg},
+    ClientTimings, FRAME_SAMPLES, HistoryId, SessionId,
+    ws::{ErrorMsg, EvalOpts, FinalMsg, Mode, ProgressState, ReadyModelState, ReportMsg, WelcomeMsg},
 };
+pub use psst_proto::{Endpoint, Token};
+use tokio::sync::{mpsc, oneshot, watch};
+
+use crate::connection::{Cmd, Outgoing, Shared};
+pub use crate::wav::{WavError, WavInfo, read_wav_info};
 
 /// 20 ms of 16 kHz mono audio. The last frame of a recording is padded with zeros.
 pub type AudioFrame = [i16; FRAME_SAMPLES];
@@ -20,8 +43,15 @@ pub type AudioFrame = [i16; FRAME_SAMPLES];
 /// Frames a [`FrameSender`] buffers: 30 s, so the backlog before `ready` never fills it.
 pub const FRAME_BUFFER: usize = 1500;
 
+/// Frames buffered between an upload's file reader and the connection: 1 s.
+const UPLOAD_BUFFER: usize = 50;
+
 /// How long `progress` may be silent before a session is [`SessionEvent::Lost`].
 pub const PROGRESS_TIMEOUT: Duration = Duration::from_millis(1500);
+
+/// How recently the server must have been heard from for [`Client::check_alive`] to skip the
+/// ping.
+pub const ALIVE_WINDOW: Duration = Duration::from_secs(10);
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
@@ -39,34 +69,112 @@ pub enum ClientError {
 }
 
 /// A connection that has completed `hello`/`welcome`.
-#[derive(Debug)]
+///
+/// A handle: clones share the connection, which stays open while any handle, session or queued
+/// audio needs it, or until [`Client::close`].
+#[derive(Clone)]
 pub struct Client {
-    _private: (),
+    endpoint: Endpoint,
+    welcome: Arc<WelcomeMsg>,
+    cmd: mpsc::UnboundedSender<Cmd>,
+    shared: Arc<Shared>,
+}
+
+impl fmt::Debug for Client {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Client").field("endpoint", &self.endpoint).field("closed", &self.is_closed()).finish()
+    }
 }
 
 impl Client {
     /// Connects and exchanges `hello`/`welcome`. `token` is required over TCP.
+    ///
+    /// There is no built-in time limit; callers wrap this in their own budget.
     pub async fn connect(ep: &Endpoint, token: Option<&Token>) -> Result<Client, ClientError> {
-        let _ = (ep, token);
-        todo!("psst-client: connect")
+        connection::connect(ep, token).await
     }
 
     /// The server's `welcome`: its version, this device, and the recording limit.
     pub fn welcome(&self) -> &WelcomeMsg {
-        todo!("psst-client: welcome")
+        &self.welcome
+    }
+
+    pub fn endpoint(&self) -> &Endpoint {
+        &self.endpoint
     }
 
     /// The check at `start` over TCP (plan 5.1): if nothing arrived in the last 10 s, pings and
     /// expects a pong within `budget`.
     pub async fn check_alive(&mut self, budget: Duration) -> Result<(), ClientError> {
-        let _ = budget;
-        todo!("psst-client: check_alive")
+        if self.is_closed() {
+            return Err(ClientError::Closed);
+        }
+        if self.shared.last_received().elapsed() < ALIVE_WINDOW {
+            return Ok(());
+        }
+        let (tx, rx) = oneshot::channel();
+        self.cmd.send(Cmd::Ping(tx)).map_err(|_| ClientError::Closed)?;
+        match tokio::time::timeout(budget, rx).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => Err(ClientError::Closed),
+            Err(_) => Err(ClientError::Timeout),
+        }
     }
 
     /// Sends `start` and returns at once; everything that follows arrives as [`SessionEvent`]s.
+    ///
+    /// If another session is still active on this connection, `start` is sent once it ends.
     pub fn start(&mut self, opts: StartOpts) -> Session {
-        let _ = opts;
-        todo!("psst-client: start")
+        self.start_with(opts, FRAME_BUFFER).0
+    }
+
+    fn start_with(&self, opts: StartOpts, buffer: usize) -> (Session, watch::Receiver<Option<bool>>) {
+        let id = opts.session_id;
+        let (events_tx, events_rx) = mpsc::unbounded_channel();
+        let (frames_tx, frames_rx) = mpsc::channel(buffer);
+        let (ready_tx, ready_rx) = watch::channel(None);
+        let start = Cmd::Start(Box::new(connection::NewSession {
+            opts,
+            events: events_tx,
+            frames: frames_rx,
+            ready: ready_tx,
+        }));
+        // If the connection is gone, the command (and with it the event sender) is dropped, so
+        // the session reports `Lost` at once.
+        let _ = self.cmd.send(start);
+        let session = Session {
+            id,
+            events: events_rx,
+            cmd: self.cmd.clone(),
+            frames: FrameSender { tx: frames_tx },
+            shared: self.shared.clone(),
+            terminal: None,
+        };
+        (session, ready_rx)
+    }
+
+    /// Sends `report` for a finished session. Fire and forget: it gets no reply.
+    pub fn report(&self, session_id: SessionId, history_id: HistoryId, timings: ClientTimings) {
+        let _ = self.cmd.send(Cmd::Report(ReportMsg { session_id, history_id, timings }));
+    }
+
+    /// Closes the connection. Every session still on it is [`SessionEvent::Lost`].
+    pub fn close(&self) {
+        let _ = self.cmd.send(Cmd::Close);
+    }
+
+    /// Whether the connection has closed.
+    pub fn is_closed(&self) -> bool {
+        self.shared.closed.borrow().is_some()
+    }
+
+    /// Resolves once the connection has closed, with the reason.
+    pub async fn closed(&self) -> String {
+        let mut rx = self.shared.closed.subscribe();
+        match rx.wait_for(Option::is_some).await {
+            Ok(reason) => reason.clone().unwrap_or_default(),
+            Err(_) => "the connection closed".into(),
+        }
     }
 }
 
@@ -81,50 +189,80 @@ pub struct StartOpts {
 }
 
 /// One dictation on a connection. `Send`; all outcomes arrive through [`Session::next_event`].
-#[derive(Debug)]
 pub struct Session {
-    _private: (),
+    id: SessionId,
+    events: mpsc::UnboundedReceiver<SessionEvent>,
+    cmd: mpsc::UnboundedSender<Cmd>,
+    frames: FrameSender,
+    shared: Arc<Shared>,
+    terminal: Option<SessionEvent>,
+}
+
+impl fmt::Debug for Session {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Session").field("id", &self.id).field("terminal", &self.terminal).finish()
+    }
 }
 
 impl Session {
     pub fn id(&self) -> SessionId {
-        todo!("psst-client: Session::id")
+        self.id
     }
 
-    /// The audio channel of a live session.
+    /// The audio channel of a live session. Frames are sent once the server has answered
+    /// `ready` with `need_audio`, oldest first; before that they wait in the buffer.
     pub fn frames(&self) -> FrameSender {
-        todo!("psst-client: Session::frames")
+        self.frames.clone()
     }
 
-    /// Sends `stop` once every frame given to the [`FrameSender`] has been sent.
+    /// Sends `stop` once every frame given to the [`FrameSender`] has been sent. `samples` is the
+    /// number of real (unpadded) samples.
+    ///
+    /// Returns [`ClientError::Closed`] if the session no longer takes audio: it ended, was
+    /// cancelled, or the server needs none.
     pub async fn stop(&self, samples: u64) -> Result<(), ClientError> {
-        let _ = samples;
-        todo!("psst-client: Session::stop")
+        self.frames.tx.send(Outgoing::Stop(samples)).await.map_err(|_| ClientError::Closed)
     }
 
-    /// Sends `cancel`, in any state, including mid-upload.
+    /// Sends `cancel`, in any state, including mid-upload. Audio not yet sent is dropped. A
+    /// session whose `start` hasn't been sent yet ends with `Cancelled` without asking the
+    /// server.
     pub async fn cancel(&self) -> Result<(), ClientError> {
-        todo!("psst-client: Session::cancel")
+        self.cmd.send(Cmd::Cancel(self.id)).map_err(|_| ClientError::Closed)
     }
 
     /// The next event. After a terminal event (`Final`, `Rejected`, `Error`, `Cancelled`,
-    /// `Lost`) the session is over.
+    /// `Lost`) the session is over, and this returns the terminal event again.
+    ///
+    /// Cancel-safe: it can be used in `tokio::select!` without losing events.
     pub async fn next_event(&mut self) -> SessionEvent {
-        todo!("psst-client: Session::next_event")
+        if let Some(terminal) = &self.terminal {
+            return terminal.clone();
+        }
+        let event = match self.events.recv().await {
+            Some(event) => event,
+            None => SessionEvent::Lost(LostReason::ConnectionClosed { reason: self.shared.close_reason() }),
+        };
+        if event.is_terminal() {
+            self.terminal = Some(event.clone());
+        }
+        event
     }
 }
 
 /// Feeds audio frames to a live session. `Clone + Send`.
 #[derive(Debug, Clone)]
 pub struct FrameSender {
-    _private: (),
+    tx: mpsc::Sender<Outgoing>,
 }
 
 impl FrameSender {
     /// Queues a frame without ever blocking. Holds at least [`FRAME_BUFFER`] frames.
     pub fn try_send(&self, frame: AudioFrame) -> Result<(), TrySendError> {
-        let _ = frame;
-        todo!("psst-client: FrameSender::try_send")
+        self.tx.try_send(Outgoing::Frame(Box::new(frame))).map_err(|err| match err {
+            mpsc::error::TrySendError::Full(_) => TrySendError::Full,
+            mpsc::error::TrySendError::Closed(_) => TrySendError::Closed,
+        })
     }
 }
 
@@ -151,10 +289,18 @@ pub enum SessionEvent {
     Final(Box<FinalMsg>),
     /// An `error` before `ready` (`busy`, `model_unavailable`, `model_unloaded`, `bad_request`).
     Rejected(ErrorMsg),
-    /// An `error` after `ready`.
+    /// An `error` after `ready`. Also reported, with code `internal`, when an upload can't read
+    /// its file; the session is then cancelled on the server.
     Error(ErrorMsg),
     Cancelled,
     Lost(LostReason),
+}
+
+impl SessionEvent {
+    /// Whether the session is over after this event.
+    pub fn is_terminal(&self) -> bool {
+        !matches!(self, Self::Ready { .. } | Self::Progress { .. })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,10 +312,24 @@ pub enum LostReason {
     },
 }
 
+impl fmt::Display for LostReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ProgressTimeout => write!(f, "no progress from the server for {PROGRESS_TIMEOUT:?}"),
+            Self::ConnectionClosed { reason } => write!(f, "connection closed: {reason}"),
+        }
+    }
+}
+
 /// Uploads a finished recording. Returns at once; a task owned by the session waits for
 /// `ready`, streams the file from disk with awaited backpressure (only if `need_audio`), then
 /// sends `stop`. Dropping the session doesn't cancel it.
+///
+/// `wav` is a 16 kHz mono 16-bit WAV. Its length comes from the file size, so a header that was
+/// never finalised doesn't matter.
 pub fn upload_file(client: &mut Client, opts: StartOpts, wav: &Path) -> Session {
-    let _ = (client, opts, wav);
-    todo!("psst-client: upload_file")
+    let opts = StartOpts { mode: Mode::Upload, ..opts };
+    let (session, ready) = client.start_with(opts, UPLOAD_BUFFER);
+    tokio::spawn(upload::run(session.id, wav.to_path_buf(), session.frames.tx.clone(), ready, session.cmd.clone()));
+    session
 }
