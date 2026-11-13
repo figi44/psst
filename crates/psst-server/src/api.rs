@@ -1,5 +1,5 @@
-//! HTTP routes (plan 5.2): `/health`, the client WebSocket, pairing, the Phase 1 `/api` and the
-//! dictionary.
+//! HTTP routes (plan 5.2): `/health`, the client WebSocket, pairing, the Phase 1 `/api`, the
+//! dictionary and the profiles.
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -17,7 +17,8 @@ use psst_proto::{
     api::{
         ApiError, ApiErrorCode, Device, DictionaryExport, DictionaryTest, DictionaryView, Health, HistoryQuery,
         HistoryRow, ModelStatus, NeverRule, NeverRuleId, NewNeverRule, PairRedeem, PairRedeemed, Pairing,
-        PairingRequest, Percentiles, Stats, Term, TermChange, routes,
+        PairingRequest, Percentiles, Profile, ProfileChange, ProfilesExport, ProfilesView, Stats, Term, TermChange,
+        routes,
     },
 };
 use serde::de::DeserializeOwned;
@@ -29,6 +30,7 @@ use crate::{
     db::{Revoke, UNLOADED_BOOT_ID},
     dictionary::{self, Change},
     listen::Peer,
+    profiles,
     state::AppState,
 };
 
@@ -59,6 +61,10 @@ pub fn router(state: AppRef) -> Router {
         .route(routes::DICTIONARY_NEVER_RULE, delete(remove_never))
         .route(routes::DICTIONARY_EXPORT, get(export_dictionary))
         .route(routes::DICTIONARY_TEST, post(test_dictionary))
+        .route(routes::PROFILES, get(profiles_view))
+        .route(routes::PROFILES_EXPORT, get(export_profiles))
+        .route(routes::PROFILE, put(put_profile))
+        .route(routes::PROFILE_RESET, post(reset_profile))
         .fallback(async || ApiErr::new(ApiErrorCode::NotFound, "no such route"))
         .with_state(state)
 }
@@ -336,6 +342,31 @@ async fn test_dictionary(
     };
     let dictionary = state.live.dictionary();
     Ok(Json(psst_pipeline::run(&trace, &profile, &dictionary, &PipelineOptions::default())))
+}
+
+async fn profiles_view(_: Admin, State(state): State<AppRef>) -> Json<ProfilesView> {
+    Json(state.live.profile_layers().view())
+}
+
+async fn export_profiles(_: Admin, State(state): State<AppRef>) -> Json<ProfilesExport> {
+    Json(ProfilesExport { toml: state.live.profile_layers().export() })
+}
+
+async fn put_profile(
+    _: Admin,
+    State(state): State<AppRef>,
+    Id(name): Id<String>,
+    Body(profile): Body<Profile>,
+) -> Result<Json<ProfileChange>, ApiErr> {
+    profiles::change(&state.live, &state.db, &name, Some(profile)).map(Json)
+}
+
+async fn reset_profile(
+    _: Admin,
+    State(state): State<AppRef>,
+    Id(name): Id<String>,
+) -> Result<Json<ProfileChange>, ApiErr> {
+    profiles::change(&state.live, &state.db, &name, None).map(Json)
 }
 
 /// p50/p95 per timing field (plan 6.7). `network_estimate_ms` is the client's stop→final minus

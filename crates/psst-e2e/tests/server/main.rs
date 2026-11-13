@@ -6,5 +6,6 @@ mod dict_cli;
 mod dictionary;
 mod engine;
 mod harness;
+mod profiles;
 mod reload;
 mod sessions;

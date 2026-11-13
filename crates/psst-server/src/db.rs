@@ -1,5 +1,6 @@
 //! The server's SQLite database (`<state dir>/psst.db`, WAL): devices, history, the dictionary's
-//! database layer, and small pieces of state such as a deliberate unload.
+//! database layer, profiles stored over `profiles.toml`, and small pieces of state such as a
+//! deliberate unload.
 //!
 //! Every statement is short, so callers run them inline under one connection mutex.
 
@@ -15,7 +16,7 @@ use psst_config::TermSpec;
 use psst_dict::{LayerEntry, LayerTerm};
 use psst_proto::{
     ClientTimings, Final, HistoryId, ServerTimings, SessionId, TermId,
-    api::{Device, DeviceKind, HistoryRow, NeverRuleId, Term},
+    api::{Device, DeviceKind, HistoryRow, NeverRuleId, Profile, Term},
 };
 use rand::RngExt;
 use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
@@ -64,6 +65,14 @@ CREATE TABLE IF NOT EXISTS dictionary_never (
     span_key TEXT NOT NULL,
     created_ms INTEGER NOT NULL,
     UNIQUE (term, span_key)
+);
+-- Whole profiles by name, each replacing profiles.toml's profile with that name or adding one
+-- (plan 6.5).
+CREATE TABLE IF NOT EXISTS profiles (
+    name TEXT PRIMARY KEY,
+    -- An API `Profile` as JSON.
+    profile TEXT NOT NULL,
+    updated_ms INTEGER NOT NULL
 );
 ";
 
@@ -426,6 +435,36 @@ impl Db {
     /// Deletes a never rule; false if there's none with this id.
     pub fn delete_never_rule(&self, id: NeverRuleId) -> Result<bool> {
         Ok(self.conn().execute("DELETE FROM dictionary_never WHERE id = ?1", params![id as i64])? > 0)
+    }
+}
+
+impl Db {
+    /// The stored profiles by name; one that can't be read comes with the reason.
+    pub fn profiles(&self) -> Result<Vec<(String, std::result::Result<Profile, String>)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT name, profile FROM profiles ORDER BY name")?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+        let mut profiles = Vec::new();
+        for row in rows {
+            let (name, profile) = row?;
+            profiles.push((name, serde_json::from_str(&profile).map_err(|err| err.to_string())));
+        }
+        Ok(profiles)
+    }
+
+    /// Stores a profile, replacing the one stored under its name.
+    pub fn put_profile(&self, name: &str, profile: &Profile) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO profiles (name, profile, updated_ms) VALUES (?1, ?2, ?3)
+             ON CONFLICT (name) DO UPDATE SET profile = excluded.profile, updated_ms = excluded.updated_ms",
+            params![name, json(profile), now_ms()],
+        )?;
+        Ok(())
+    }
+
+    /// Deletes a stored profile; false if there's none by this name.
+    pub fn delete_profile(&self, name: &str) -> Result<bool> {
+        Ok(self.conn().execute("DELETE FROM profiles WHERE name = ?1", params![name])? > 0)
     }
 }
 
