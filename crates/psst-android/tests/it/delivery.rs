@@ -156,6 +156,29 @@ fn a_dictation_saved_for_one_server_never_goes_to_another() {
 }
 
 #[test]
+fn a_dictation_still_being_delivered_never_goes_to_a_server_switched_to_meanwhile() {
+    let first = tcp_server(FakeServerConfig::default());
+    let second = tcp_server(FakeServerConfig::default());
+    let mut phone = Phone::online(&address(&first));
+    first.set_listening(false);
+    phone.until_link(Link::Offline);
+    phone.send(Command::Start);
+    phone.speak(&test_audio(1_000));
+    phone.send(Command::Stop);
+    // Straight after the stop, while the phone still tries to deliver it to the first.
+    phone.send(Command::Configure { server: address(&second) });
+
+    let saved = phone.until_saved();
+    phone.until_link(Link::Online);
+    assert!(second.sessions().is_empty(), "the first server's dictation went to the second: {:#?}", second.sessions());
+
+    first.set_listening(true);
+    phone.send(Command::Configure { server: address(&first) });
+    phone.until_link(Link::Online);
+    assert!(first.wait_until(WAIT, |s| s.session(saved).is_some_and(|s| s.stop_samples.is_some())));
+}
+
+#[test]
 fn a_dictation_takes_the_connection_from_a_saved_one_going_in_the_background() {
     // Long enough a wait for its text that the dictation comes while the saved one holds the connection.
     let server = tcp_server(FakeServerConfig { final_delay: Duration::from_millis(800), ..Default::default() });
