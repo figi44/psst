@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, VecDeque},
     net::SocketAddr,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Condvar, Mutex, MutexGuard},
     thread,
     time::{Duration, Instant},
 };
@@ -130,12 +130,20 @@ struct Inner {
     disconnect: broadcast::Sender<()>,
     replaced: broadcast::Sender<(String, u64)>,
     listening: tokio::sync::watch::Sender<bool>,
+    /// Whether the server's thread has its sockets bound, which lags `listening`.
+    bound: (Mutex<bool>, Condvar),
     shutdown: Notify,
 }
 
 impl Inner {
     fn state(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn set_bound(&self, bound: bool) {
+        let (lock, changed) = &self.bound;
+        *lock.lock().unwrap_or_else(|e| e.into_inner()) = bound;
+        changed.notify_all();
     }
 }
 
@@ -162,8 +170,15 @@ impl FakeServer {
         let (disconnect, _) = broadcast::channel(4);
         let (replaced, _) = broadcast::channel(16);
         let (listening, _) = tokio::sync::watch::channel(true);
-        let inner =
-            Arc::new(Inner { cfg, state: Mutex::default(), disconnect, replaced, listening, shutdown: Notify::new() });
+        let inner = Arc::new(Inner {
+            cfg,
+            state: Mutex::default(),
+            disconnect,
+            replaced,
+            listening,
+            bound: (Mutex::new(true), Condvar::new()),
+            shutdown: Notify::new(),
+        });
         let thread_inner = inner.clone();
         // Its own thread and runtime, so sync and async tests use it the same way.
         let thread = thread::Builder::new()
@@ -214,6 +229,14 @@ impl FakeServer {
         if !listening {
             self.disconnect_all();
         }
+        // Until the server's thread rebinds its sockets, connecting is refused, and a client that
+        // tries right after this returns may not try again.
+        let (bound, changed) = &self.inner.bound;
+        let bound = bound.lock().unwrap_or_else(|e| e.into_inner());
+        let (_bound, waited) = changed
+            .wait_timeout_while(bound, Duration::from_secs(10), |bound| *bound != listening)
+            .unwrap_or_else(|e| e.into_inner());
+        assert!(!waited.timed_out(), "the fake server never applied set_listening({listening})");
     }
 
     pub fn sessions(&self) -> Vec<SeenSession> {
@@ -296,7 +319,8 @@ async fn serve(inner: Arc<Inner>, unix: std::os::unix::net::UnixListener, tcp: O
     let mut listeners: Option<(UnixListener, Option<TcpListener>)> = None;
     let mut listening = inner.listening.subscribe();
     loop {
-        if *listening.borrow_and_update() {
+        let listen = *listening.borrow_and_update();
+        if listen {
             if listeners.is_none() {
                 // Rebind after a pause: connecting fails while not listening, as with a stopped
                 // server.
@@ -315,6 +339,7 @@ async fn serve(inner: Arc<Inner>, unix: std::os::unix::net::UnixListener, tcp: O
         } else {
             listeners = None;
         }
+        inner.set_bound(listen);
         let accept_unix = async {
             match &listeners {
                 Some((u, _)) => u.accept().await.ok().map(|(s, _)| s),
