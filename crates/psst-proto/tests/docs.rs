@@ -5,8 +5,9 @@ use std::collections::BTreeSet;
 
 use psst_proto::{
     api::{
-        ApiError, Device, DictionaryExport, DictionaryTest, DictionaryView, Health, HistoryRow, ModelStatus, NeverRule,
-        NewNeverRule, PairRedeem, PairRedeemed, Pairing, PairingRequest, Stats, Term, TermChange,
+        ApiError, Device, DictionaryExport, DictionaryTest, DictionaryView, Health, HistoryRow, LoginLink, ModelStatus,
+        NeverRule, NewNeverRule, PairRedeem, PairRedeemed, Pairing, PairingRequest, Profile, ProfileChange,
+        ProfilesExport, ProfilesView, Stats, Term, TermChange,
     },
     ws::{ClientMsg, ServerMsg},
 };
@@ -86,9 +87,14 @@ fn api_examples_parse_as_their_types() {
             "NeverRule" => round_trip::<NeverRule>(tag, example),
             "DictionaryExport" => round_trip::<DictionaryExport>(tag, example),
             "DictionaryTest" => round_trip::<DictionaryTest>(tag, example),
+            "Profile" => round_trip::<Profile>(tag, example),
+            "ProfilesView" => round_trip::<ProfilesView>(tag, example),
+            "ProfileChange" => round_trip::<ProfileChange>(tag, example),
+            "ProfilesExport" => round_trip::<ProfilesExport>(tag, example),
+            "LoginLink" => round_trip::<LoginLink>(tag, example),
             other => panic!("unknown API type in docs: {other}"),
         }
         seen.insert(name);
     }
-    assert_eq!(seen.len(), 17, "every API body has an example: {seen:?}");
+    assert_eq!(seen.len(), 22, "every API body has an example: {seen:?}");
 }

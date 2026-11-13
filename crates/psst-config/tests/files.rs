@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf};
 
 use psst_config::{
     AppRule, AudioInput, ClientConfig, Color, ConfigError, ConfigFile, DecodePath, DictionaryFile, PasteAction,
-    PasteRule, ProfilesFile, Rule, ServerConfig, ServerFiles, TermLanguages, TermSpec, TermsAs,
+    PasteRule, ProfileSpec, ProfilesFile, Rule, ServerConfig, ServerFiles, TermLanguages, TermSpec, TermsAs,
 };
 use psst_proto::Endpoint;
 
@@ -44,6 +44,17 @@ fn unknown_keys_are_errors() {
     invalid::<ProfilesFile>("[profiles.default]\nlanguge = \"en\"", "languge");
     invalid::<DictionaryFile>("[[terms]]\ntext = \"x\"\npinned = true", "pinned");
     invalid::<ClientConfig>("[audio]\ndevice = \"x\"", "device");
+}
+
+#[test]
+fn web_url_is_an_http_origin() {
+    for url in ["http://desktop:7341", "https://desktop.tail1234.ts.net/", "http://[fd7a:115c::1]:7341"] {
+        let config = ServerConfig::from_toml_str(&format!("web_url = {url:?}")).unwrap();
+        assert_eq!(config.web_url.as_deref(), Some(url));
+    }
+    for url in ["desktop:7341", "ftp://desktop", "http://", "http://desktop:7341/psst", "http://u@desktop"] {
+        invalid::<ServerConfig>(&format!("web_url = {url:?}"), "web_url");
+    }
 }
 
 #[test]
@@ -153,6 +164,25 @@ fn a_long_prompt_style_is_a_warning_not_an_error() {
     assert_eq!(warnings.len(), 1);
     assert!(warnings[0].contains("profiles.default.prompt_style"), "{warnings:?}");
     assert!(ProfilesFile::from_toml_str(PLAN_PROFILES).unwrap().warnings().is_empty());
+}
+
+#[test]
+fn the_apis_profile_has_the_files_keys_and_defaults() {
+    use psst_proto::api::Profile as ApiProfile;
+
+    assert_eq!(ProfileSpec::try_from(ApiProfile::default()).unwrap(), ProfileSpec::default());
+    let czech = ProfilesFile::from_toml_str(PLAN_PROFILES).unwrap().profiles["czech"].clone();
+    let api = ApiProfile::from(&czech);
+    assert_eq!(
+        serde_json::to_value(&api).unwrap(),
+        serde_json::to_value(toml::from_str::<toml::Value>(&toml::to_string(&czech).unwrap()).unwrap()).unwrap(),
+        "the same keys and values in JSON as in the file"
+    );
+    assert_eq!(ProfileSpec::try_from(api).unwrap(), czech);
+
+    let shout = ApiProfile { rules: vec!["fillers".into(), "shout".into()], ..ApiProfile::default() };
+    let err = ProfileSpec::try_from(shout).unwrap_err();
+    assert!(err.contains("unknown rule `shout`") && err.contains("`trailing_space`"), "{err}");
 }
 
 #[test]
