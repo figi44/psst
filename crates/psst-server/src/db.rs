@@ -1,5 +1,5 @@
-//! The server's SQLite database (`<state dir>/psst.db`, WAL): devices, history and small pieces of
-//! state such as a deliberate unload.
+//! The server's SQLite database (`<state dir>/psst.db`, WAL): devices, history, the dictionary's
+//! database layer, and small pieces of state such as a deliberate unload.
 //!
 //! Every statement is short, so callers run them inline under one connection mutex.
 
@@ -11,9 +11,11 @@ use std::{
 
 use anyhow::{Context, Result};
 use jiff::Timestamp;
+use psst_config::TermSpec;
+use psst_dict::{LayerEntry, LayerTerm};
 use psst_proto::{
-    ClientTimings, Final, HistoryId, ServerTimings, SessionId,
-    api::{Device, DeviceKind, HistoryRow},
+    ClientTimings, Final, HistoryId, ServerTimings, SessionId, TermId,
+    api::{Device, DeviceKind, HistoryRow, NeverRuleId, Term},
 };
 use rand::RngExt;
 use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
@@ -46,6 +48,23 @@ CREATE TABLE IF NOT EXISTS state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+-- The dictionary's database layer (plan 7.1): one entry per term identity.
+CREATE TABLE IF NOT EXISTS dictionary_terms (
+    id TEXT PRIMARY KEY,
+    -- The term (an API `Term` as JSON), which adds it or replaces the file's; NULL hides the file's.
+    term TEXT,
+    -- Order of saving: of two conflicting entries, the later one gives way.
+    saved INTEGER NOT NULL,
+    updated_ms INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS dictionary_never (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    term TEXT NOT NULL,
+    span TEXT NOT NULL,
+    span_key TEXT NOT NULL,
+    created_ms INTEGER NOT NULL,
+    UNIQUE (term, span_key)
+);
 ";
 
 /// Key in `state` holding the boot id of a deliberate unload.
@@ -69,6 +88,16 @@ pub struct StoredSession {
     pub id: HistoryId,
     /// Present once the session finished.
     pub finished: Option<(Final, ServerTimings)>,
+}
+
+/// A never rule as stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredNever {
+    pub id: NeverRuleId,
+    pub term: TermId,
+    pub span: String,
+    pub span_key: String,
+    pub created_at: Timestamp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -323,4 +352,89 @@ impl Db {
         self.conn().execute("DELETE FROM state WHERE key = ?1", params![key])?;
         Ok(())
     }
+
+    /// The dictionary's database layer, by identity. An entry that can't be read is logged and
+    /// left out.
+    pub fn dictionary_terms(&self) -> Result<std::collections::BTreeMap<TermId, LayerTerm>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT id, term, saved FROM dictionary_terms")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, i64>(2)?))
+        })?;
+        let mut terms = std::collections::BTreeMap::new();
+        for row in rows {
+            let (id, term, saved) = row?;
+            let entry = match term {
+                None => LayerEntry::Hide,
+                Some(json) => match serde_json::from_str::<Term>(&json) {
+                    Ok(term) => LayerEntry::Set(TermSpec::from(term)),
+                    Err(err) => {
+                        tracing::warn!("ignoring the dictionary entry for `{id}`, which can't be read: {err}");
+                        continue;
+                    }
+                },
+            };
+            terms.insert(id, LayerTerm { entry, saved: saved as u64 });
+        }
+        Ok(terms)
+    }
+
+    /// Stores the entry for an identity, replacing any it had.
+    pub fn put_dictionary_term(&self, id: &str, entry: &LayerEntry, saved: u64) -> Result<()> {
+        let term = match entry {
+            LayerEntry::Set(spec) => Some(json(&Term::from(spec))),
+            LayerEntry::Hide => None,
+        };
+        self.conn().execute(
+            "INSERT INTO dictionary_terms (id, term, saved, updated_ms) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (id) DO UPDATE SET term = excluded.term, saved = excluded.saved,
+                                            updated_ms = excluded.updated_ms",
+            params![id, term, saved as i64, now_ms()],
+        )?;
+        Ok(())
+    }
+
+    /// Deletes the entry for an identity; false if it had none.
+    pub fn delete_dictionary_term(&self, id: &str) -> Result<bool> {
+        Ok(self.conn().execute("DELETE FROM dictionary_terms WHERE id = ?1", params![id])? > 0)
+    }
+
+    /// Every never rule, oldest first.
+    pub fn never_rules(&self) -> Result<Vec<StoredNever>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT id, term, span, span_key, created_ms FROM dictionary_never ORDER BY id")?;
+        let rows = stmt.query_map([], never_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Adds a never rule, or returns the one with the same term and span key.
+    pub fn add_never_rule(&self, term: &str, span: &str, span_key: &str) -> Result<(StoredNever, bool)> {
+        let conn = self.conn();
+        let added = conn.execute(
+            "INSERT INTO dictionary_never (term, span, span_key, created_ms) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (term, span_key) DO NOTHING",
+            params![term, span, span_key, now_ms()],
+        )? > 0;
+        let rule = conn.query_row(
+            "SELECT id, term, span, span_key, created_ms FROM dictionary_never WHERE term = ?1 AND span_key = ?2",
+            params![term, span_key],
+            never_row,
+        )?;
+        Ok((rule, added))
+    }
+
+    /// Deletes a never rule; false if there's none with this id.
+    pub fn delete_never_rule(&self, id: NeverRuleId) -> Result<bool> {
+        Ok(self.conn().execute("DELETE FROM dictionary_never WHERE id = ?1", params![id as i64])? > 0)
+    }
+}
+
+fn never_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredNever> {
+    Ok(StoredNever {
+        id: row.get::<_, i64>(0)? as NeverRuleId,
+        term: row.get(1)?,
+        span: row.get(2)?,
+        span_key: row.get(3)?,
+        created_at: timestamp(row.get(4)?),
+    })
 }
