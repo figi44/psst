@@ -34,10 +34,7 @@ rustPlatform.buildRustPackage {
   meta = {
     description = "The psst dictation server: sessions, the engine supervisor and the text pipeline";
     homepage = "https://github.com/figi44/psst";
-    license = with lib.licenses; [
-      mit
-      asl20
-    ];
+    license = lib.licenses.mit;
     platforms = lib.platforms.linux;
     mainProgram = "psst-server";
   };

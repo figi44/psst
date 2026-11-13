@@ -75,10 +75,7 @@ python.pkgs.buildPythonApplication {
   meta = {
     description = "faster-whisper engine for the psst dictation server";
     homepage = "https://github.com/figi44/psst";
-    license = with lib.licenses; [
-      mit
-      asl20
-    ];
+    license = lib.licenses.mit;
     platforms = lib.platforms.linux;
     mainProgram = "psst-engine-faster-whisper";
   };

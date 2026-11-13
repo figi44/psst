@@ -2,7 +2,7 @@
 name = "psst-engine-faster-whisper"
 version = "0.1.0"
 description = "faster-whisper engine for the psst dictation server"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 requires-python = ">=3.11"
 # The protocol and request loop use only the standard library; the model imports these at its first load.
 dependencies = [

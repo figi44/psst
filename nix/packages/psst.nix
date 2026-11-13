@@ -45,10 +45,7 @@ rustPlatform.buildRustPackage {
   meta = {
     description = "Dictation for Wayland, transcribed by a psst server";
     homepage = "https://github.com/figi44/psst";
-    license = with lib.licenses; [
-      mit
-      asl20
-    ];
+    license = lib.licenses.mit;
     platforms = lib.platforms.linux;
     mainProgram = "psst";
   };
