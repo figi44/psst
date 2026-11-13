@@ -149,6 +149,63 @@
                 <LinearLayout style="@style/Setup.Header">
 
                     <TextView
+                        android:id="@+id/setup_bubble_mark"
+                        style="@style/Setup.Mark" />
+
+                    <TextView
+                        android:id="@+id/setup_bubble_title"
+                        style="@style/Setup.Title"
+                        android:text="@string/setup_bubble" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/setup_bubble_status"
+                    style="@style/Setup.Body" />
+
+                <LinearLayout
+                    android:id="@+id/setup_bubble_off"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical">
+
+                    <TextView
+                        style="@style/Setup.Body"
+                        android:text="@string/setup_bubble_restricted" />
+
+                    <Button
+                        android:id="@+id/setup_bubble_enable"
+                        style="@style/Setup.Button"
+                        android:text="@string/setup_bubble_enable" />
+
+                    <Button
+                        android:id="@+id/setup_bubble_app_info"
+                        style="@style/Setup.Button"
+                        android:text="@string/setup_bubble_app_info" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/setup_bubble_on"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical">
+
+                    <Switch
+                        android:id="@+id/setup_bubble_in_place"
+                        style="@style/Setup.Switch"
+                        android:text="@string/setup_bubble_in_place" />
+
+                    <TextView
+                        style="@style/Setup.Body"
+                        android:layout_marginTop="0dp"
+                        android:text="@string/setup_bubble_in_place_note" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <LinearLayout style="@style/Setup.Card">
+
+                <LinearLayout style="@style/Setup.Header">
+
+                    <TextView
                         android:id="@+id/setup_try_mark"
                         style="@style/Setup.Mark" />
 

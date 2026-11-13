@@ -32,9 +32,19 @@
     <string name="setup_keyboard_enable">Turn on the psst keyboard</string>
     <string name="setup_keyboard_switch">Switch keyboard</string>
 
+    <string name="setup_bubble">Bubble</string>
+    <string name="setup_bubble_off">Optional: a button on any keyboard, to dictate with one tap instead of switching keyboards yourself. Android warns that it can see your screen; psst only looks at the field you are in and where the keyboard is.</string>
+    <string name="setup_bubble_restricted">If Android says it is a restricted setting, open App info, tap ⋮, choose Allow restricted settings, and turn the bubble on again.</string>
+    <string name="setup_bubble_on">On. Tap the bubble on the keyboard to dictate; drag it if it is in the way.</string>
+    <string name="setup_bubble_enable">Turn on the bubble</string>
+    <string name="setup_bubble_app_info">Open App info</string>
+    <string name="setup_bubble_in_place">Type without switching keyboards</string>
+    <string name="setup_bubble_in_place_note">The bubble types your words straight into the field. Where a field doesn\'t allow that, it switches to psst and back as usual.</string>
+
     <string name="setup_try">Try it</string>
     <string name="setup_try_hint">Your words appear here</string>
     <string name="setup_try_speak">Tap the field, then the round button, and speak.</string>
     <string name="setup_try_switch">Tap the field, switch to psst, tap the round button, and speak.</string>
+    <string name="setup_try_bubble">Tap the field, then the psst bubble on the keyboard, and speak.</string>
 
 </resources>

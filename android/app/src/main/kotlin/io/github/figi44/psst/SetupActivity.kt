@@ -1,8 +1,10 @@
 package io.github.figi44.psst
 
 import android.Manifest
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.Activity
 import android.content.ActivityNotFoundException
+import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -13,9 +15,11 @@ import android.text.TextWatcher
 import android.view.KeyEvent
 import android.view.View
 import android.view.WindowInsets
+import android.view.accessibility.AccessibilityManager
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.EditText
+import android.widget.Switch
 import android.widget.TextView
 import java.text.NumberFormat
 
@@ -36,11 +40,16 @@ class SetupActivity : Activity() {
     private lateinit var keyboardStatus: TextView
     private lateinit var keyboardEnable: View
     private lateinit var keyboardSwitch: View
+    private lateinit var bubbleStatus: TextView
+    private lateinit var bubbleOffGroup: View
+    private lateinit var bubbleOnGroup: View
+    private lateinit var inPlace: Switch
     private lateinit var tryStatus: TextView
     private lateinit var tryField: EditText
     private lateinit var serverStep: Step
     private lateinit var micStep: Step
     private lateinit var keyboardStep: Step
+    private lateinit var bubbleStep: Step
     private lateinit var tryStep: Step
 
     private var micGranted = false
@@ -49,6 +58,7 @@ class SetupActivity : Activity() {
     private var micBlocked = false
     private var keyboardOn = false
     private var keyboardInUse = false
+    private var bubbleOn = false
 
     /** Pair was pressed: the core says `connecting` until the code is redeemed or refused. */
     private var pairing = false
@@ -97,12 +107,17 @@ class SetupActivity : Activity() {
         keyboardStatus = findViewById(R.id.setup_keyboard_status)
         keyboardEnable = findViewById(R.id.setup_keyboard_enable)
         keyboardSwitch = findViewById(R.id.setup_keyboard_switch)
+        bubbleStatus = findViewById(R.id.setup_bubble_status)
+        bubbleOffGroup = findViewById(R.id.setup_bubble_off)
+        bubbleOnGroup = findViewById(R.id.setup_bubble_on)
+        inPlace = findViewById(R.id.setup_bubble_in_place)
         tryStatus = findViewById(R.id.setup_try_status)
         tryField = findViewById(R.id.setup_try)
         serverStep = step(R.id.setup_server_mark, R.id.setup_server_title, 1)
         micStep = step(R.id.setup_mic_mark, R.id.setup_mic_title, 2)
         keyboardStep = step(R.id.setup_keyboard_mark, R.id.setup_keyboard_title, 3)
-        tryStep = step(R.id.setup_try_mark, R.id.setup_try_title, 4)
+        bubbleStep = step(R.id.setup_bubble_mark, R.id.setup_bubble_title, 4)
+        tryStep = step(R.id.setup_try_mark, R.id.setup_try_title, 5)
 
         server.onSubmit(::connect)
         connect.setOnClickListener { connect() }
@@ -111,6 +126,11 @@ class SetupActivity : Activity() {
         micAllow.setOnClickListener { allowMicrophone() }
         keyboardEnable.setOnClickListener { open(Settings.ACTION_INPUT_METHOD_SETTINGS) }
         keyboardSwitch.setOnClickListener { imm.showInputMethodPicker() }
+        findViewById<View>(R.id.setup_bubble_enable).setOnClickListener { openBubbleSettings() }
+        findViewById<View>(R.id.setup_bubble_app_info).setOnClickListener { openAppInfo() }
+        val prefs = bubblePrefs()
+        inPlace.isChecked = prefs.getBoolean(IN_PLACE, false)
+        inPlace.setOnCheckedChangeListener { _, checked -> prefs.edit().putBoolean(IN_PLACE, checked).apply() }
         tryField.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
 
@@ -179,6 +199,9 @@ class SetupActivity : Activity() {
         keyboardOn = ime != null
         keyboardInUse = ime != null &&
             ime.id == Settings.Secure.getString(contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD)
+        bubbleOn = getSystemService(AccessibilityManager::class.java)
+            .getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
+            .any { it.resolveInfo.serviceInfo.packageName == packageName }
     }
 
     private fun render() {
@@ -187,6 +210,7 @@ class SetupActivity : Activity() {
         renderServer(state)
         renderMicrophone()
         renderKeyboard()
+        renderBubble()
         renderTry()
     }
 
@@ -257,8 +281,19 @@ class SetupActivity : Activity() {
         keyboardStep.show(keyboardOn)
     }
 
+    private fun renderBubble() {
+        bubbleStatus.show(getString(if (bubbleOn) R.string.setup_bubble_on else R.string.setup_bubble_off), R.color.muted)
+        bubbleOffGroup.visibility = if (bubbleOn) View.GONE else View.VISIBLE
+        bubbleOnGroup.visibility = if (bubbleOn) View.VISIBLE else View.GONE
+        bubbleStep.show(bubbleOn)
+    }
+
     private fun renderTry() {
-        val status = if (keyboardInUse) R.string.setup_try_speak else R.string.setup_try_switch
+        val status = when {
+            keyboardInUse -> R.string.setup_try_speak
+            bubbleOn && keyboardOn -> R.string.setup_try_bubble
+            else -> R.string.setup_try_switch
+        }
         tryStatus.show(getString(status), R.color.muted)
         tryStep.show(tryField.length() > 0)
     }
@@ -290,9 +325,25 @@ class SetupActivity : Activity() {
 
     private fun allowMicrophone() {
         if (micBlocked) {
-            open(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null))
+            openAppInfo()
         } else {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), MICROPHONE)
+        }
+    }
+
+    private fun openAppInfo() = open(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null))
+
+    private fun openBubbleSettings() {
+        val bubble = ComponentName(this, BubbleService::class.java).flattenToString()
+        // Settings' own extras, which highlight the bubble in the list. Settings without them ignore them.
+        val highlight = Bundle().apply { putString(SETTINGS_ARGS_KEY, bubble) }
+        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            .putExtra(SETTINGS_ARGS_KEY, bubble)
+            .putExtra(SETTINGS_SHOW_ARGS, highlight)
+        try {
+            startActivity(intent)
+        } catch (e: ActivityNotFoundException) {
+            startActivity(Intent(Settings.ACTION_SETTINGS))
         }
     }
 
@@ -376,6 +427,8 @@ class SetupActivity : Activity() {
         const val ASK_MICROPHONE = "io.github.figi44.psst.ASK_MICROPHONE"
 
         private const val MICROPHONE = 1
+        private const val SETTINGS_ARGS_KEY = ":settings:fragment_args_key"
+        private const val SETTINGS_SHOW_ARGS = ":settings:show_fragment_args"
         private const val MIC_BLOCKED = "mic_blocked"
     }
 }

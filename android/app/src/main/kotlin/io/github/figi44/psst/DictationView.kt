@@ -46,6 +46,7 @@ class DictationView(context: Context) : FrameLayout(context) {
         fun onHistoryBack()
         fun onHistoryPick(entry: Entry)
         fun onHistoryDiscard(entry: Entry)
+        fun onSwitchKeyboard()
     }
 
     enum class Mic { START, STOP, BUSY }
@@ -101,6 +102,13 @@ class DictationView(context: Context) : FrameLayout(context) {
 
     var actions: Actions? = null
 
+    /** There is another keyboard to switch to. */
+    var switchable = false
+        set(value) {
+            field = value
+            switchKey.visibility = if (value) VISIBLE else INVISIBLE
+        }
+
     // Phones in landscape: a shorter panel leaves the app some room.
     private val compact = resources.configuration.screenHeightDp < COMPACT_BELOW_DP
     private val dialSize = px(if (compact) 84 else 96)
@@ -117,6 +125,7 @@ class DictationView(context: Context) : FrameLayout(context) {
     private val discard = ImageButton(context)
     private val history = ImageButton(context)
     private val historyDot = View(context)
+    private val switchKey = ImageButton(context)
     private val content = LinearLayout(context)
     private val historyPane = LinearLayout(context)
     private val historyNote = TextView(context)
@@ -200,18 +209,23 @@ class DictationView(context: Context) : FrameLayout(context) {
         val row = LinearLayout(context)
         row.gravity = Gravity.CENTER_VERTICAL
         // One slot: the history while idle, discarding while there is a dictation.
-        val side = FrameLayout(context)
-        side.addView(key(history, R.drawable.ime_history, R.string.ime_history), keySize, keySize)
-        side.addView(key(discard, R.drawable.ime_discard, R.string.ime_discard_dictation), keySize, keySize)
+        val slot = FrameLayout(context)
+        slot.addView(key(history, R.drawable.ime_history, R.string.ime_history), keySize, keySize)
+        slot.addView(key(discard, R.drawable.ime_discard, R.string.ime_discard_dictation), keySize, keySize)
         historyDot.background = ShapeDrawable(OvalShape()).apply { paint.color = color(R.color.danger) }
         historyDot.importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
-        side.addView(
+        slot.addView(
             historyDot,
             LayoutParams(px(8), px(8), Gravity.TOP or Gravity.END).apply {
                 topMargin = px(12)
                 marginEnd = px(12)
             },
         )
+        val side = LinearLayout(context)
+        side.orientation = LinearLayout.VERTICAL
+        side.addView(key(switchKey, R.drawable.ime_keyboard, R.string.ime_switch_keyboard), keySize, keySize)
+        side.addView(slot, keySize, keySize)
+        switchKey.visibility = INVISIBLE
         row.addView(side)
         row.addView(centre, LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
         row.addView(editing)
@@ -272,6 +286,7 @@ class DictationView(context: Context) : FrameLayout(context) {
         )
 
         history.setOnClickListener { actions?.onHistory() }
+        switchKey.setOnClickListener { actions?.onSwitchKeyboard() }
         discard.setOnClickListener { actions?.onCancel() }
         backspace.setOnClickListener { actions?.onBackspace() }
         enter.setOnClickListener { actions?.onEnter() }

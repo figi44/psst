@@ -44,4 +44,10 @@
     <string name="ime_discard">Discard</string>
     <string name="ime_insert">Insert</string>
     <string name="ime_dismiss">Dismiss</string>
+    <string name="ime_switch_keyboard">Switch keyboard</string>
+    <string name="bubble_label">psst bubble</string>
+    <string name="bubble_description">Shows a psst button on the keyboard while you type. Tap it to dictate into the field you are in.\n\nTo place the button and type your words, psst looks at which field you are in, what it holds, and where the keyboard is. Nothing from your screen leaves the phone.</string>
+    <string name="bubble_start">Dictate with psst</string>
+    <string name="bubble_busy">psst is busy. Open the psst keyboard</string>
+    <string name="bubble_alert">psst needs you. Open the psst keyboard</string>
 </resources>

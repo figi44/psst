@@ -1,11 +1,10 @@
 package io.github.figi44.psst
 
-import android.Manifest
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.inputmethodservice.InputMethodService
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.text.format.DateUtils
 import android.view.ContextThemeWrapper
 import android.view.HapticFeedbackConstants
@@ -13,24 +12,20 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.WindowInsetsController
 import android.view.inputmethod.EditorInfo
-import java.util.EnumSet
+import android.view.inputmethod.InputMethodManager
+import android.view.inputmethod.InputMethodSubtype
 import io.github.figi44.psst.DictationView.Action
 import io.github.figi44.psst.DictationView.Mic
 import io.github.figi44.psst.DictationView.Tone
 import io.github.figi44.psst.DictationView.Ui
 
 /**
- * The keyboard: a dictation panel. It records while the core's dictation is `recording`, and
- * types each final into the field it serves.
+ * The keyboard: a dictation panel. It types the finals of the dictations it starts, or takes over
+ * from the bubble, into the field it serves.
  */
-class PsstIme : InputMethodService(), DictationView.Actions, Recorder.Events {
+class PsstIme : InputMethodService(), DictationView.Actions, Recording.Listener {
     private val main = Handler(Looper.getMainLooper())
     private var view: DictationView? = null
-
-    private var recorder: Recorder? = null
-
-    /** The core has said `recording` since [recorder] started. */
-    private var confirmed = false
 
     /**
      * Counts the inputs served: a final is typed only into the one its dictation started in. A
@@ -42,9 +37,12 @@ class PsstIme : InputMethodService(), DictationView.Actions, Recorder.Events {
     /** The window was hidden: the next [onStartInputView] opens the panel. */
     private var opening = true
 
+    /** The bubble opened the panel: its keyboard comes back once that dictation is done. */
+    private var returnTo: Handoff.Request? = null
+    private val returning get() = returnTo != null
+
     private var inputViewStarted = false
     private var micGranted = false
-    private var startFailed = false
     private var notice: Notice? = null
 
     /** The panel shows the history: what the server said of it, or nothing yet. */
@@ -54,14 +52,13 @@ class PsstIme : InputMethodService(), DictationView.Actions, Recorder.Events {
     /** The saved dictation whose recording the next tap on its discard button deletes. */
     private var confirmingDiscard: String? = null
 
-    private val stateListener: (State) -> Unit = { onCoreState(it) }
+    private val stateListener: (State) -> Unit = { render() }
     private val consumeFinal: (Final) -> Boolean = { onFinal(it) }
     private val historyListener: (History) -> Unit = {
         history = it
         render()
     }
     private val onSaved: () -> Unit = { notify(R.string.ime_saved, Tone.WARN) }
-    private val startTimeout = Runnable { onStartTimeout() }
     private val clearNotice = Runnable {
         notice = null
         render()
@@ -76,17 +73,17 @@ class PsstIme : InputMethodService(), DictationView.Actions, Recorder.Events {
             WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS,
         )
         Psst.addListener(stateListener)
-        Psst.finalConsumer = consumeFinal
+        Recording.addListener(this)
         Psst.historyListener = historyListener
         Psst.savedListener = onSaved
     }
 
     override fun onDestroy() {
         // Like hiding the keyboard: what was said is still sent.
-        recorder?.stop()
-        recorder = null
+        Recording.stop()
         main.removeCallbacksAndMessages(null)
         Psst.removeListener(stateListener)
+        Recording.removeListener(this)
         if (Psst.finalConsumer === consumeFinal) Psst.finalConsumer = null
         if (Psst.historyListener === historyListener) Psst.historyListener = null
         if (Psst.savedListener === onSaved) Psst.savedListener = null
@@ -119,11 +116,25 @@ class PsstIme : InputMethodService(), DictationView.Actions, Recorder.Events {
             opening = false
             Psst.warm()
             micGranted = hasMic()
-            startFailed = false
             notice = null
             main.removeCallbacks(clearNotice)
+            takeOver(Handoff.take())
         }
+        view?.switchable = returning || shouldOfferSwitchingToNextInputMethod()
         render()
+    }
+
+    /** Takes over from the bubble, if it opened the panel. */
+    private fun takeOver(handoff: Handoff.Request?) {
+        returnTo = handoff
+        if (handoff == null) return
+        if (Recording.active || Psst.state.dictation != Dictation.IDLE) {
+            // The bubble's dictation, which it started in this field.
+            Psst.finalConsumer = consumeFinal
+            Psst.savedListener = onSaved
+            dictationField = field
+        }
+        if (handoff.insertPending && insertPending()) main.post { leave() }
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
@@ -137,82 +148,49 @@ class PsstIme : InputMethodService(), DictationView.Actions, Recorder.Events {
         showingHistory = false
         confirmingDiscard = null
         // Hiding is not cancelling: the recording is sent as usual.
-        recorder?.stop()
+        Recording.stop()
+        // The panel has shown it.
+        Recording.forget()
+        // The next field is for the keyboard the bubble switched from.
+        if (returning) leave()
         render()
     }
 
-    private fun onCoreState(state: State) {
-        val active = recorder
-        if (active != null) {
-            if (state.dictation == Dictation.RECORDING) {
-                confirmed = true
-                main.removeCallbacks(startTimeout)
-            } else if (confirmed) {
-                // Either it took our stop, or it ended the recording at the limit: either way the
-                // microphone is done, and must not follow the core's stop with more audio.
-                if (!active.stopping) tick()
-                active.cancel()
-                recorder = null
-            }
-        }
-        render()
+    override fun onRecordingChanged() = render()
+
+    override fun onLevel(level: Float) {
+        view?.level(level)
     }
 
-    private fun canStart(state: State) = recorder == null && micGranted && !startFailed &&
-        Psst.pendingFinal == null && state.dictation == Dictation.IDLE && state.server != null &&
-        state.link !in BLOCKING
+    override fun onLimit() = tick()
 
     private fun start() {
-        Psst.startDictation()
-        // With the command, not on the core's answer to it: the first word is not lost to a round trip.
-        recorder = Recorder(this).also { it.start() }
-        confirmed = false
+        Recording.start()
+        Psst.finalConsumer = consumeFinal
+        Psst.savedListener = onSaved
         dictationField = field
         notice = null
         main.removeCallbacks(clearNotice)
-        main.postDelayed(startTimeout, START_TIMEOUT_MS)
         tick()
-        render()
-    }
-
-    // The core ignores a start it cannot take (a server address that doesn't parse), and then says
-    // nothing. The cancel settles it should the core take it after all, so the two can't disagree.
-    private fun onStartTimeout() {
-        val active = recorder ?: return
-        active.cancel()
-        recorder = null
-        startFailed = true
-        Psst.cancelDictation()
-        render()
     }
 
     override fun onMic() {
-        val active = recorder
         when {
-            active != null -> if (!active.stopping) {
-                active.stop()
-                tick()
-                render()
-            }
-            // Recording with no recorder here: a dictation this panel has let go of.
-            Psst.state.dictation == Dictation.RECORDING -> {
-                Psst.stopDictation()
-                tick()
-            }
+            Recording.stop() -> tick()
+            Recording.active -> Unit
             else -> {
                 micGranted = hasMic()
-                if (canStart(Psst.state)) start() else render()
+                if (Recording.canStart(micGranted)) start() else render()
             }
         }
     }
 
     override fun onCancel() {
-        recorder?.cancel()
-        recorder = null
-        main.removeCallbacks(startTimeout)
-        Psst.cancelDictation()
-        render()
+        Recording.cancel()
+        if (returning) leave()
     }
+
+    override fun onSwitchKeyboard() = leave()
 
     /** Deletes the selection, else the word before the cursor: dictation is fixed a word at a time. */
     override fun onBackspace() {
@@ -235,23 +213,12 @@ class PsstIme : InputMethodService(), DictationView.Actions, Recorder.Events {
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     .putExtra(SetupActivity.ASK_MICROPHONE, action == Action.ALLOW_MIC),
             )
-            Action.INSERT -> Psst.pendingFinal?.let { if (insert(it)) Psst.takePendingFinal() }
-            Action.DISMISS -> Psst.dismissPendingFinal()
+            Action.INSERT -> if (insertPending() && returning) leave()
+            Action.DISMISS -> {
+                Psst.dismissPendingFinal()
+                if (returning) leave()
+            }
         }
-        render()
-    }
-
-    override fun onLevel(recorder: Recorder, level: Float) {
-        if (recorder === this.recorder) view?.level(level)
-    }
-
-    override fun onFailed(recorder: Recorder, message: Int) {
-        if (recorder !== this.recorder) return
-        this.recorder = null
-        main.removeCallbacks(startTimeout)
-        Psst.cancelDictation()
-        notice = Notice(message, Tone.DANGER)
-        main.removeCallbacks(clearNotice)
         render()
     }
 
@@ -272,6 +239,7 @@ class PsstIme : InputMethodService(), DictationView.Actions, Recorder.Events {
             main.post { render() }
             return false
         }
+        if (returning) leave()
         return true
     }
 
@@ -295,6 +263,7 @@ class PsstIme : InputMethodService(), DictationView.Actions, Recorder.Events {
         if (type(text)) {
             showingHistory = false
             if (entry.saved) saved(entry)?.let(Psst::inserted)
+            if (returning) leave()
         }
         render()
     }
@@ -312,6 +281,13 @@ class PsstIme : InputMethodService(), DictationView.Actions, Recorder.Events {
 
     private fun saved(entry: DictationView.Entry) = Psst.state.saved.find { it.sessionId == entry.sessionId }
 
+    private fun insertPending(): Boolean {
+        val final = Psst.pendingFinal ?: return false
+        if (!insert(final)) return false
+        Psst.takePendingFinal()
+        return true
+    }
+
     private fun insert(final: Final): Boolean {
         if (!type(final.text)) return false
         Psst.inserted(final)
@@ -322,12 +298,23 @@ class PsstIme : InputMethodService(), DictationView.Actions, Recorder.Events {
     private fun type(text: String): Boolean {
         val connection = currentInputConnection
         if (!inputViewStarted || !currentInputStarted || connection == null) return false
-        val spaced = if (!text.first().isWhitespace() && needsSpace(connection.getTextBeforeCursor(2, 0))) {
-            " $text"
-        } else {
-            text
+        return connection.commitText(spaced(connection.getTextBeforeCursor(2, 0), text), 1)
+    }
+
+    /**
+     * Back to the keyboard the bubble switched from, in the language it was in, else to the last
+     * one used. The bubble's switch doesn't always make that the last one.
+     */
+    private fun leave() {
+        val back = returnTo
+        returnTo = null
+        val keyboard = back?.keyboard
+        val enabled = getSystemService(InputMethodManager::class.java).enabledInputMethodList
+        if (keyboard != null && enabled.any { it.id == keyboard }) {
+            switchInputMethod(keyboard, back.subtype)
+        } else if (!switchToPreviousInputMethod()) {
+            switchToNextInputMethod(false)
         }
-        return connection.commitText(spaced, 1)
     }
 
     private fun render() {
@@ -337,9 +324,8 @@ class PsstIme : InputMethodService(), DictationView.Actions, Recorder.Events {
     }
 
     private fun ui(state: State): Ui {
-        val active = recorder
-        if (active != null) {
-            if (!active.stopping) return recording(state, listening = true)
+        if (Recording.active) {
+            if (Recording.listening) return recording(state, listening = true)
             // Until the core takes the stop and says what comes next.
             return busy(if (state.dictationMessage == null) R.string.ime_transcribing else R.string.ime_sending)
         }
@@ -399,7 +385,7 @@ class PsstIme : InputMethodService(), DictationView.Actions, Recorder.Events {
         Psst.pendingFinal?.let {
             return Ui.Message(getString(R.string.ime_pending, it.text.trim()), Tone.PLAIN, Action.INSERT, Action.DISMISS)
         }
-        if (startFailed) return Ui.Message(getString(R.string.ime_start_failed), Tone.WARN, Action.OPEN)
+        if (Recording.startFailed) return Ui.Message(getString(R.string.ime_start_failed), Tone.WARN, Action.OPEN)
         when (state.link) {
             Link.UNCONFIGURED -> return Ui.Message(getString(R.string.ime_unconfigured), Tone.PLAIN, Action.SET_UP)
             Link.NEEDS_PAIRING, Link.UPDATE_APP, Link.UPDATE_SERVER ->
@@ -407,6 +393,7 @@ class PsstIme : InputMethodService(), DictationView.Actions, Recorder.Events {
             else -> {}
         }
         if (!micGranted) return Ui.Message(getString(R.string.ime_no_mic), Tone.PLAIN, Action.ALLOW_MIC)
+        Recording.failure?.let { return Ui.Dial(Mic.START, getString(it), Tone.DANGER) }
         notice?.let { return Ui.Dial(Mic.START, getString(it.text), it.tone) }
         return when (state.link) {
             Link.ONLINE -> Ui.Dial(Mic.START, getString(R.string.ime_tap_to_speak), Tone.MUTED)
@@ -419,25 +406,35 @@ class PsstIme : InputMethodService(), DictationView.Actions, Recorder.Events {
         view?.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
     }
 
-    private fun hasMic() = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-
     private class Notice(val text: Int, val tone: Tone)
 }
 
-/**
- * Whether dictated text goes after [before], the text before the cursor, with a space: not at the
- * start of the field, after whitespace, or after an opening bracket or quote.
- */
-private fun needsSpace(before: CharSequence?): Boolean {
-    if (before.isNullOrEmpty()) return false
-    val last = before.last()
-    if (last.isWhitespace() || last in OPENERS) return false
-    if (last == '"' || last == '\'') {
-        // A straight quote opens when it starts a word.
-        val previous = before.getOrNull(before.length - 2) ?: return false
-        return !previous.isWhitespace() && previous !in OPENERS
+/** What the bubble asks of the panel it switches to. */
+object Handoff {
+    /**
+     * With [insertPending], the panel types the final the bubble could not. [keyboard] and
+     * [subtype] are what to switch back to.
+     */
+    class Request(val insertPending: Boolean, val keyboard: String?, val subtype: InputMethodSubtype?)
+
+    private var request: Request? = null
+    private var requestedAt = 0L
+
+    fun request(request: Request) {
+        this.request = request
+        requestedAt = SystemClock.uptimeMillis()
     }
-    return true
+
+    fun cancel() {
+        request = null
+    }
+
+    /** The bubble's request, if it made one just before this opening of the panel. */
+    fun take(): Request? {
+        val taken = request?.takeIf { SystemClock.uptimeMillis() - requestedAt < HANDOFF_MS }
+        request = null
+        return taken
+    }
 }
 
 /** How many characters end [before] with its last word and the whitespace after it. */
@@ -449,13 +446,8 @@ private fun lastWord(before: CharSequence?): Int {
     return before.length - start
 }
 
-private const val OPENERS = "([{<“‘«‹„‚¿¡"
-
-/** The states in which the panel shows what to fix instead of the button. */
-private val BLOCKING = EnumSet.of(Link.UNCONFIGURED, Link.NEEDS_PAIRING, Link.UPDATE_APP, Link.UPDATE_SERVER)
-
-/** The core answers a start in milliseconds; this is for when it ignores one. */
-private const val START_TIMEOUT_MS = 2000L
+/** A switch of keyboards takes well under a second; this is for one that doesn't happen. */
+private const val HANDOFF_MS = 3000L
 private const val NOTICE_MS = 2500L
 private const val WORD_LOOKBACK = 64
 
