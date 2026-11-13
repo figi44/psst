@@ -12,6 +12,8 @@ calloop = "0.14.5"
 log = "0.4.35"
 psst-overlay = { version = "0.1.0", path = "../psst-overlay" }
 rustix = { version = "1.1.6", features = ["fs", "pipe", "time"] }
+# Only for its `log` feature, so the backend's errors reach the daemon's log instead of stderr.
+wayland-backend = { version = "0.3.17", features = ["log"] }
 wayland-client = "0.31.15"
 wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }
 wayland-protocols-misc = { version = "0.3.12", features = ["client"] }

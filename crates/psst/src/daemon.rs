@@ -70,6 +70,9 @@ pub struct Timing {
     pub done_shown: Duration,
     /// How long errors and flashes stay on screen.
     pub notice_shown: Duration,
+    /// Longest the focused-window lookup over niri's IPC may take before the paste falls back to
+    /// Ctrl+V.
+    pub niri_lookup: Duration,
 }
 
 impl Default for Timing {
@@ -85,6 +88,7 @@ impl Default for Timing {
             first_backoff: Duration::from_millis(250),
             done_shown: Duration::from_millis(800),
             notice_shown: Duration::from_secs(4),
+            niri_lookup: niri::TIMEOUT,
         }
     }
 }
@@ -594,7 +598,9 @@ impl Core {
         }
         d.net = self.begin_check();
         self.recording = Some(d);
-        self.awaiting_shown = Some(id);
+        // `OverlayShown` comes only when the overlay appears. One already on screen (a notice, or
+        // the previous dictation finishing) just changes state, and the time isn't measured.
+        self.awaiting_shown = (!self.overlay_visible()).then_some(id);
         info!("recording {id}");
         Response::ok(format!("recording {id}"))
     }
@@ -1284,8 +1290,9 @@ impl Core {
         match self.deps.niri_socket.clone() {
             Some(socket) => {
                 let tx = self.tx.clone();
+                let timeout = self.deps.timing.niri_lookup;
                 tokio::spawn(async move {
-                    let app_id = niri::focused_app_id(&socket).await;
+                    let app_id = niri::focused_app_id(&socket, timeout).await;
                     let _ = tx.send(Input::Focus { generation, app_id });
                 });
             }
@@ -1333,7 +1340,10 @@ impl Core {
             WaylandEvent::Disconnected => {
                 info!("the Wayland thread disconnected");
                 self.sink = None;
+                // The overlay is gone with the connection; it's sent again (and shown again) on
+                // the next refresh, which isn't the `toggle` a recording waits to see.
                 self.overlay = None;
+                self.awaiting_shown = None;
                 if let Some(inserting) = &self.inserting {
                     let generation = inserting.generation;
                     self.insert_failed(generation, "the Wayland connection closed".into());
@@ -1412,6 +1422,11 @@ impl Core {
         if let Some(sink) = &mut self.sink {
             sink.send(cmd);
         }
+    }
+
+    /// Whether the last overlay command showed it.
+    fn overlay_visible(&self) -> bool {
+        matches!(self.overlay, Some(Some(_)))
     }
 
     fn notice(&mut self, state: OverlayState, shown: Duration) {

@@ -17,6 +17,7 @@ smithay-client-toolkit = "0.21.1"
 wayland-client = "0.31.15"
 
 [dev-dependencies]
+claxon = "0.4.3"
 futures-util = "0.3.34"
 nix = { version = "0.31.3", features = ["signal", "user"] }
 psst-client = { path = "../psst-client" }

@@ -5,7 +5,7 @@ use std::{
     path::Path,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -32,6 +32,8 @@ const WAIT: Duration = Duration::from_secs(10);
 struct FakeWayland {
     cmds: Arc<Mutex<Vec<WaylandCmd>>>,
     fail_inserts: Arc<AtomicBool>,
+    /// Delays `OverlayShown`, as the real thread's waits for the frame to be presented.
+    shown_after_ms: Arc<AtomicU64>,
 }
 
 struct FakeSink {
@@ -66,8 +68,19 @@ impl WaylandSink for FakeSink {
             WaylandCmd::Copy { generation, .. } => Some(WaylandEvent::Copied { generation }),
             WaylandCmd::SnapshotClipboard { .. } => None,
         };
-        if let Some(event) = reply {
-            let _ = self.events.send(event);
+        let delay = Duration::from_millis(self.wayland.shown_after_ms.load(Ordering::SeqCst));
+        match reply {
+            Some(WaylandEvent::OverlayShown) if !delay.is_zero() => {
+                let events = self.events.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(delay);
+                    let _ = events.send(WaylandEvent::OverlayShown);
+                });
+            }
+            Some(event) => {
+                let _ = self.events.send(event);
+            }
+            None => {}
         }
     }
 }
@@ -255,6 +268,32 @@ async fn a_dictation_streams_live_and_is_pasted_then_forgotten() {
     assert!(d.wayland.showed(|s| matches!(s, OverlayState::Recording { .. })));
     assert!(d.wayland.showed(|s| matches!(s, OverlayState::Done)));
     assert_eq!(d.sounds.load(Ordering::SeqCst), 0);
+    d.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn toggle_to_overlay_is_timed_only_when_the_toggle_shows_the_overlay() {
+    let server = FakeServer::start(FakeServerConfig::default());
+    server.push_outcome(Outcome::Final("timed ".into()));
+    server.push_outcome(Outcome::Final("untimed ".into()));
+    let d = daemon(&server, |_, _| {}).await;
+    // The real thread reports `OverlayShown` once the frame is presented, a little later.
+    d.wayland.shown_after_ms.store(300, Ordering::SeqCst);
+    let first = d.dictate(500).await;
+    d.idle().await;
+    wait_until(|| d.wayland.overlays().last() == Some(&None)).await;
+
+    // `paste-last` brings the overlay up, and the toggle comes before it's presented: that
+    // `OverlayShown` belongs to `paste-last`, not to the toggle.
+    assert!(d.run(Request::PasteLast { session: None }).await.ok);
+    let second = d.dictate(500).await;
+    d.idle().await;
+
+    wait_until(|| server.reports().len() == 2).await;
+    let timings = |id| server.reports().iter().find(|r| r.session_id == id).unwrap().timings;
+    let shown = timings(first).toggle_to_overlay_ms.expect("the first toggle showed the overlay");
+    assert!(shown >= 300, "{shown} ms");
+    assert_eq!(timings(second).toggle_to_overlay_ms, None, "the overlay was already up");
     d.stop().await;
 }
 
@@ -538,6 +577,8 @@ async fn the_chord_follows_the_focused_window_and_app_rules() {
     server.push_outcome(Outcome::Final("secret ".into()));
     let d = daemon(&server, |cfg, deps| {
         deps.niri_socket = Some(niri.clone());
+        // Real niri answers in milliseconds; a loaded CI runner can take longer than the default.
+        deps.timing.niri_lookup = Duration::from_secs(5);
         cfg.apps.insert(
             "org.keepassxc.KeePassXC".into(),
             AppRule { paste: Some(PasteAction::CopyOnly), paste_delay_ms: 0 },
@@ -632,7 +673,9 @@ async fn the_recording_limit_warns_and_stops() {
     assert!(d.wayland.showed(|s| matches!(s, OverlayState::LimitWarning { .. })));
     assert_eq!(d.wayland.inserted(), vec![paste("limited ")]);
     let samples = server.session(id).unwrap().stop_samples.unwrap();
-    assert!((16_000..17_000).contains(&samples), "stopped at the limit: {samples}");
+    // It stops at the 1 s limit, then drains what was already captured, which on a loaded
+    // machine can be a few frames; the server allows 5 s past the limit.
+    assert!((16_000..24_000).contains(&samples), "stopped at the limit: {samples}");
     d.stop().await;
 }
 

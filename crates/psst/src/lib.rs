@@ -168,7 +168,7 @@ fn run_daemon() -> anyhow::Result<ExitCode> {
     let paths = daemon::Paths { state_dir: state_dir()?, socket: socket_path()? };
     let wayland: Box<dyn ui::Wayland> = match &cfg.insert.record {
         Some(path) => Box::new(ui::RecordingWayland { path: path.clone() }),
-        None => Box::new(ui::DesktopWayland),
+        None => Box::new(ui::DesktopWayland::new(&cfg.overlay)),
     };
     let deps = daemon::Deps {
         audio: audio::source_for(&cfg.audio.input),
