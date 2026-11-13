@@ -4,6 +4,9 @@ psst is a remote-first, self-hosted dictation system. Run the model on a powerfu
 
 Works great with NixOS, Wayland and Tailscale. 
 
+https://github.com/user-attachments/assets/a1673e5a-6b4c-4ca0-87cf-086785a7d08e
+
+
 > [!WARNING]
 > This app is fully vibe coded <img src="assets/old-man-hugging-claude.png" alt=":old-man-hugging-claude:" height="20">, you probably shouldn't use this.
 
