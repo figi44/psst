@@ -2,6 +2,7 @@
 //! engine, driven through the client protocol, the admin CLI and HTTP.
 
 mod access;
+mod dictionary;
 mod engine;
 mod harness;
 mod reload;

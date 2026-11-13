@@ -4,13 +4,13 @@ use std::{
     collections::HashMap,
     path::PathBuf,
     sync::{
-        Arc, Mutex, RwLock,
+        Arc, Mutex, MutexGuard, RwLock,
         atomic::{AtomicU64, Ordering},
     },
 };
 
 use nix::unistd::{Uid, User};
-use psst_config::{ConfigFile, DictionaryFile, Profile, ProfilesFile, ServerConfig};
+use psst_config::{ConfigFile, DEFAULT_PROFILE, DictionaryFile, Profile, ProfilesFile, ServerConfig};
 use psst_dict::Dictionary;
 use psst_proto::{DeviceId, api::ModelState};
 use tokio::sync::watch;
@@ -18,6 +18,7 @@ use tokio::sync::watch;
 use crate::{
     auth::{Identity, Pairings, Refusal},
     db::Db,
+    dictionary::Layered,
     engine::Supervisor,
     registry::{Attachment, ConnEvent, Registry},
 };
@@ -69,30 +70,60 @@ impl LocalPolicy {
     }
 }
 
-/// `profiles.toml` and `dictionary.toml`, replaced as a whole on reload. Sessions snapshot them at
-/// `start`.
+/// `profiles.toml`, and the dictionary (`dictionary.toml` with the database layer), each replaced
+/// as a whole on reload or change. Sessions snapshot them at `start`.
 #[derive(Debug)]
 pub struct LiveConfig {
     dir: PathBuf,
     profiles: RwLock<Arc<ProfilesFile>>,
     dictionary: RwLock<Arc<Dictionary>>,
+    /// What the dictionary is resolved from. Held from reading it until the new dictionary is
+    /// swapped in, so changes and reloads happen one at a time.
+    layered: Mutex<Layered>,
 }
 
 impl LiveConfig {
-    pub fn new(dir: PathBuf, profiles: ProfilesFile, dictionary: Dictionary) -> Self {
-        Self { dir, profiles: RwLock::new(Arc::new(profiles)), dictionary: RwLock::new(Arc::new(dictionary)) }
+    pub fn new(dir: PathBuf, profiles: ProfilesFile, layered: Layered, dictionary: Dictionary) -> Self {
+        Self {
+            dir,
+            profiles: RwLock::new(Arc::new(profiles)),
+            dictionary: RwLock::new(Arc::new(dictionary)),
+            layered: Mutex::new(layered),
+        }
     }
 
     pub fn profile(&self, name: &str) -> Option<Profile> {
         self.profiles.read().unwrap_or_else(|e| e.into_inner()).resolve(name)
     }
 
+    /// The `default` profile in `language` (its own when `None`), with that language's fillers.
+    pub fn default_profile_in(&self, language: Option<&str>) -> Option<Profile> {
+        let profiles = self.profiles.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let mut profile = profiles.resolve(DEFAULT_PROFILE)?;
+        if let Some(language) = language {
+            profile.language = language.to_owned();
+            profile.fillers = profiles.fillers.get(language).cloned().unwrap_or_default();
+        }
+        Some(profile)
+    }
+
+    /// The dictionary a session starting now uses.
     pub fn dictionary(&self) -> Arc<Dictionary> {
         self.dictionary.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// The dictionary's layers, locked for a change.
+    pub fn layered(&self) -> MutexGuard<'_, Layered> {
+        self.layered.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Swaps in a new dictionary. Sessions that started earlier keep theirs.
+    pub fn set_dictionary(&self, dictionary: Dictionary) {
+        *self.dictionary.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(dictionary);
+    }
+
     /// Re-reads both files. A file that fails validation keeps its old version, and the error is
-    /// logged.
+    /// logged. The dictionary's database layer is resolved again on top of the new file.
     pub fn reload(&self, server: &ServerConfig) {
         match ProfilesFile::load_or_default(&self.dir.join(ProfilesFile::FILE_NAME)) {
             Ok(profiles) => {
@@ -101,18 +132,13 @@ impl LiveConfig {
             }
             Err(err) => tracing::error!("{err}; keeping the previous {}", ProfilesFile::FILE_NAME),
         }
-        let dictionary = DictionaryFile::load_or_default(&self.dir.join(DictionaryFile::FILE_NAME))
-            .map_err(|err| err.to_string())
-            .and_then(|file| {
-                Dictionary::from_file(&file).map_err(|err| format!("{}: {err}", DictionaryFile::FILE_NAME))
-            });
-        match dictionary {
-            Ok(dictionary) => {
-                *self.dictionary.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(dictionary);
-                tracing::info!("{}: reloaded", DictionaryFile::FILE_NAME);
-            }
-            Err(err) => tracing::error!("{err}; keeping the previous {}", DictionaryFile::FILE_NAME),
+        let mut layered = self.layered();
+        let file =
+            DictionaryFile::load_or_default(&self.dir.join(DictionaryFile::FILE_NAME)).map_err(|e| e.to_string());
+        if let Some(dictionary) = layered.reload(file) {
+            self.set_dictionary(dictionary);
         }
+        drop(layered);
         match ServerConfig::load_or_default(&self.dir.join(ServerConfig::FILE_NAME)) {
             Ok(current) if current != *server => {
                 tracing::warn!("{} changed; restart psst-server to apply it", ServerConfig::FILE_NAME);
