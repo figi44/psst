@@ -5,9 +5,12 @@ use std::time::{Duration, Instant};
 use psst_config::TermSpec;
 use psst_engine_proto::fake::{Script, TranscribeStep};
 use psst_proto::{
-    ClientTimings, ErrorCode, SessionId,
+    ClientTimings, ErrorCode, PROTOCOL_VERSION, SessionId,
     api::{ModelState, Stats},
-    ws::{AudioFormat, ClientMsg, Mode, ProgressState, ReadyModelState, ReadyMsg, ReportMsg, ServerMsg, StartMsg},
+    ws::{
+        AudioFormat, ClientMsg, Mode, ProgressState, ProtocolDetail, ReadyModelState, ReadyMsg, ReportMsg, ServerMsg,
+        StartMsg,
+    },
 };
 use serde_json::json;
 
@@ -356,10 +359,13 @@ async fn malformed_messages_and_unknown_profiles_are_bad_requests() {
 }
 
 #[tokio::test]
-async fn an_incompatible_protocol_version_is_refused() {
+async fn an_incompatible_protocol_version_is_refused_with_the_servers() {
     let server = default_server();
     let err = Socket::unix(server.socket()).await.hello_with(99).await.err().expect("refused");
     assert_eq!((err.session_id, err.code), (None, ErrorCode::Protocol));
+    let detail: ProtocolDetail = serde_json::from_value(err.detail.expect("a detail")).unwrap();
+    let expected = ProtocolDetail { protocol: PROTOCOL_VERSION, server_version: env!("CARGO_PKG_VERSION").into() };
+    assert_eq!(detail, expected);
 }
 
 #[tokio::test]

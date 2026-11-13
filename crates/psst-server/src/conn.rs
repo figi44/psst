@@ -15,8 +15,8 @@ use psst_proto::{
     DeviceId, ErrorCode, FRAME_MS, FRAME_SAMPLES, HistoryId, PROTOCOL_VERSION, SAMPLE_RATE, ServerTimings,
     api::ModelState,
     ws::{
-        CancelMsg, CancelledMsg, ClientMsg, Codec, ErrorMsg, FinalMsg, Mode, ProgressMsg, ProgressState,
-        ReadyModelState, ReadyMsg, ReportMsg, ServerLimits, ServerMsg, StartMsg, StopMsg, WelcomeMsg,
+        CancelMsg, CancelledMsg, ClientInfo, ClientMsg, Codec, ErrorMsg, FinalMsg, Mode, ProgressMsg, ProgressState,
+        ProtocolDetail, ReadyModelState, ReadyMsg, ReportMsg, ServerLimits, ServerMsg, StartMsg, StopMsg, WelcomeMsg,
     },
 };
 use serde_json::json;
@@ -64,9 +64,18 @@ pub async fn run(state: Arc<AppState>, mut ws: WebSocket, identity: Result<Ident
     match hello {
         Some(ClientMsg::Hello(hello)) if hello.protocol == PROTOCOL_VERSION => {}
         Some(ClientMsg::Hello(hello)) => {
+            let ClientInfo { name, version } = &hello.client;
+            tracing::info!(
+                "refused {name} {version}: it speaks protocol {}, the server {PROTOCOL_VERSION}",
+                hello.protocol
+            );
             let message =
                 format!("the server speaks protocol {PROTOCOL_VERSION}; the client speaks {}", hello.protocol);
-            send(&mut ws, &ServerMsg::Error(ErrorMsg::new(None, ErrorCode::Protocol, message))).await;
+            let mut err = ErrorMsg::new(None, ErrorCode::Protocol, message);
+            let detail =
+                ProtocolDetail { protocol: PROTOCOL_VERSION, server_version: env!("CARGO_PKG_VERSION").into() };
+            err.detail = Some(json!(detail));
+            send(&mut ws, &ServerMsg::Error(err)).await;
             close(&mut ws, close_code::PROTOCOL, "protocol").await;
             return;
         }

@@ -55,7 +55,8 @@ pub struct WaybarLine {
     /// only), `finishing`, `error` (while the overlay shows one) or `stopped` (no daemon).
     pub alt: &'static str,
     /// CSS classes: `alt`, with `recording` also on `offline`, plus `saved` when there are saved
-    /// recordings and `warning` when `psst status` warns about them.
+    /// recordings and `warning` when `psst status` has a warning (an update to make, or saved
+    /// recordings to deal with).
     pub class: Vec<&'static str>,
     /// Details, as Pango markup (already escaped, so leave waybar's `escape` off).
     pub tooltip: String,

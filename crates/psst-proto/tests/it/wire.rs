@@ -12,8 +12,8 @@ use psst_proto::{
     },
     ws::{
         AudioFormat, CancelMsg, CancelledMsg, ClientInfo, ClientMsg, Codec, ErrorMsg, EvalOpts, FinalMsg, HelloMsg,
-        Mode, ProgressMsg, ProgressState, ReadyModelState, ReadyMsg, ReportMsg, ServerLimits, ServerMsg, StartMsg,
-        StopMsg, WelcomeMsg,
+        Mode, ProgressMsg, ProgressState, ProtocolDetail, ReadyModelState, ReadyMsg, ReportMsg, ServerLimits,
+        ServerMsg, StartMsg, StopMsg, WelcomeMsg,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -245,9 +245,16 @@ fn error_and_cancelled() {
         json!({"type": "error", "session_id": SID, "code": "model_unavailable", "message": "model is downloading",
                "detail": {"reason": "downloading", "bytes": 10, "total": 100}, "retryable": false}),
     );
+    let mut refused = ErrorMsg::new(None, ErrorCode::Protocol, "the server speaks protocol 2; the client speaks 1");
+    refused.detail = Some(json!({"protocol": 2, "server_version": "0.2.0"}));
     assert_wire(
-        &ServerMsg::Error(ErrorMsg::new(None, ErrorCode::Protocol, "unsupported protocol 2")),
-        json!({"type": "error", "code": "protocol", "message": "unsupported protocol 2", "retryable": false}),
+        &ServerMsg::Error(refused),
+        json!({"type": "error", "code": "protocol", "message": "the server speaks protocol 2; the client speaks 1",
+               "detail": {"protocol": 2, "server_version": "0.2.0"}, "retryable": false}),
+    );
+    assert_wire(
+        &ProtocolDetail { protocol: 2, server_version: "0.2.0".into() },
+        json!({"protocol": 2, "server_version": "0.2.0"}),
     );
     assert_wire(
         &ServerMsg::Cancelled(CancelledMsg { session_id: sid() }),

@@ -13,7 +13,7 @@ use std::{
 
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use psst_proto::{
-    Endpoint, PROTOCOL_VERSION, SessionId, Token,
+    Endpoint, ErrorCode, PROTOCOL_VERSION, SessionId, Token,
     ws::{AudioFormat, CancelMsg, ClientInfo, ClientMsg, ErrorMsg, HelloMsg, ReportMsg, ServerMsg, StartMsg, StopMsg},
 };
 use tokio::{
@@ -29,7 +29,10 @@ use tokio_tungstenite::{
 };
 use tracing::{debug, warn};
 
-use crate::{AudioFrame, Client, ClientError, LostReason, PROGRESS_TIMEOUT, SessionEvent, StartOpts, codec::Encoder};
+use crate::{
+    AudioFrame, Client, ClientError, Incompatible, LostReason, PROGRESS_TIMEOUT, SessionEvent, StartOpts,
+    codec::Encoder,
+};
 
 /// Messages written before one flush.
 const WRITE_BATCH: usize = 50;
@@ -180,6 +183,9 @@ pub(crate) async fn connect(ep: &Endpoint, token: Option<&Token>) -> Result<Clie
         match msg {
             Message::Text(body) => match serde_json::from_str::<ServerMsg>(&body) {
                 Ok(ServerMsg::Welcome(welcome)) => break welcome,
+                Ok(ServerMsg::Error(err)) if err.code == ErrorCode::Protocol => {
+                    return Err(ClientError::Incompatible(Incompatible::from_refusal(&err)));
+                }
                 Ok(ServerMsg::Error(err)) => return Err(ClientError::Refused(err)),
                 Ok(other) => return Err(ClientError::Protocol(format!("expected welcome, got {other:?}"))),
                 Err(err) => return Err(ClientError::Protocol(format!("expected welcome: {err}"))),
@@ -464,7 +470,7 @@ impl Actor {
     /// With `failure`, the owner sees that error instead of `Cancelled`.
     fn cancel(&mut self, id: SessionId, failure: Option<String>) -> Flow {
         let ending = |failure: Option<String>| match failure {
-            Some(message) => SessionEvent::Error(ErrorMsg::new(Some(id), psst_proto::ErrorCode::Internal, message)),
+            Some(message) => SessionEvent::Error(ErrorMsg::new(Some(id), ErrorCode::Internal, message)),
             None => SessionEvent::Cancelled,
         };
         if let Some(pos) = self.queued.iter().position(|q| q.opts.session_id == id) {

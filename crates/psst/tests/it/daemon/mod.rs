@@ -2,6 +2,7 @@
 //! server, audio replayed from a WAV, and a fake Wayland thread that records what it's asked.
 
 mod follow;
+mod incompatible;
 mod slow_link;
 
 use std::{

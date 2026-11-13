@@ -1,7 +1,7 @@
 //! A scripted stand-in for `psst-server` that speaks `/v1/client` (and `/api/pair/redeem`), for
 //! client and daemon tests that need what the real server doesn't do on demand: stop reading
-//! mid-session, hold `ready` back, refuse connections while keeping its registry, or reject the
-//! next `start`. End-to-end tests use the real server (`spawn_server`).
+//! mid-session, hold `ready` back, refuse connections while keeping its registry, reject the
+//! next `start`, or speak another protocol version. End-to-end tests use the real server (`spawn_server`).
 //!
 //! It keeps a session registry like the real one: `start` gets `ready` at once, `progress`
 //! follows every [`FakeServerConfig::progress_interval`], `stop` is checked against the audio
@@ -25,11 +25,11 @@ use std::{
 
 use futures_util::{SinkExt, StreamExt};
 use psst_proto::{
-    Endpoint, ErrorCode, FRAME_SAMPLES, Final, HistoryId, ServerTimings, SessionId,
+    Endpoint, ErrorCode, FRAME_SAMPLES, Final, HistoryId, PROTOCOL_VERSION, ServerTimings, SessionId,
     api::{ApiError, ApiErrorCode, PairRedeem, PairRedeemed},
     ws::{
-        CancelledMsg, ClientMsg, Codec, ErrorMsg, FinalMsg, ProgressMsg, ProgressState, ReadyModelState, ReadyMsg,
-        ReportMsg, ServerLimits, ServerMsg, StartMsg, WelcomeMsg,
+        CancelledMsg, ClientMsg, Codec, ErrorMsg, FinalMsg, ProgressMsg, ProgressState, ProtocolDetail,
+        ReadyModelState, ReadyMsg, ReportMsg, ServerLimits, ServerMsg, StartMsg, WelcomeMsg,
     },
 };
 use tokio::{
@@ -119,6 +119,8 @@ struct Reg {
 struct State {
     outcomes: VecDeque<Outcome>,
     rejections: VecDeque<ErrorCode>,
+    /// Set by [`FakeServer::speak_protocol`]: (protocol, whether its refusal has a detail).
+    protocol: Option<(u32, bool)>,
     stalled: bool,
     registry: HashMap<SessionId, Reg>,
     seen: Vec<SeenSession>,
@@ -219,6 +221,14 @@ impl FakeServer {
     /// Rejects the next `start` with this code, before `ready`.
     pub fn reject_next(&self, code: ErrorCode) {
         self.inner.state().rejections.push_back(code);
+    }
+
+    /// Speaks `protocol` from the next `hello` on, like a server of another version: a `hello`
+    /// with another protocol gets `error protocol` and the connection closes. With `detail` the
+    /// error carries a [`ProtocolDetail`] (`server_version: "fake"`) as from current servers;
+    /// without, it has none, as from servers before it.
+    pub fn speak_protocol(&self, protocol: u32, detail: bool) {
+        self.inner.state().protocol = Some((protocol, detail));
     }
 
     /// While stalled, the server neither reads nor writes on any connection: no `progress`, no
@@ -382,15 +392,26 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(inner: Arc<Inner>, mut st
         return;
     }
     // hello → welcome
-    loop {
+    let hello = loop {
         match ws.next().await {
             Some(Ok(Message::Text(body))) => match serde_json::from_str::<ClientMsg>(&body) {
-                Ok(ClientMsg::Hello(_)) => break,
+                Ok(ClientMsg::Hello(hello)) => break hello,
                 _ => return,
             },
             Some(Ok(_)) => {}
             _ => return,
         }
+    };
+    let (protocol, detail) = inner.state().protocol.unwrap_or((PROTOCOL_VERSION, true));
+    if hello.protocol != protocol {
+        let mut err = ErrorMsg::new(None, ErrorCode::Protocol, format!("the server speaks protocol {protocol}"));
+        if detail {
+            let detail = ProtocolDetail { protocol, server_version: "fake".into() };
+            err.detail = Some(serde_json::to_value(detail).expect("serialise"));
+        }
+        let _ = ws.send(send(&ServerMsg::Error(err))).await;
+        let _ = ws.close(None).await;
+        return;
     }
     let device: String = if tcp { "fake-device".into() } else { "local:test".into() };
     let welcome = WelcomeMsg {

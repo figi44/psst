@@ -134,7 +134,8 @@ pub struct ClientTimings {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
-    /// Incompatible protocol version.
+    /// `hello` names a protocol version the server doesn't speak. `detail` is a
+    /// [`crate::ws::ProtocolDetail`].
     Protocol,
     BadRequest,
     Unauthorized,

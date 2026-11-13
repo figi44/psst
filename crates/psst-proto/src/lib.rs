@@ -13,7 +13,10 @@ pub mod ws;
 pub use endpoint::{Endpoint, EndpointParseError, Token};
 pub use types::*;
 
-/// Version of the client ↔ server protocol, sent in `hello`.
+/// Version of the client ↔ server protocol, sent in `hello`. The server speaks only its own and
+/// refuses any other with `error protocol`, whose [`ws::ProtocolDetail`] tells the client which
+/// side to update. So it changes only for what the other side can't ignore: a new optional field
+/// doesn't bump it.
 pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Default TCP port of the server.

@@ -4,11 +4,11 @@
 use std::time::Duration;
 
 use psst_client::{
-    AudioCodec, AudioFrame, Client, ClientError, FRAME_BUFFER, LostReason, OpusSettings, SessionEvent, StartOpts,
-    TrySendError, upload_file,
+    AudioCodec, AudioFrame, Client, ClientError, FRAME_BUFFER, Incompatible, LostReason, OpusSettings, Outdated,
+    SessionEvent, StartOpts, TrySendError, upload_file,
 };
 use psst_proto::{
-    ErrorCode, FRAME_SAMPLES, Token,
+    ErrorCode, FRAME_SAMPLES, PROTOCOL_VERSION, Token,
     ws::{Codec, Mode},
 };
 use psst_testkit::{
@@ -81,6 +81,43 @@ async fn tcp_needs_the_device_token() {
 
     let refused = Client::connect(&ep, Some(&Token::new("wrong"))).await.unwrap_err();
     assert!(matches!(refused, ClientError::Refused(ref err) if err.code == ErrorCode::Unauthorized), "{refused:?}");
+}
+
+async fn incompatible(server: &FakeServer) -> Incompatible {
+    match Client::connect(&server.endpoint(), None).await {
+        Err(ClientError::Incompatible(incompatible)) => incompatible,
+        other => panic!("expected an incompatible server, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_server_on_a_newer_protocol_asks_for_this_client_to_be_updated() {
+    let server = FakeServer::start(FakeServerConfig::default());
+    server.speak_protocol(PROTOCOL_VERSION + 1, true);
+    let refused = incompatible(&server).await;
+    assert_eq!(refused, Incompatible { server_protocol: PROTOCOL_VERSION + 1, server_version: Some("fake".into()) });
+    assert_eq!(refused.outdated(), Outdated::Client);
+    let message = refused.to_string();
+    assert!(
+        message.contains("psst fake") && message.contains(&format!("protocol {}", PROTOCOL_VERSION + 1)),
+        "{message}"
+    );
+}
+
+#[tokio::test]
+async fn a_server_on_an_older_protocol_asks_for_the_server_to_be_updated() {
+    let server = FakeServer::start(FakeServerConfig::default());
+    server.speak_protocol(PROTOCOL_VERSION - 1, true);
+    assert_eq!(incompatible(&server).await.outdated(), Outdated::Server);
+}
+
+#[tokio::test]
+async fn a_refusal_without_a_detail_comes_from_a_server_on_protocol_one() {
+    let server = FakeServer::start(FakeServerConfig::default());
+    server.speak_protocol(PROTOCOL_VERSION - 1, false);
+    let refused = incompatible(&server).await;
+    assert_eq!(refused, Incompatible { server_protocol: 1, server_version: None });
+    assert_eq!(refused.outdated(), Outdated::Server);
 }
 
 #[tokio::test]

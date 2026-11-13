@@ -41,7 +41,8 @@ pub enum ServerMsg {
     Cancelled(CancelledMsg),
 }
 
-/// First message on every connection.
+/// First message on every connection. A server that doesn't speak `protocol` answers with
+/// `error protocol` and a [`ProtocolDetail`], then closes the connection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HelloMsg {
     pub protocol: u32,
@@ -52,6 +53,16 @@ pub struct HelloMsg {
 pub struct ClientInfo {
     pub name: String,
     pub version: String,
+}
+
+/// `detail` of the `error protocol` that refuses a `hello`: what the server speaks, so the client
+/// can tell which side to update. Servers from before it send no detail; they all speak
+/// protocol 1.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProtocolDetail {
+    /// The protocol version the server speaks.
+    pub protocol: u32,
+    pub server_version: String,
 }
 
 /// The server's answer to `hello`.

@@ -88,6 +88,8 @@ pub struct Status {
     pub finishing: Vec<ActiveInfo>,
     /// Recordings kept on disk, oldest first.
     pub retained: Vec<RetainedInfo>,
+    /// What needs you: first the side to update while the server refuses this client's protocol
+    /// version, then saved recordings piling up or getting old.
     pub warnings: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_timings: Option<ClientTimings>,

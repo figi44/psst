@@ -6,7 +6,8 @@
 //! # Shape
 //!
 //! [`Client::connect`] opens the WebSocket, exchanges `hello`/`welcome` and spawns one task that
-//! owns the connection. A [`Client`] is a cheap handle to that task, and so are the
+//! owns the connection; a server on another protocol version refuses it with
+//! [`ClientError::Incompatible`], which says the side to update. A [`Client`] is a cheap handle to that task, and so are the
 //! [`Session`]s it starts and their [`FrameSender`]s. Everything a session does arrives through
 //! [`Session::next_event`].
 //!
@@ -35,8 +36,11 @@ mod wav;
 use std::{fmt, io, path::Path, sync::Arc, time::Duration};
 
 use psst_proto::{
-    ClientTimings, ErrorCode, FRAME_SAMPLES, HistoryId, SessionId,
-    ws::{Codec, ErrorMsg, EvalOpts, FinalMsg, Mode, ProgressState, ReadyModelState, ReportMsg, WelcomeMsg},
+    ClientTimings, ErrorCode, FRAME_SAMPLES, HistoryId, PROTOCOL_VERSION, SessionId,
+    ws::{
+        Codec, ErrorMsg, EvalOpts, FinalMsg, Mode, ProgressState, ProtocolDetail, ReadyModelState, ReportMsg,
+        WelcomeMsg,
+    },
 };
 pub use psst_proto::{Endpoint, Token};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -68,15 +72,61 @@ pub const ALIVE_WINDOW: Duration = Duration::from_secs(10);
 pub enum ClientError {
     #[error("cannot connect to {endpoint}: {source}")]
     Connect { endpoint: Endpoint, source: io::Error },
-    /// The server answered `hello` with an `error` (for example `protocol` or `unauthorized`).
+    /// The server answered `hello` with an `error` other than `protocol`, for example
+    /// `unauthorized`.
     #[error("the server refused the connection: {}", .0.message)]
     Refused(ErrorMsg),
+    /// The server answered `hello` with `error protocol`: it speaks another protocol version, and
+    /// one side must be updated.
+    #[error(transparent)]
+    Incompatible(Incompatible),
     #[error("protocol violation: {0}")]
     Protocol(String),
     #[error("no answer within the time budget")]
     Timeout,
     #[error("the connection is closed")]
     Closed,
+}
+
+/// The server speaks another protocol version than this client ([`PROTOCOL_VERSION`]).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{}, this client (psst {}) protocol {PROTOCOL_VERSION}", self.server(), env!("CARGO_PKG_VERSION"))]
+pub struct Incompatible {
+    /// The protocol version the server speaks.
+    pub server_protocol: u32,
+    /// The server's version; servers from before [`ProtocolDetail`] don't say.
+    pub server_version: Option<String>,
+}
+
+/// The side of the connection that has to be updated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outdated {
+    Client,
+    Server,
+}
+
+impl Incompatible {
+    /// From the `error protocol` that refused `hello`. Without a [`ProtocolDetail`], the server
+    /// is from before it, and so speaks protocol 1.
+    fn from_refusal(err: &ErrorMsg) -> Incompatible {
+        let detail = err.detail.clone().and_then(|d| serde_json::from_value::<ProtocolDetail>(d).ok());
+        match detail {
+            Some(d) => Incompatible { server_protocol: d.protocol, server_version: Some(d.server_version) },
+            None => Incompatible { server_protocol: 1, server_version: None },
+        }
+    }
+
+    /// Which side speaks the older protocol, and so has to be updated.
+    pub fn outdated(&self) -> Outdated {
+        if self.server_protocol > PROTOCOL_VERSION { Outdated::Client } else { Outdated::Server }
+    }
+
+    fn server(&self) -> String {
+        match &self.server_version {
+            Some(version) => format!("the server (psst {version}) speaks protocol {}", self.server_protocol),
+            None => format!("the server speaks protocol {}", self.server_protocol),
+        }
+    }
 }
 
 /// A connection that has completed `hello`/`welcome`.

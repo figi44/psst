@@ -17,6 +17,12 @@
 //! offline and keeps recording to its file; at `stop` it's uploaded once with its own
 //! `session_id` and `resume: true`. If that fails too, it stays on disk for `psst retry`.
 //!
+//! **An incompatible server** (`error protocol`: it speaks another protocol version) needs an
+//! update, not a retry. The daemon says which side to update: once on the overlay (or as the
+//! reason of the dictation in flight), and among `psst status`'s warnings until a connection
+//! succeeds. Recordings still go to their files, but an upload gives up at the refusal, so it's
+//! saved for `psst retry` after the update.
+//!
 //! **Followers.** `psst status --follow` subscribes on the command socket. After every input the
 //! daemon compares a cheap summary of its state with the last one it published, and only when it
 //! differs builds the full [`Status`] (which reads the recordings directory) and publishes it on a
@@ -28,8 +34,8 @@ use std::{collections::VecDeque, path::PathBuf, sync::Arc, time::Duration};
 
 use jiff::Timestamp;
 use psst_client::{
-    AudioCodec, AudioFrame, Client, FRAME_BUFFER, FrameSender, OpusSettings, Session, SessionEvent, StartOpts,
-    TrySendError, upload_file,
+    AudioCodec, AudioFrame, Client, ClientError, FRAME_BUFFER, FrameSender, OpusSettings, Outdated, Session,
+    SessionEvent, StartOpts, TrySendError, upload_file,
 };
 use psst_config::{ClientConfig, PasteAction};
 use psst_proto::{
@@ -290,7 +296,7 @@ enum Input {
     },
     Conn {
         attempt: u64,
-        result: Result<Client, String>,
+        result: Result<Client, ConnFailure>,
         fresh: bool,
     },
     ConnClosed {
@@ -306,6 +312,22 @@ enum Input {
     /// A follower subscribes to the status.
     Follow(oneshot::Sender<watch::Receiver<Status>>),
     Shutdown(oneshot::Sender<()>),
+}
+
+/// Why a connection attempt failed.
+struct ConnFailure {
+    reason: String,
+    /// The server refused this client's protocol version, and this side has to be updated.
+    outdated: Option<Outdated>,
+}
+
+/// What the daemon tells the user when the server refused this client's protocol version: short
+/// enough for the overlay to show whole, while `psst status` has the versions on its server line.
+fn update_prompt(outdated: Outdated) -> &'static str {
+    match outdated {
+        Outdated::Client => "update psst",
+        Outdated::Server => "update the server",
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -477,6 +499,9 @@ struct Core {
     epoch: u64,
     connected_at: Instant,
     conn_error: Option<String>,
+    /// The side to update since the server refused this client's protocol version, until a
+    /// connection succeeds.
+    incompatible: Option<Outdated>,
     /// [`Client::round_trip`] of the latest connection, kept while there is none.
     round_trip: Duration,
     attempt: Option<u64>,
@@ -530,6 +555,7 @@ impl Core {
             epoch: 0,
             connected_at: Instant::now(),
             conn_error: None,
+            incompatible: None,
             round_trip: Duration::ZERO,
             attempt: None,
             attempts: 0,
@@ -878,7 +904,7 @@ impl Core {
             recording: self.recording.as_ref().map(info),
             finishing: self.pipeline.iter().map(info).collect(),
             retained: Vec::new(),
-            warnings: Vec::new(),
+            warnings: self.incompatible.map(|o| vec![update_prompt(o).to_string()]).unwrap_or_default(),
             last_timings: self.last_timings,
         }
     }
@@ -886,7 +912,7 @@ impl Core {
     /// `summary` with the saved recordings and their warnings.
     fn complete_status(&self, mut summary: Status) -> Status {
         let retained = self.store.list();
-        summary.warnings = self.store.warnings(&retained);
+        summary.warnings.extend(self.store.warnings(&retained));
         summary.retained = retained
             .into_iter()
             .map(|r| {
@@ -1006,18 +1032,27 @@ impl Core {
                         }
                     }
                 }
-                let result = Client::connect(&endpoint, token.as_ref()).await.map_err(|e| e.to_string());
+                let result = Client::connect(&endpoint, token.as_ref()).await.map_err(|err| ConnFailure {
+                    outdated: match &err {
+                        ClientError::Incompatible(incompatible) => Some(incompatible.outdated()),
+                        _ => None,
+                    },
+                    reason: err.to_string(),
+                });
                 (result, true)
             };
             let (result, fresh) = match tokio::time::timeout(budget, work).await {
                 Ok(done) => done,
-                Err(_) => (Err(format!("no answer from {endpoint} within {} ms", budget.as_millis())), true),
+                Err(_) => {
+                    let reason = format!("no answer from {endpoint} within {} ms", budget.as_millis());
+                    (Err(ConnFailure { reason, outdated: None }), true)
+                }
             };
             let _ = tx.send(Input::Conn { attempt, result, fresh });
         });
     }
 
-    fn on_conn(&mut self, attempt: u64, result: Result<Client, String>, fresh: bool) {
+    fn on_conn(&mut self, attempt: u64, result: Result<Client, ConnFailure>, fresh: bool) {
         if self.attempt == Some(attempt) {
             self.attempt = None;
         }
@@ -1049,18 +1084,29 @@ impl Core {
                     self.slot = None;
                 }
                 self.conn_error = None;
+                self.incompatible = None;
                 if let Some(rec) = &mut self.recording
                     && matches!(rec.net, Net::Checking { .. })
                 {
                     rec.net = Net::Pending;
                 }
             }
-            Err(reason) => {
-                info!("cannot reach the server: {reason}");
+            Err(ConnFailure { reason, outdated }) => {
                 if fresh && let Some(old) = self.client.take() {
                     old.close();
                 }
                 self.conn_error = Some(reason.clone());
+                let reason = match outdated {
+                    Some(outdated) => {
+                        warn!("{}: {reason}", update_prompt(outdated));
+                        self.refused(outdated);
+                        update_prompt(outdated).to_string()
+                    }
+                    None => {
+                        info!("cannot reach the server: {reason}");
+                        reason
+                    }
+                };
                 if let Some(rec) = &self.recording
                     && matches!(rec.net, Net::Checking { .. })
                 {
@@ -1069,6 +1115,28 @@ impl Core {
                 }
             }
         }
+    }
+
+    /// The server refused this client's protocol version. Says so once, unless a dictation in
+    /// flight will (it can't reach the server either), and ends the window of every upload waiting
+    /// for a connection: retrying can't help until one side is updated.
+    fn refused(&mut self, outdated: Outdated) {
+        let learned = self.incompatible != Some(outdated);
+        self.incompatible = Some(outdated);
+        if learned && self.recording.is_none() && self.pipeline.is_empty() {
+            self.error_notice(update_prompt(outdated));
+        }
+        let now = Instant::now();
+        for d in &mut self.pipeline {
+            if d.phase == Phase::Uploading && d.session.is_none() {
+                d.window_end = Some(now);
+            }
+        }
+    }
+
+    /// Why a dictation that needs the server can't have it.
+    fn unreachable_reason(&self) -> String {
+        self.incompatible.map_or("no connection to the server", update_prompt).to_string()
     }
 
     fn on_conn_closed(&mut self, epoch: u64, reason: String) {
@@ -1340,7 +1408,8 @@ impl Core {
                     self.begin_upload(&mut d);
                     self.pipeline.insert(pos, d);
                 } else {
-                    self.saved(d, "no connection to the server".into());
+                    let reason = self.unreachable_reason();
+                    self.saved(d, reason);
                 }
             }
         }
@@ -1773,7 +1842,8 @@ impl Core {
             }
             if now >= window_end && !attempting {
                 let d = self.pipeline.remove(pos).expect("in range");
-                self.saved(d, "no connection to the server".into());
+                let reason = self.unreachable_reason();
+                self.saved(d, reason);
                 continue;
             }
             if !attempting && now >= d.next_attempt {
