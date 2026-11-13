@@ -1,0 +1,27 @@
+[package]
+name = "psst-e2e"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+psst = { version = "0.1.0", path = "../psst" }
+psst-server = { version = "0.1.0", path = "../psst-server" }
+
+[dev-dependencies]
+psst-client = { path = "../psst-client" }
+psst-testkit = { path = "../psst-testkit" }
+tempfile = "3.27.0"
+
+[[bin]]
+name = "psst-server-e2e"
+path = "src/bin/psst-server-e2e.rs"
+test = false
+
+[[bin]]
+name = "psst-e2e-daemon"
+path = "src/bin/psst-e2e-daemon.rs"
+test = false
