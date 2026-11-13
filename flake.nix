@@ -26,6 +26,8 @@
     in
     {
       overlays.default = import ./nix/overlay.nix;
+      # Both build psst from the host's pkgs through the overlay (docs/nix.md).
+      nixosModules.psst-server = import ./nix/modules/nixos.nix self.overlays.default;
 
       packages = forAllSystems (pkgs: {
         inherit (pkgs) psst psst-server psst-engine-faster-whisper-cuda;
