@@ -10,6 +10,7 @@ Status: early development.
 
 - [docs/protocol.md](docs/protocol.md): the client ↔ server and server ↔ engine protocols.
 - [docs/config.md](docs/config.md): every configuration key with its default.
+- [docs/evals.md](docs/evals.md): the eval set, its metrics and the regression gate.
 - [docs/nix.md](docs/nix.md): the packages, the NixOS and Home Manager modules, and the dev shells.
 - [docs/host-config.md](docs/host-config.md): switching the author's NixOS config over from localwhisper.
 - [AGENTS.md](AGENTS.md): how to build, test and contribute.
