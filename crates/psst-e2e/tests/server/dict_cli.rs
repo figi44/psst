@@ -1,64 +1,14 @@
 //! `psst dict` as built (`psst-e2e-daemon dict …`), against the real server: over the socket, and
 //! over TCP with the token `psst pair` stored.
 
-use std::{
-    fs,
-    path::Path,
-    process::{Command, Output},
-};
+use std::path::Path;
 
-use psst_config::{ClientConfig, ConfigFile, DictionaryFile};
+use psst_config::{ConfigFile, DictionaryFile};
 use psst_engine_proto::fake::Script;
 use psst_proto::{Endpoint, api::DictionaryView};
 use psst_testkit::TestServer;
-use tempfile::TempDir;
 
 use crate::harness::*;
-
-const PSST: &str = env!("CARGO_BIN_EXE_psst-e2e-daemon");
-
-/// A home for `psst` with a `client.toml` naming `server`, and nothing from this process's
-/// environment.
-struct Home(TempDir);
-
-impl Home {
-    fn new(server: Endpoint) -> Home {
-        let home = Home(tempfile::tempdir().unwrap());
-        let config = home.0.path().join("config/psst");
-        fs::create_dir_all(&config).unwrap();
-        let client = ClientConfig { server, ..ClientConfig::default() };
-        fs::write(config.join(ClientConfig::FILE_NAME), client.to_toml_string()).unwrap();
-        home
-    }
-
-    fn psst(&self, args: &[&str]) -> Output {
-        let root = self.0.path();
-        Command::new(PSST)
-            .args(args)
-            .env_clear()
-            .env("HOME", root)
-            .env("XDG_CONFIG_HOME", root.join("config"))
-            .env("XDG_STATE_HOME", root.join("state"))
-            .output()
-            .expect("run psst")
-    }
-
-    /// Runs `psst <args>`; panics unless it succeeds, and returns its stdout.
-    #[track_caller]
-    fn ok(&self, args: &[&str]) -> String {
-        let out = self.psst(args);
-        assert!(out.status.success(), "psst {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
-        String::from_utf8(out.stdout).unwrap()
-    }
-
-    /// Runs `psst <args>`; panics unless it fails, and returns its stderr.
-    #[track_caller]
-    fn fails(&self, args: &[&str]) -> String {
-        let out = self.psst(args);
-        assert_eq!(out.status.code(), Some(1), "psst {args:?}: {}", String::from_utf8_lossy(&out.stdout));
-        String::from_utf8(out.stderr).unwrap()
-    }
-}
 
 fn dictionary_server(tcp: bool) -> TestServer {
     server(Script::default(), |cfg| {

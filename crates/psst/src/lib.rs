@@ -16,6 +16,8 @@
 //! | [`niri`] | the focused window, for the paste chord |
 //! | [`pair`] | `psst pair` and the credentials file |
 //! | [`dict`] | `psst dict`, a client of the server's dictionary API |
+//! | [`web_ui`] | `psst ui`, a login link to the server's web UI |
+//! | [`server_api`] | the server's API at the server `client.toml` names, for those two |
 
 pub mod audio;
 pub mod daemon;
@@ -25,9 +27,11 @@ pub mod ipc;
 mod logind;
 pub mod niri;
 pub mod pair;
+pub mod server_api;
 mod sound;
 pub mod store;
 pub mod ui;
+pub mod web_ui;
 
 use std::{env, path::PathBuf, process::ExitCode, sync::Arc};
 
@@ -94,6 +98,12 @@ enum Command {
     Pair { server: Endpoint, code: String },
     /// Change the server's dictionary: add, remove or reset terms, never rules, and tests.
     Dict(dict::DictArgs),
+    /// Open the server's web UI in the browser, logged in with a one-time link.
+    Ui {
+        /// Print the link (valid for a minute, for one login) instead of opening it.
+        #[arg(long)]
+        print: bool,
+    },
 }
 
 /// The `psst` program.
@@ -103,6 +113,7 @@ pub fn main() -> ExitCode {
         Command::Daemon => run_daemon(),
         Command::Pair { server, code } => pair(&server, &code),
         Command::Dict(args) => dict::run(args),
+        Command::Ui { print } => web_ui::run(print),
         Command::Toggle { profile } => command(Request::Toggle { profile }, false),
         Command::Start => command(Request::Start, false),
         Command::Stop => command(Request::Stop, false),

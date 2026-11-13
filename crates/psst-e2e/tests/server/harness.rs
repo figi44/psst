@@ -1,7 +1,9 @@
 //! What the server tests share: a server with the fake engine, a raw client of the `/v1/client`
-//! protocol, the admin CLI, and plain HTTP over TCP.
+//! protocol, the admin CLI, `psst` in a home of its own, and plain HTTP over TCP.
 
 use std::{
+    ffi::OsStr,
+    fs,
     net::SocketAddr,
     path::Path,
     process::{Command, Output},
@@ -9,9 +11,10 @@ use std::{
 };
 
 use futures_util::{SinkExt, StreamExt};
+use psst_config::{ClientConfig, ConfigFile};
 use psst_engine_proto::fake::{LoggedRequest, Script, TranscribeStep};
 use psst_proto::{
-    FRAME_SAMPLES, SessionId,
+    Endpoint, FRAME_SAMPLES, SessionId,
     api::{ModelState, ModelStatus},
     ws::{
         AudioFormat, CancelMsg, ClientInfo, ClientMsg, ErrorMsg, EvalOpts, FinalMsg, HelloMsg, Mode, ProgressMsg,
@@ -20,6 +23,7 @@ use psst_proto::{
 };
 use psst_testkit::{TestServer, TestServerConfig};
 use serde_json::Value;
+use tempfile::TempDir;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpStream, UnixStream},
@@ -30,6 +34,7 @@ use tokio_tungstenite::{
 };
 
 pub const SERVER: &str = env!("CARGO_BIN_EXE_psst-server-e2e");
+pub const PSST: &str = env!("CARGO_BIN_EXE_psst-e2e-daemon");
 
 /// How long any single expected message may take.
 pub const MESSAGE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -72,6 +77,59 @@ pub fn admin_json(server: &TestServer, args: &[&str]) -> Value {
         .expect("run psst-server");
     assert!(out.status.success(), "psst-server {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
     serde_json::from_slice(&out.stdout).expect("JSON output")
+}
+
+/// A home for `psst` with a `client.toml` naming `server`, and nothing from this process's
+/// environment.
+pub struct Home(TempDir);
+
+impl Home {
+    pub fn new(server: Endpoint) -> Home {
+        let home = Home(tempfile::tempdir().unwrap());
+        let config = home.0.path().join("config/psst");
+        fs::create_dir_all(&config).unwrap();
+        let client = ClientConfig { server, ..ClientConfig::default() };
+        fs::write(config.join(ClientConfig::FILE_NAME), client.to_toml_string()).unwrap();
+        home
+    }
+
+    pub fn path(&self) -> &Path {
+        self.0.path()
+    }
+
+    pub fn psst(&self, args: &[&str]) -> Output {
+        self.psst_with(args, &[])
+    }
+
+    /// Runs `psst <args>` with `env` added to its environment.
+    pub fn psst_with(&self, args: &[&str], env: &[(&str, &OsStr)]) -> Output {
+        let root = self.0.path();
+        Command::new(PSST)
+            .args(args)
+            .env_clear()
+            .env("HOME", root)
+            .env("XDG_CONFIG_HOME", root.join("config"))
+            .env("XDG_STATE_HOME", root.join("state"))
+            .envs(env.iter().copied())
+            .output()
+            .expect("run psst")
+    }
+
+    /// Runs `psst <args>`; panics unless it succeeds, and returns its stdout.
+    #[track_caller]
+    pub fn ok(&self, args: &[&str]) -> String {
+        let out = self.psst(args);
+        assert!(out.status.success(), "psst {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8(out.stdout).unwrap()
+    }
+
+    /// Runs `psst <args>`; panics unless it fails, and returns its stderr.
+    #[track_caller]
+    pub fn fails(&self, args: &[&str]) -> String {
+        let out = self.psst(args);
+        assert_eq!(out.status.code(), Some(1), "psst {args:?}: {}", String::from_utf8_lossy(&out.stdout));
+        String::from_utf8(out.stderr).unwrap()
+    }
 }
 
 pub fn model_status(server: &TestServer) -> ModelStatus {

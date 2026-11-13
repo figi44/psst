@@ -12,3 +12,4 @@ mod pages;
 mod profiles;
 mod reload;
 mod sessions;
+mod ui_cli;
