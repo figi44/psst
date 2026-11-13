@@ -53,6 +53,27 @@ fn check_config_prints_warnings_but_passes() {
 }
 
 #[test]
+fn check_config_prints_dictionary_warnings_but_passes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut toml = String::from("[[terms]]\ntext = \"Go\"\n[[terms]]\ntext = \"Nix\"\nsounds_like = [\"next\"]\n");
+    // 61 pinned terms of 8 bytes, joined by ", ", come to about 153 prompt tokens.
+    for i in 0..61 {
+        toml.push_str(&format!("[[terms]]\ntext = \"Pinned{i:02}\"\npin = true\n"));
+    }
+    fs::write(dir.path().join("dictionary.toml"), toml).unwrap();
+    let (ok, stderr) = check_config(dir.path());
+    assert!(ok, "{stderr}");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        [
+            "dictionary.toml: warning: term `Go` is a common en word: in en sessions it never changes the case of `go`, and doesn't protect it",
+            "dictionary.toml: warning: term `Nix`: sounds_like `next` is a common en word: in en sessions every `next` becomes `Nix`",
+            "dictionary.toml: warning: pinned terms for every language come to about 153 prompt tokens, over about 150; they crowd out the profile's style and every other term",
+        ]
+    );
+}
+
+#[test]
 fn check_config_rejects_a_missing_directory() {
     let dir = tempfile::tempdir().unwrap();
     assert!(!check_config(&dir.path().join("nope")).0);
