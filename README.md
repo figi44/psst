@@ -1,15 +1,13 @@
 # psst
 
-A self-hosted dictation system for Linux. A server runs the speech model on a machine with a GPU; thin clients
-(desktop now, Android later) send audio to it over Tailscale, a LAN or a local socket, and get text back with a
-shared, centrally managed dictionary applied.
+psst is a remote-first, self-hosted dictation system. Run the model on a powerful machine and get fast and accurate results from anywhere.
 
-Status: early development.
+> [!WARNING]
+> This app is fully vibe coded, you probably shouldn't use this.
 
 ## Documentation
 
-The code is the documentation: each crate's docs (`cargo doc --open`) describe its part, and
-[AGENTS.md](AGENTS.md) covers building, testing and contributing.
+IDK, ask your agent.
 
 ## License
 
