@@ -1,77 +1,104 @@
 {% extends "base.html" %}
 {% block title %}Profiles · psst{% endblock %}
 
-{%- macro profile_fields(f, prefix) %}
-<div class="fields">
-  <div>
-    <label for="{{ prefix }}-language">Language <span class="hint">(ISO 639-1, for example en or cs)</span></label>
-    <input type="text" id="{{ prefix }}-language" name="language" value="{{ f.language }}" list="languages" required autocomplete="off">
-  </div>
-  <div>
-    <label for="{{ prefix }}-rules">Rules <span class="hint">(in order: {{ rule_ids|join(", ") }})</span></label>
-    <input type="text" id="{{ prefix }}-rules" name="rules" value="{{ f.rules }}" autocomplete="off">
-  </div>
-  <div class="wide">
-    <label for="{{ prefix }}-style">Prompt style <span class="hint">(a sentence in the style you dictate; about {{ f.tokens }} tokens, over {{ warn_tokens }} crowds out dictionary terms)</span></label>
-    <textarea id="{{ prefix }}-style" name="prompt_style">{{ f.prompt_style }}</textarea>
-  </div>
-</div>
-{%- endmacro %}
+{%- macro chevron() -%}<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>{%- endmacro %}
+{%- macro close_icon() -%}<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>{%- endmacro %}
 
 {% block main %}
-<h1>Profiles</h1>
-{%- if error and not error_for %}
-<div class="notice error" role="alert">{{ error }}</div>
-{%- endif %}
-{%- if warnings %}
-<div class="notice warning"><ul>{% for warning in warnings %}<li>{{ warning }}</li>{% endfor %}</ul></div>
-{%- endif %}
-<p class="hint">A saved profile replaces profiles.toml's version for new dictations, without restarting the engine. <a href="/profiles.toml" download hx-boost="false">Export profiles.toml</a> to move your changes into the file.</p>
-
-<datalist id="languages">{% for language in languages %}<option value="{{ language }}">{% endfor %}</datalist>
-
-{%- for p in profiles %}
-<section class="card">
-  <div class="profile-head">
-    <h2>{{ p.name }}</h2>
-    <span class="badge {{ p.layer }}">{{ p.layer }}</span>
-    {%- if p.same_as_file %}<span class="muted">same as profiles.toml's: reset it to follow the file</span>{% endif %}
-  </div>
-  <form method="post" action="/profiles/{{ p.name|segment }}">
-    {%- if error_for == p.name %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
-    {{ profile_fields(p.fields, "profile-" ~ loop.index) }}
-    <div class="actions"><button type="submit">Save</button></div>
-  </form>
-  {%- if p.layer != "file" %}
-  <div class="actions">
-    <form method="post" action="/profiles/{{ p.name|segment }}/reset">
-      <button type="submit" class="{% if p.layer == "added" %}danger{% else %}quiet{% endif %}">{% if p.layer == "added" %}Remove{% else %}Reset to profiles.toml's{% endif %}</button>
-    </form>
-  </div>
-  {%- endif %}
-  {%- if p.file %}
-  <details class="file">
-    <summary>profiles.toml's version</summary>
-    <pre>language = {{ p.file.language }}
-rules = {{ p.file.rules }}
-prompt_style = {{ p.file.prompt_style }}</pre>
-  </details>
-  {%- endif %}
-</section>
-{%- endfor %}
-
-<section class="card">
-  <h2>Add a profile</h2>
-  <form method="post" action="/profiles">
-    {%- if error_for == "new" %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
-    <div class="fields">
-      <div>
-        <label for="new-name">Name <span class="hint">(as in psst toggle --profile)</span></label>
-        <input type="text" id="new-name" name="name" value="{{ new_name }}" required autocomplete="off">
-      </div>
+<div class="page">
+  <div class="head">
+    <div class="head-row">
+      <h1>Profiles</h1>
+      <a class="btn" href="/profiles?new=1">New profile</a>
     </div>
-    {{ profile_fields(new_fields, "new") }}
-    <div class="actions"><button type="submit">Add</button></div>
+    <p class="sub">Dictation modes. Pick one with <code>psst toggle --profile name</code>. Changes apply to the next dictation.</p>
+  </div>
+  {%- if error %}
+  <div class="notice" role="alert">{{ error }}</div>
+  {%- endif %}
+  {%- if warnings %}
+  <div class="notice warning"><ul>{% for warning in warnings %}<li>{{ warning }}</li>{% endfor %}</ul></div>
+  {%- endif %}
+
+  <ul class="plist">
+    {%- for p in profiles %}
+    <li><a class="prow" href="/profiles?profile={{ p.name|segment }}"><span class="pname">{{ p.name }}</span><span class="pdesc">{{ p.language }} · {% if p.style %}“{{ p.style }}”{% else %}No prompt style{% endif %}</span>{{ chevron() }}</a></li>
+    {%- endfor %}
+  </ul>
+
+  {%- if changes %}
+  <p class="foot"><span>{{ changes }} profile{% if changes == 1 %} was{% else %}s were{% endif %} changed here and aren't in your Nix config yet.</span>
+    <a href="/profiles.toml" download hx-boost="false">Download profiles.toml</a></p>
+  {%- endif %}
+</div>
+
+{%- if panel %}
+<a class="scrim" href="/profiles" tabindex="-1" aria-hidden="true"></a>
+<aside class="panel" role="dialog" aria-modal="true" aria-labelledby="p-title">
+  <form method="post" action="/profiles{% if not panel.new %}/{{ panel.name|segment }}{% endif %}" class="panel-form">
+    <div class="p-head">
+      <div><h2 id="p-title">{{ panel.title }}</h2>{% if panel.sub %}<p class="sub">{{ panel.sub }}</p>{% endif %}</div>
+      <a class="iconbtn" href="/profiles" data-close aria-label="Close">{{ close_icon() }}</a>
+    </div>
+    <div class="p-body">
+      {%- if panel.error %}<div class="notice" role="alert">{{ panel.error }}</div>{% endif %}
+      {%- if panel.new %}
+      <div class="field">
+        <label for="p-name">Name</label>
+        <input class="input" id="p-name" name="name" value="{{ panel.fields.name }}" required autocomplete="off" spellcheck="false" autofocus>
+        <p class="hint">One word, as in <code>psst toggle --profile name</code>.</p>
+      </div>
+      {%- endif %}
+      <div class="field">
+        <label for="p-lang">Language</label>
+        <input class="input" id="p-lang" name="language" value="{{ panel.fields.language }}" list="languages" required autocomplete="off">
+        <datalist id="languages">{% for language in languages %}<option value="{{ language }}">{% endfor %}</datalist>
+        <p class="hint">A two-letter code, like en or cs. Whisper transcribes in it.</p>
+      </div>
+      <div class="field">
+        <label for="p-style">Prompt style</label>
+        <textarea class="input" id="p-style" name="prompt_style" data-count-tokens="{{ warn_tokens }}" data-tokens-out="p-tokens" placeholder="A sentence in the way you talk">{{ panel.fields.prompt_style }}</textarea>
+        <div class="tokens{% if panel.fields.over %} over{% endif %}" id="p-tokens"><span>{{ panel.fields.tokens }} of {{ warn_tokens }} tokens</span><progress class="meter" max="{{ warn_tokens }}" value="{{ [panel.fields.tokens, warn_tokens]|min }}" aria-hidden="true"></progress></div>
+        <p class="hint">Whisper copies its style and spelling. Keep it short: it shares room with your dictionary words.</p>
+      </div>
+      <div class="field">
+        <span class="label">Clean-up</span>
+        {%- for rule in panel.fields.rules %}
+        <label class="check"><input type="checkbox" name="rule_{{ rule.id }}" value="on"{% if rule.on %} checked{% endif %}><span class="t">{{ rule.name }}</span><span class="d">{{ rule.what }}</span></label>
+        {%- endfor %}
+      </div>
+      <details class="adv">
+        <summary>{{ chevron() }}Advanced</summary>
+        <div class="adv-body">
+          <div class="field">
+            <label for="p-order">Clean-up order</label>
+            <input class="input" id="p-order" name="order" value="{{ panel.fields.order }}" autocomplete="off" spellcheck="false">
+            <p class="hint">The steps run in this order, left to right.</p>
+          </div>
+          {%- if not panel.new %}
+          <div class="source">
+            <span class="label">Where it comes from</span>
+            <p>{{ panel.source }}</p>
+            {%- if panel.file %}<pre>{{ panel.file }}</pre>{% endif %}
+            {%- if panel.same_as_file %}<p>It's the same as the Nix version: use that to follow your Nix config again.</p>{% endif %}
+            {%- if panel.layer == "replaced" %}<div class="actions"><button class="btn" type="submit" form="profile-reset">Use the Nix version</button></div>{% endif %}
+          </div>
+          {%- endif %}
+        </div>
+      </details>
+    </div>
+    <div class="p-foot">
+      <button class="btn primary" type="submit">{% if panel.new %}Add profile{% else %}Save{% endif %}</button>
+      <a class="btn quiet" href="/profiles">Cancel</a>
+      {%- if panel.layer == "added" %}
+      <span class="spacer"></span>
+      <button class="btn danger" type="submit" form="profile-reset">Remove profile</button>
+      {%- endif %}
+    </div>
   </form>
-</section>
+  {%- if not panel.new %}
+  <form id="profile-reset" method="post" action="/profiles/{{ panel.name|segment }}/reset"></form>
+  {%- endif %}
+</aside>
+{%- endif %}
 {% endblock %}

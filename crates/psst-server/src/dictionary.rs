@@ -232,93 +232,101 @@ fn check_term(spec: &TermSpec) -> Result<(), ApiErr> {
 /// Applies `change`: checks it on the dictionary it would give, stores it and swaps that
 /// dictionary in.
 pub fn change_term(live: &LiveConfig, db: &Db, change: Change) -> Result<TermChange, ApiErr> {
-    let mut layered = live.layered();
-    let (id, entry) = match change {
-        Change::Add(spec) => {
-            check_term(&spec)?;
-            let id = term_id(&spec.text);
-            let known = match layered.terms.get(&id).map(|t| &t.entry) {
-                Some(LayerEntry::Set(_)) => true,
-                Some(LayerEntry::Hide) => false,
-                None => layered.file_term(&id).is_some(),
-            };
-            if known {
-                return Err(bad_request(format!(
-                    "`{}` is already in the dictionary; replace it with PUT {}",
-                    spec.text,
-                    psst_proto::api::routes::with_id(psst_proto::api::routes::DICTIONARY_TERM, &id)
-                )));
-            }
-            (id, Some(LayerEntry::Set(spec)))
-        }
-        Change::Replace(id, spec) => {
-            check_term(&spec)?;
-            let new_id = term_id(&spec.text);
-            if new_id != id {
-                return Err(bad_request(format!(
-                    "`{}` has the identity `{new_id}`, not `{id}`; renaming is a hide plus an add",
-                    spec.text
-                )));
-            }
-            if !layered.terms.contains_key(&id) && layered.file_term(&id).is_none() {
-                return Err(not_found(format!("no term `{id}`; add it with POST /api/dictionary/terms")));
-            }
-            (id, Some(LayerEntry::Set(spec)))
-        }
-        Change::Remove(id) => {
-            let entry = match (layered.file_term(&id).is_some(), layered.terms.get(&id).map(|t| &t.entry)) {
-                (true, Some(LayerEntry::Hide)) => {
-                    return Err(not_found(format!("`{id}` is already hidden; reset it to bring it back")));
-                }
-                (true, _) => Some(LayerEntry::Hide),
-                (false, Some(LayerEntry::Set(_))) => None,
-                (false, _) => return Err(not_found(format!("no term `{id}`"))),
-            };
-            (id, entry)
-        }
-        Change::Reset(id) => {
-            if !layered.terms.contains_key(&id) {
-                return Err(not_found(format!("`{id}` has no database entry to reset")));
-            }
-            (id, None)
-        }
-    };
+    change_terms(live, db, vec![change])
+}
 
-    let saved = layered.terms.values().map(|t| t.saved).max().unwrap_or(0) + 1;
+/// Applies `changes` in order as one: all of them are checked on the dictionary they give
+/// together, and either all are stored or none. The answer is about the last one.
+pub fn change_terms(live: &LiveConfig, db: &Db, changes: Vec<Change>) -> Result<TermChange, ApiErr> {
+    let mut layered = live.layered();
     let mut proposed = layered.layer();
-    match &entry {
-        Some(entry) => proposed.terms.insert(id.clone(), LayerTerm { entry: entry.clone(), saved }),
-        None => proposed.terms.remove(&id),
-    };
+    let last = layered.terms.values().map(|t| t.saved).max().unwrap_or(0);
+    let mut planned = Vec::new();
+    for (saved, change) in (last + 1..).zip(changes) {
+        let (id, entry) = match change {
+            Change::Add(spec) => {
+                check_term(&spec)?;
+                let id = term_id(&spec.text);
+                let known = match proposed.terms.get(&id).map(|t| &t.entry) {
+                    Some(LayerEntry::Set(_)) => true,
+                    Some(LayerEntry::Hide) => false,
+                    None => layered.file_term(&id).is_some(),
+                };
+                if known {
+                    return Err(bad_request(format!(
+                        "`{}` is already in the dictionary; replace it with PUT {}",
+                        spec.text,
+                        psst_proto::api::routes::with_id(psst_proto::api::routes::DICTIONARY_TERM, &id)
+                    )));
+                }
+                (id, Some(LayerEntry::Set(spec)))
+            }
+            Change::Replace(id, spec) => {
+                check_term(&spec)?;
+                let new_id = term_id(&spec.text);
+                if new_id != id {
+                    return Err(bad_request(format!(
+                        "`{}` has the identity `{new_id}`, not `{id}`; renaming is a hide plus an add",
+                        spec.text
+                    )));
+                }
+                if !proposed.terms.contains_key(&id) && layered.file_term(&id).is_none() {
+                    return Err(not_found(format!("no term `{id}`; add it with POST /api/dictionary/terms")));
+                }
+                (id, Some(LayerEntry::Set(spec)))
+            }
+            Change::Remove(id) => {
+                let entry = match (layered.file_term(&id).is_some(), proposed.terms.get(&id).map(|t| &t.entry)) {
+                    (true, Some(LayerEntry::Hide)) => {
+                        return Err(not_found(format!("`{id}` is already hidden; reset it to bring it back")));
+                    }
+                    (true, _) => Some(LayerEntry::Hide),
+                    (false, Some(LayerEntry::Set(_))) => None,
+                    (false, _) => return Err(not_found(format!("no term `{id}`"))),
+                };
+                (id, entry)
+            }
+            Change::Reset(id) => {
+                if !proposed.terms.contains_key(&id) {
+                    return Err(not_found(format!("`{id}` has no database entry to reset")));
+                }
+                (id, None)
+            }
+        };
+        let term = entry.map(|entry| LayerTerm { entry, saved });
+        match &term {
+            Some(term) => proposed.terms.insert(id.clone(), term.clone()),
+            None => proposed.terms.remove(&id),
+        };
+        planned.push((id, term));
+    }
+
     let resolved = Dictionary::resolve(&layered.file, &proposed).context("the dictionary file stopped resolving")?;
-    let saves_a_term = matches!(entry, Some(LayerEntry::Set(_)));
-    if let Some((_, reason)) = resolved
-        .skipped
-        .iter()
-        .find(|(skipped, _)| (saves_a_term && **skipped == id) || !layered.skipped.contains_key(*skipped))
+    let saves = |id: &TermId| {
+        planned
+            .iter()
+            .any(|(planned, term)| planned == id && matches!(term, Some(LayerTerm { entry: LayerEntry::Set(_), .. })))
+    };
+    if let Some((_, reason)) =
+        resolved.skipped.iter().find(|(skipped, _)| saves(skipped) || !layered.skipped.contains_key(*skipped))
     {
         return Err(bad_request(reason.clone()));
     }
 
-    match &entry {
-        Some(entry) => db.put_dictionary_term(&id, entry, saved)?,
-        None => {
-            db.delete_dictionary_term(&id)?;
-        }
-    }
+    db.store_dictionary_terms(&planned)?;
     let before: BTreeSet<String> = live.dictionary().warnings().into_iter().map(|w| w.message).collect();
     let warnings =
         resolved.dictionary.warnings().into_iter().map(|w| w.message).filter(|w| !before.contains(w)).collect();
-    match entry {
-        Some(entry) => layered.terms.insert(id.clone(), LayerTerm { entry, saved }),
-        None => layered.terms.remove(&id),
-    };
+    layered.terms = proposed.terms;
     let dictionary = layered.install(resolved);
     live.set_dictionary(dictionary);
-    let term = layered.entry(&id, layered.file_term(&id));
-    match &term {
-        Some(term) => tracing::info!("dictionary: `{id}` is now {:?}", term.layer),
-        None => tracing::info!("dictionary: `{id}` removed"),
+    let mut term = None;
+    for (id, _) in &planned {
+        term = layered.entry(id, layered.file_term(id));
+        match &term {
+            Some(term) => tracing::info!("dictionary: `{id}` is now {:?}", term.layer),
+            None => tracing::info!("dictionary: `{id}` removed"),
+        }
     }
     Ok(TermChange { term, warnings })
 }

@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}History · psst{% endblock %}
+
+{%- macro icon(name) -%}
+{%- if name == "pencil" -%}<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16v4Z"/><path d="m13.5 6.5 4 4"/></svg>
+{%- elif name == "check" -%}<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>
+{%- endif -%}
+{%- endmacro %}
+
+{% block main %}
+<div class="page hist">
+  <div class="head">
+    <h1>History</h1>
+    <p class="sub"><span class="wide-only">Select the words psst got wrong to fix them. <span class="dotted">Dotted</span> words were changed by your dictionary.</span><span class="narrow-only">Tap a wrong word to fix it. <span class="dotted">Dotted</span> words were changed by psst.</span></p>
+  </div>
+  <p class="sr" id="text-help">Up and down move between dictations. Left and right pick a word, Shift extends the pick, Enter fixes it.</p>
+  <datalist id="known-words">{% for word in known %}<option value="{{ word }}">{% endfor %}</datalist>
+
+  {%- for day in days %}
+  <section class="day" aria-label="{{ day.label }}">
+    <h2 class="day-h">{{ day.label }}</h2>
+    {%- for e in day.entries %}
+    <article class="entry{% if e.latest %} latest{% endif %}{% if e.boxed %} boxed{% endif %}" id="d-{{ e.id }}" data-row="{{ e.id }}">
+      <p class="meta"><time datetime="{{ e.when }}">{{ e.ago }}</time><span class="sep"></span><span>{{ e.device }}</span>{% if e.profile %}<span class="sep"></span><span>{{ e.profile }} profile</span>{% endif %}</p>
+      {%- if e.empty %}
+      <p class="text empty-text">No speech</p>
+      {%- else %}
+      <p class="text" id="t-{{ e.id }}" lang="{{ e.language }}" tabindex="{% if e.latest %}0{% else %}-1{% endif %}" aria-describedby="text-help">
+      {%- for p in e.pieces -%}
+      {%- if p.kind == "g" -%}<span class="gap">{{ p.text }}</span>
+      {%- elif p.kind == "fx" -%}<span class="w fx" data-heard="{{ p.heard }}" data-term="{{ p.term }}" data-how="{{ p.how }}" title="psst heard “{{ p.heard }}”">{{ p.text }}<span class="sr"> (psst heard {{ p.heard }})</span></span>
+      {%- elif p.kind == "fixed" -%}<span class="fixed" title="Fixed here">{{ p.text }}</span>
+      {%- else -%}<span class="w">{{ p.text }}</span>
+      {%- endif -%}
+      {%- endfor -%}
+      </p>
+      {%- if e.done %}
+      <div class="done" role="status">
+        <p class="done-h" tabindex="-1">{{ icon("check") }}<span>{{ e.done.text }}</span></p>
+        {%- if e.done.undo %}
+        <form method="post" action="/history/{{ e.id }}/undo">
+          {%- for key, value in e.done.fields|items %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}
+          <button class="btn sm" type="submit">Undo</button>
+        </form>
+        {%- endif %}
+      </div>
+      {%- endif %}
+      <details class="fixbox" id="fix-{{ e.id }}"{% if e.refusal %} open{% endif %}>
+        <summary aria-label="Fix a word in the dictation from {{ e.ago }}" title="Fix a word">{{ icon("pencil") }}</summary>
+        <form class="fix" method="post" action="/history/{{ e.id }}/fix" data-row="{{ e.id }}">
+          {%- if all %}<input type="hidden" name="all" value="1">{% endif %}
+          <div class="heard" data-heard hidden></div>
+          <div class="field" data-typed>
+            <label for="h-{{ e.id }}">Wrong words, as shown</label>
+            <input class="input" id="h-{{ e.id }}" name="heard" value="{{ e.refusal.heard if e.refusal else "" }}" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="w-{{ e.id }}">Write it as</label>
+            <input class="input" id="w-{{ e.id }}" name="written" value="{{ e.refusal.written if e.refusal else "" }}" list="known-words" autocomplete="off" spellcheck="false" aria-describedby="m-{{ e.id }}"{% if e.refusal and e.refusal.level == "error" %} aria-invalid="true"{% endif %}>
+          </div>
+          <p class="fix-msg{% if e.refusal %} {{ e.refusal.level }}{% endif %}" id="m-{{ e.id }}" aria-live="polite">{% if e.refusal %}{{ e.refusal.error }}{% else %}Type the wrong words as they appear above, then how psst should write them.{% endif %}</p>
+          <div class="actions fix-actions">
+            <button class="btn primary" type="submit" name="action" value="add">Add to dictionary</button>
+            {%- if e.refusal and e.refusal.offer %}
+            <button class="btn{% if e.refusal.offer[0] == "anyway" %} quiet{% endif %}" type="submit" name="action" value="{{ e.refusal.offer[0] }}">{{ e.refusal.offer[1] }}</button>
+            {%- endif %}
+            <button class="btn" type="submit" name="action" value="keep" data-keep hidden>Keep as heard</button>
+          </div>
+        </form>
+      </details>
+      {%- endif %}
+    </article>
+    {%- endfor %}
+  </section>
+  {%- else %}
+  <p class="sub">No dictations yet. Dictate something with <code>psst toggle</code>, and it shows up here.</p>
+  {%- endfor %}
+
+  {%- if more %}
+  <a class="btn more" href="/history?all=1">Show older dictations</a>
+  {%- elif days %}
+  <p class="hint">psst keeps the last {{ kept_days }} days.</p>
+  {%- endif %}
+</div>
+{% endblock %}

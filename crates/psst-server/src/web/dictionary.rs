@@ -1,5 +1,7 @@
-//! The dictionary page: search; add, edit, hide or reset terms; never rules; export.
-//! Every change goes through the same functions as `/api/dictionary`.
+//! The dictionary page (plan 6.8): every word as a plain list, with search, and a side panel for
+//! one word (`?word=`) or a new one (`?new`): its spelling and heard spellings, and under Advanced
+//! its language, matching, pinning, notes, never rules and where it comes from. Every change goes
+//! through the same functions as `/api/dictionary`.
 
 use std::{collections::BTreeSet, sync::Arc};
 
@@ -16,7 +18,7 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
 };
 use minijinja::{Value, context, value::Serde};
-use psst_dict::term_id;
+use psst_dict::{is_common_word, term_id};
 use psst_proto::api::{DictionaryTerm, NeverRuleId, Term, TermLayer, encode_segment};
 use serde::{Deserialize, Serialize};
 
@@ -33,10 +35,15 @@ type AppRef = Arc<AppState>;
 pub struct PageQuery {
     #[serde(default)]
     q: String,
-    edit: Option<String>,
+    /// The word whose panel is open.
+    word: Option<String>,
+    /// Any value opens the panel for a new word, with `text` filled in.
+    new: Option<String>,
+    #[serde(default)]
+    text: String,
 }
 
-/// A term's form: the fields as entered, plus the search to come back to.
+/// A word's form: the fields as entered, plus the search to come back to.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TermForm {
     #[serde(default)]
@@ -112,57 +119,31 @@ pub struct NeverForm {
     q: String,
 }
 
+/// A one-button form: the search, and the word whose panel to come back to.
 #[derive(Debug, Default, Deserialize)]
-pub struct SearchForm {
+pub struct ButtonForm {
     #[serde(default)]
     q: String,
+    #[serde(default)]
+    word: String,
 }
 
-/// One term as the page lists it.
+/// One word as the list shows it.
 #[derive(Debug, Serialize)]
 struct Row {
     id: String,
     text: String,
-    layer: TermLayer,
-    active: bool,
-    /// Whether it has a version to edit (not hidden).
-    editable: bool,
-    meta: String,
-    problem: Option<String>,
-    file_text: Option<String>,
-    file_meta: String,
-}
-
-/// "sounds like hyper land · en only · pinned · no fuzzy matching · notes".
-fn describe(term: &Term) -> String {
-    let mut parts = Vec::new();
-    if !term.sounds_like.is_empty() {
-        parts.push(format!("sounds like {}", term.sounds_like.join(", ")));
-    }
-    if term.languages != "any" {
-        parts.push(format!("{} only", term.languages));
-    }
-    if term.pin {
-        parts.push("pinned".into());
-    }
-    if !term.fuzzy {
-        parts.push("no fuzzy matching".into());
-    }
-    parts.extend(term.notes.clone());
-    parts.join(" · ")
+    hidden: bool,
+    /// Left out: it clashes with dictionary.toml.
+    problem: bool,
 }
 
 fn row(term: &DictionaryTerm) -> Row {
     Row {
         id: term.id.clone(),
         text: term.term.as_ref().map_or_else(|| term.id.clone(), |t| t.text.clone()),
-        layer: term.layer,
-        active: term.active,
-        editable: term.term.is_some() && term.layer != TermLayer::Hidden,
-        meta: term.term.as_ref().map(describe).unwrap_or_default(),
-        problem: term.problem.clone(),
-        file_text: term.file.as_ref().map(|file| file.text.clone()),
-        file_meta: term.file.as_ref().map(describe).unwrap_or_default(),
+        hidden: term.layer == TermLayer::Hidden,
+        problem: term.problem.is_some(),
     }
 }
 
@@ -179,60 +160,172 @@ fn matches(term: &DictionaryTerm, q: &str) -> bool {
             .any(|s| s.to_lowercase().contains(&q))
 }
 
-/// What a page shows besides the dictionary: a refusal and where, and the values entered.
+/// `term` as dictionary.toml lines, for showing the file's version.
+fn toml_lines(term: &Term) -> String {
+    let quote = |s: &str| format!("{s:?}");
+    let mut lines = vec![format!("text = {}", quote(&term.text))];
+    if !term.sounds_like.is_empty() {
+        lines.push(format!(
+            "sounds_like = [{}]",
+            term.sounds_like.iter().map(|s| quote(s)).collect::<Vec<_>>().join(", ")
+        ));
+    }
+    if term.languages != "any" {
+        lines.push(format!("languages = {}", quote(&term.languages)));
+    }
+    if !term.fuzzy {
+        lines.push("fuzzy = false".into());
+    }
+    if term.pin {
+        lines.push("pin = true".into());
+    }
+    if let Some(notes) = &term.notes {
+        lines.push(format!("notes = {}", quote(notes)));
+    }
+    lines.join("\n")
+}
+
+/// What a page shows besides the dictionary: a refusal, and the values entered.
 #[derive(Debug, Default)]
 struct Outcome {
     status: Option<StatusCode>,
     error: Option<String>,
-    /// `add`, `never`, or a term's identity; none for the top of the page.
+    /// The form the error is about: a word's identity, `new`, or `never`; none for the top.
     error_for: Option<String>,
-    add: Option<TermForm>,
-    edit: Option<TermForm>,
+    form: Option<TermForm>,
     never: Option<NeverForm>,
 }
 
-fn page(state: &AppState, viewer: &Viewer, q: &str, edit: Option<&str>, outcome: Outcome) -> Response {
+fn page(state: &AppState, viewer: &Viewer, query: &PageQuery, outcome: Outcome) -> Response {
     let dictionary = state.live.dictionary();
     let view = state.live.layered().view(&dictionary);
-    let edit = edit.map(term_id);
-    let edit_fields = outcome.edit.or_else(|| {
-        let term = view.terms.iter().find(|t| Some(&t.id) == edit.as_ref())?;
-        term.term.as_ref().map(TermForm::of)
-    });
-    let texts = |id: &str| view.terms.iter().find(|t| t.id == id).and_then(|t| t.term.as_ref()).map(|t| t.text.clone());
-    let never: Vec<Value> = view
-        .never
-        .iter()
-        .map(|rule| {
-            let text = texts(&rule.term).unwrap_or_else(|| rule.term.clone());
-            context! { id => rule.id, text, span => rule.span.clone(), active => rule.active }
-        })
-        .collect();
+    let q = query.q.as_str();
+    let word = query.word.as_deref().map(term_id);
+    let open = word.as_ref().and_then(|id| view.terms.iter().find(|t| &t.id == id));
+    let new = query.new.is_some() || outcome.error_for.as_deref() == Some("new");
+
+    let listed: Vec<&DictionaryTerm> = view.terms.iter().filter(|t| t.term.is_some() && matches(t, q)).collect();
+    let mut shown: Vec<Row> = listed.iter().filter(|t| t.layer != TermLayer::Hidden).map(|t| row(t)).collect();
+    shown.sort_by_key(|r| r.id.clone());
+    let mut hidden: Vec<Row> = listed.iter().filter(|t| t.layer == TermLayer::Hidden).map(|t| row(t)).collect();
+    hidden.sort_by_key(|r| r.id.clone());
+    let attention: Vec<&DictionaryTerm> = view.terms.iter().filter(|t| t.problem.is_some()).collect();
+    let exact = view.terms.iter().any(|t| t.term.as_ref().is_some_and(|term| term.text.eq_ignore_ascii_case(q.trim())));
+
     let mut languages: BTreeSet<String> = ["any", "en", "cs"].map(String::from).into();
     languages.extend(state.live.profile_layers().effective().profiles.values().map(|p| p.language.clone()));
+
+    let panel = if new {
+        let fields = outcome.form.clone().unwrap_or_else(|| TermForm {
+            text: query.text.trim().to_owned(),
+            languages: "any".into(),
+            fuzzy: true,
+            ..TermForm::default()
+        });
+        Some(context! {
+            new => true,
+            title => "Add a word",
+            fields => Value::from(Serde(fields)),
+            error => outcome.error_for.as_deref().filter(|f| *f == "new").and(outcome.error.clone()),
+        })
+    } else {
+        open.map(|t| panel(state, &view, t, &outcome))
+    };
+
+    let has_panel = panel.is_some();
     let ctx = context! {
         q,
-        edit,
-        total => view.terms.len(),
-        terms => view.terms.iter().filter(|t| matches(t, q)).map(row).map(Serde).map(Value::from).collect::<Vec<_>>(),
-        never,
+        total => view.terms.iter().filter(|t| t.term.is_some() && t.layer != TermLayer::Hidden).count(),
+        words => Value::from(Serde(shown)),
+        hidden => Value::from(Serde(hidden)),
+        attention => attention.first().map(|t| t.id.clone()),
+        attention_count => attention.len(),
+        offer_add => !q.trim().is_empty() && !exact,
+        changes => view.terms.iter().filter(|t| t.layer != TermLayer::File).count(),
         warnings => view.warnings.clone(),
         languages => languages.into_iter().collect::<Vec<_>>(),
-        term_texts => dictionary.terms().iter().map(|t| t.text.clone()).collect::<Vec<_>>(),
-        add_fields => Value::from(Serde(outcome.add.unwrap_or(TermForm { fuzzy: true, ..TermForm::default() }))),
-        edit_fields => Value::from(Serde(edit_fields)),
-        never_fields => Value::from(Serde(outcome.never.unwrap_or_default())),
-        error => outcome.error,
-        error_for => outcome.error_for,
+        panel,
+        error => outcome.error.clone().filter(|_| outcome.error_for.is_none() || !has_panel),
         ..chrome(state, viewer, "dictionary")
     };
     render(outcome.status.unwrap_or(StatusCode::OK), "dictionary.html", ctx)
 }
 
-/// Back to the page, with the search kept.
-fn back(q: &str) -> Response {
-    let q = q.trim();
-    let to = if q.is_empty() { "/dictionary".to_owned() } else { format!("/dictionary?q={}", encode_segment(q)) };
+/// The side panel for one word.
+fn panel(state: &AppState, view: &psst_proto::api::DictionaryView, t: &DictionaryTerm, outcome: &Outcome) -> Value {
+    let term = t.term.clone().unwrap_or_else(|| Term {
+        text: t.id.clone(),
+        sounds_like: Vec::new(),
+        languages: "any".into(),
+        fuzzy: true,
+        pin: false,
+        notes: None,
+    });
+    let mine = outcome.error_for.as_deref() == Some(t.id.as_str());
+    let fields = outcome.form.clone().filter(|_| mine).unwrap_or_else(|| TermForm::of(&term));
+    let uses = state
+        .db
+        .history(1000)
+        .unwrap_or_default()
+        .iter()
+        .filter(|row| {
+            row.r#final
+                .as_ref()
+                .is_some_and(|fin| fin.edits.iter().any(|edit| edit.term.as_deref() == Some(t.id.as_str())))
+        })
+        .count();
+    let sub = match (t.layer, uses) {
+        (TermLayer::Hidden, _) => "Hidden: psst doesn't use it".to_owned(),
+        (_, 0) => "Hasn't changed a dictation in the last 30 days".to_owned(),
+        (_, 1) => "Fixed 1 dictation in the last 30 days".to_owned(),
+        (_, n) => format!("Fixed {n} dictations in the last 30 days"),
+    };
+    let never: Vec<Value> = view
+        .never
+        .iter()
+        .filter(|rule| rule.term == t.id)
+        .map(|rule| context! { id => rule.id, span => rule.span.clone(), active => rule.active })
+        .collect();
+    let source = match t.layer {
+        TermLayer::File => "From your Nix config (dictionary.toml), unchanged.",
+        TermLayer::Added => "Added here, so it lives only on this server until you move it to your Nix config.",
+        TermLayer::Replaced => "Changed here. Your Nix config has this version:",
+        TermLayer::Hidden => "Hidden here. Your Nix config still has it.",
+    };
+    let common: Vec<String> = term
+        .sounds_like
+        .iter()
+        .chain(std::iter::once(&term.text))
+        .filter(|s| ["en", "cs"].iter().any(|lang| is_common_word(lang, s)))
+        .cloned()
+        .collect();
+    context! {
+        id => t.id.clone(),
+        title => term.text.clone(),
+        sub,
+        layer => Value::from(Serde(t.layer)),
+        fields => Value::from(Serde(fields)),
+        error => mine.then(|| outcome.error.clone()).flatten(),
+        never,
+        never_error => (outcome.error_for.as_deref() == Some("never")).then(|| outcome.error.clone()).flatten(),
+        never_span => outcome.never.as_ref().map(|n| n.span.clone()).unwrap_or_default(),
+        problem => t.problem.clone(),
+        source,
+        file => t.file.as_ref().map(toml_lines),
+        common,
+    }
+}
+
+/// Back to the list (or a word's panel), with the search kept.
+fn back(q: &str, word: &str) -> Response {
+    let mut params = Vec::new();
+    if !q.trim().is_empty() {
+        params.push(format!("q={}", encode_segment(q.trim())));
+    }
+    if !word.is_empty() {
+        params.push(format!("word={}", encode_segment(word)));
+    }
+    let to = if params.is_empty() { "/dictionary".to_owned() } else { format!("/dictionary?{}", params.join("&")) };
     Redirect::to(&to).into_response()
 }
 
@@ -242,46 +335,47 @@ fn refused(err: ApiErr) -> (StatusCode, String) {
     (status, err.message().to_owned())
 }
 
-/// `GET /dictionary?q=&edit=`.
+/// `GET /dictionary?q=&word=&new=`.
 pub async fn show(
     viewer: Viewer,
     State(state): State<AppRef>,
     query: Result<Query<PageQuery>, QueryRejection>,
 ) -> Response {
     let Query(query) = query.unwrap_or_default();
-    page(&state, &viewer, &query.q, query.edit.as_deref(), Outcome::default())
+    page(&state, &viewer, &query, Outcome::default())
 }
 
 /// A form that didn't parse: the page again, with the reason at the top.
 fn bad_form(state: &AppState, viewer: &Viewer, err: FormRejection) -> Response {
     let outcome = Outcome { status: Some(StatusCode::BAD_REQUEST), error: Some(err.body_text()), ..Outcome::default() };
-    page(state, viewer, "", None, outcome)
+    page(state, viewer, &PageQuery::default(), outcome)
 }
 
-/// `POST /dictionary/terms`: adds a term.
+/// `POST /dictionary/terms`: adds a word.
 pub async fn add(viewer: Viewer, State(state): State<AppRef>, form: Result<Form<TermForm>, FormRejection>) -> Response {
     let Form(form) = match form {
         Ok(form) => form,
         Err(err) => return bad_form(&state, &viewer, err),
     };
     match dictionary::change_term(&state.live, &state.db, Change::Add(form.term().into())) {
-        Ok(_) => back(&form.q),
+        Ok(_) => back(&form.q, ""),
         Err(err) => {
             let (status, error) = refused(err);
-            let q = form.q.clone();
+            let query = PageQuery { q: form.q.clone(), ..PageQuery::default() };
             let outcome = Outcome {
                 status: Some(status),
                 error: Some(error),
-                error_for: Some("add".into()),
-                add: Some(form),
+                error_for: Some("new".into()),
+                form: Some(form),
                 ..Outcome::default()
             };
-            page(&state, &viewer, &q, None, outcome)
+            page(&state, &viewer, &query, outcome)
         }
     }
 }
 
-/// `POST /dictionary/terms/{id}`: saves an edited term.
+/// `POST /dictionary/terms/{id}`: saves a word. A new spelling with another identity renames it:
+/// the new word is added and the old one hidden (or removed, if only the database had it).
 pub async fn save(
     viewer: Viewer,
     State(state): State<AppRef>,
@@ -293,44 +387,58 @@ pub async fn save(
         Err(err) => return bad_form(&state, &viewer, err),
     };
     let id = term_id(&id);
-    match dictionary::change_term(&state.live, &state.db, Change::Replace(id.clone(), form.term().into())) {
-        Ok(_) => back(&form.q),
+    let term = form.term();
+    let result = if !term.text.is_empty() && term_id(&term.text) != id {
+        rename(&state, &id, term)
+    } else {
+        dictionary::change_term(&state.live, &state.db, Change::Replace(id.clone(), term.into())).map(drop)
+    };
+    match result {
+        Ok(_) => back(&form.q, ""),
         Err(err) => {
             let (status, error) = refused(err);
-            let q = form.q.clone();
+            let query = PageQuery { q: form.q.clone(), word: Some(id.clone()), ..PageQuery::default() };
             let outcome = Outcome {
                 status: Some(status),
                 error: Some(error),
                 error_for: Some(id.clone()),
-                edit: Some(form),
+                form: Some(form),
                 ..Outcome::default()
             };
-            page(&state, &viewer, &q, Some(&id), outcome)
+            page(&state, &viewer, &query, outcome)
         }
     }
 }
 
-/// A one-button change to a term or a never rule; on refusal, the page with the reason on top.
-fn button(state: &AppState, viewer: &Viewer, q: &str, result: Result<(), ApiErr>) -> Response {
+/// Renames a word: the old one goes (hidden, or removed if only the database had it) in the same
+/// change that adds the new one, so its heard spellings are free for it.
+fn rename(state: &AppState, id: &str, term: Term) -> Result<(), ApiErr> {
+    let changes = vec![Change::Remove(id.to_owned()), Change::Add(term.into())];
+    dictionary::change_terms(&state.live, &state.db, changes).map(drop)
+}
+
+/// A one-button change to a word or a never rule; on refusal, the page with the reason.
+fn button(state: &AppState, viewer: &Viewer, form: &ButtonForm, result: Result<(), ApiErr>) -> Response {
     match result {
-        Ok(()) => back(q),
+        Ok(()) => back(&form.q, &form.word),
         Err(err) => {
             let (status, error) = refused(err);
-            page(state, viewer, q, None, Outcome { status: Some(status), error: Some(error), ..Outcome::default() })
+            let query = PageQuery { q: form.q.clone(), ..PageQuery::default() };
+            page(state, viewer, &query, Outcome { status: Some(status), error: Some(error), ..Outcome::default() })
         }
     }
 }
 
-/// `POST /dictionary/terms/{id}/hide`: hides a file term, or removes an added one.
+/// `POST /dictionary/terms/{id}/hide`: hides a file word, or removes an added one.
 pub async fn hide(
     viewer: Viewer,
     State(state): State<AppRef>,
     Path(id): Path<String>,
-    form: Result<Form<SearchForm>, FormRejection>,
+    form: Result<Form<ButtonForm>, FormRejection>,
 ) -> Response {
-    let q = form.map(|Form(form)| form.q).unwrap_or_default();
+    let form = form.map(|Form(form)| form).unwrap_or_default();
     let result = dictionary::change_term(&state.live, &state.db, Change::Remove(term_id(&id))).map(drop);
-    button(&state, &viewer, &q, result)
+    button(&state, &viewer, &ButtonForm { word: String::new(), ..form }, result)
 }
 
 /// `POST /dictionary/terms/{id}/reset`: brings back the file's version, if any.
@@ -338,14 +446,14 @@ pub async fn reset(
     viewer: Viewer,
     State(state): State<AppRef>,
     Path(id): Path<String>,
-    form: Result<Form<SearchForm>, FormRejection>,
+    form: Result<Form<ButtonForm>, FormRejection>,
 ) -> Response {
-    let q = form.map(|Form(form)| form.q).unwrap_or_default();
+    let form = form.map(|Form(form)| form).unwrap_or_default();
     let result = dictionary::change_term(&state.live, &state.db, Change::Reset(term_id(&id))).map(drop);
-    button(&state, &viewer, &q, result)
+    button(&state, &viewer, &form, result)
 }
 
-/// `POST /dictionary/never`: adds a never rule.
+/// `POST /dictionary/never`: adds a never rule, from a word's panel.
 pub async fn add_never(
     viewer: Viewer,
     State(state): State<AppRef>,
@@ -356,10 +464,10 @@ pub async fn add_never(
         Err(err) => return bad_form(&state, &viewer, err),
     };
     match dictionary::add_never(&state.live, &state.db, form.term.trim(), form.span.trim()) {
-        Ok(_) => back(&form.q),
+        Ok(_) => back(&form.q, &term_id(form.term.trim())),
         Err(err) => {
             let (status, error) = refused(err);
-            let q = form.q.clone();
+            let query = PageQuery { q: form.q.clone(), word: Some(form.term.clone()), ..PageQuery::default() };
             let outcome = Outcome {
                 status: Some(status),
                 error: Some(error),
@@ -367,7 +475,7 @@ pub async fn add_never(
                 never: Some(form),
                 ..Outcome::default()
             };
-            page(&state, &viewer, &q, None, outcome)
+            page(&state, &viewer, &query, outcome)
         }
     }
 }
@@ -377,10 +485,10 @@ pub async fn remove_never(
     viewer: Viewer,
     State(state): State<AppRef>,
     Path(id): Path<NeverRuleId>,
-    form: Result<Form<SearchForm>, FormRejection>,
+    form: Result<Form<ButtonForm>, FormRejection>,
 ) -> Response {
-    let q = form.map(|Form(form)| form.q).unwrap_or_default();
-    button(&state, &viewer, &q, dictionary::remove_never(&state.live, &state.db, id))
+    let form = form.map(|Form(form)| form).unwrap_or_default();
+    button(&state, &viewer, &form, dictionary::remove_never(&state.live, &state.db, id))
 }
 
 /// `GET /dictionary.toml`: the export, as a download.

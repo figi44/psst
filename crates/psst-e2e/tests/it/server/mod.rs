@@ -7,6 +7,7 @@ mod dict_cli;
 mod dictionary;
 mod engine;
 mod harness;
+mod history;
 mod login;
 mod opus;
 mod pages;

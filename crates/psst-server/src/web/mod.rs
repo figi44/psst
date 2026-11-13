@@ -8,6 +8,7 @@
 //! the reason and the values entered.
 
 mod dictionary;
+mod history;
 mod login;
 mod profiles;
 
@@ -48,19 +49,24 @@ const TEMPLATES: &[(&str, &str)] = &[
     ("login.html", include_str!("../../../../web/templates/login.html")),
     ("dictionary.html", include_str!("../../../../web/templates/dictionary.html")),
     ("profiles.html", include_str!("../../../../web/templates/profiles.html")),
+    ("history.html", include_str!("../../../../web/templates/history.html")),
 ];
 
 /// Static files: name, content type, contents.
 const ASSETS: &[(&str, &str, &[u8])] = &[
     ("psst.css", "text/css; charset=utf-8", include_bytes!("../../../../web/static/psst.css")),
     ("login.js", "text/javascript; charset=utf-8", include_bytes!("../../../../web/static/login.js")),
+    ("psst.js", "text/javascript; charset=utf-8", include_bytes!("../../../../web/static/psst.js")),
     ("htmx.min.js", "text/javascript; charset=utf-8", include_bytes!("../../../../web/vendor/htmx/htmx.min.js")),
 ];
 
 /// The web UI's routes; the API's are in [`crate::api`].
 pub fn router() -> Router<AppRef> {
     Router::new()
-        .route("/", get(|| async { Redirect::to("/dictionary") }))
+        .route("/", get(|| async { Redirect::to("/history") }))
+        .route("/history", get(history::show))
+        .route("/history/{id}/fix", post(history::fix))
+        .route("/history/{id}/undo", post(history::undo))
         .route("/login", get(login::page))
         .route(routes::LOGIN_REDEEM, post(login::redeem))
         .route("/logout", post(login::logout))
@@ -150,14 +156,53 @@ fn render(status: StatusCode, template: &str, ctx: Value) -> Response {
 /// a browser session to log out of.
 fn chrome(state: &AppState, viewer: &Viewer, page: &str) -> Value {
     let model = state.engine.status();
-    let model_state = serde_json::to_value(model.state).ok().and_then(|v| v.as_str().map(String::from));
     context! {
         page,
         signed_in => true,
         browser => viewer.session.is_some(),
         model => crate::admin::describe_model(&model),
-        model_state,
+        banner => banner(&model),
     }
+}
+
+/// What the page says about a model that isn't ready; nothing while it is.
+fn banner(model: &psst_proto::api::ModelStatus) -> Option<Value> {
+    use psst_proto::api::ModelState;
+    let load = Some("psst-server model load");
+    let (tone, title, text, command) = match model.state {
+        ModelState::Loaded => return None,
+        ModelState::Downloading => (
+            "",
+            "Downloading the speech model.".to_owned(),
+            match model.progress.and_then(|p| p.total.map(|total| (p.bytes, total))) {
+                Some((bytes, total)) => {
+                    format!("{} of {} MB. Dictations wait until it's ready.", bytes / 1_000_000, total / 1_000_000)
+                }
+                None => "Dictations wait until it's ready.".to_owned(),
+            },
+            None,
+        ),
+        ModelState::Loading => {
+            ("", "Loading the speech model.".to_owned(), "Dictations wait until it's ready.".to_owned(), None)
+        }
+        ModelState::Unloaded => {
+            ("warn", "The speech model is unloaded,".to_owned(), "so dictations fail.".to_owned(), load)
+        }
+        ModelState::Missing => {
+            ("warn", "The speech model isn't downloaded,".to_owned(), "so dictations fail.".to_owned(), load)
+        }
+        ModelState::Failed => (
+            "bad",
+            "The speech model failed to load:".to_owned(),
+            format!(
+                "{}. Dictations fail until it loads; fix the cause, then load it again.",
+                model.error.as_deref().unwrap_or("unknown error")
+            ),
+            load,
+        ),
+    };
+    let progress = model.progress.and_then(|p| p.total.map(|total| context! { bytes => p.bytes, total }));
+    Some(context! { tone, title, text, command, progress })
 }
 
 /// A page with a title, a sentence and, optionally, a command to run.

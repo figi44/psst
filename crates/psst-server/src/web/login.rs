@@ -111,7 +111,7 @@ pub async fn redeem(
     }
     tracing::info!("browser session for {device} started from {addr}; valid until {expires}");
     let cookie = session_cookie(&state, &secret, SESSION_TTL.as_secs());
-    (StatusCode::SEE_OTHER, [(LOCATION, "/dictionary".to_owned()), (SET_COOKIE, cookie)]).into_response()
+    (StatusCode::SEE_OTHER, [(LOCATION, "/history".to_owned()), (SET_COOKIE, cookie)]).into_response()
 }
 
 /// `POST /logout`: ends the browser's session.

@@ -30,7 +30,7 @@ fn web_server() -> TestServer {
     })
 }
 
-async fn logged_in(server: &TestServer) -> Browser {
+pub(super) async fn logged_in(server: &TestServer) -> Browser {
     let mut browser = Browser::new(server.tcp_addr().unwrap());
     let link = login_link(server.endpoint(), None).await;
     assert_eq!(browser.log_in(&link).await.status, 303);
@@ -47,12 +47,12 @@ async fn layer(server: &TestServer, id: &str) -> Option<TermLayer> {
 }
 
 #[track_caller]
-fn see_other(response: &Response, to: &str) {
+pub(super) fn see_other(response: &Response, to: &str) {
     assert_eq!((response.status, response.header("location")), (303, Some(to)), "{}", response.body);
 }
 
 #[track_caller]
-fn refused_with(response: &Response, reason: &str) {
+pub(super) fn refused_with(response: &Response, reason: &str) {
     assert_eq!(response.status, 422, "{}", response.body);
     assert!(response.body.contains(reason), "the page says why ({reason}): {}", response.body);
 }
@@ -64,13 +64,17 @@ async fn every_dictionary_action_works_through_the_pages() {
 
     let page = browser.get("/dictionary").await;
     assert_eq!(page.status, 200);
-    for text in ["Hyprland", "sounds like hyper land", "Go", "en only", "Kubernetes", "large-v3-turbo", "Log out"] {
-        assert!(page.body.contains(text), "{text} on the page");
+    for text in
+        ["href=\"/dictionary?word=hyprland\">Hyprland</a>", ">Go</a>", ">Kubernetes</a>", "large-v3-turbo", "Log out"]
+    {
+        assert!(page.body.contains(text), "{text} on the page: {}", page.body);
     }
+    let panel = browser.get("/dictionary?word=hyprland").await;
+    assert!(panel.body.contains("value=\"hyper land\""), "the panel shows the heard spellings: {}", panel.body);
     let found = browser.get("/dictionary?q=HYPER").await;
-    let listed = |text: &str| found.body.contains(&format!("<span class=\"term-text\">{text}</span>"));
+    let listed = |text: &str| found.body.contains(&format!(">{text}</a>"));
     assert!(listed("Hyprland") && !listed("Kubernetes"), "{}", found.body);
-    assert!(found.body.contains("1 of 3 terms match"), "{}", found.body);
+    assert!(found.body.contains("Add “HYPER”"), "a search that isn't a word offers to add it: {}", found.body);
 
     // Add, and come back to the same search.
     let fields = [
@@ -91,19 +95,34 @@ async fn every_dictionary_action_works_through_the_pages() {
     refused_with(&refused, "claim the spelling");
     assert!(refused.body.contains("value=\"Hypr\""), "the entered values are kept");
 
-    // Edit: the form, a save, and a refused rename.
-    let edit = browser.get("/dictionary?edit=HYPRLAND").await;
+    // Edit: the panel, a save, a refused rename that changes nothing, and a rename.
+    let edit = browser.get("/dictionary?word=HYPRLAND").await;
     assert!(edit.body.contains("action=\"/dictionary/terms/hyprland\""), "{}", edit.body);
     let save = [("text", "Hyprland"), ("sounds_like", "hyper land, hyperland"), ("languages", "any")];
     see_other(&browser.post("/dictionary/terms/hyprland", &save).await, "/dictionary");
     let hyprland = view(&server).await.terms.into_iter().find(|t| t.id == "hyprland").unwrap();
     assert_eq!(hyprland.layer, TermLayer::Replaced);
     assert!(!hyprland.term.unwrap().fuzzy, "an unticked box turns fuzzy matching off");
-    assert!(browser.get("/dictionary").await.body.contains("Replaces dictionary.toml's Hyprland"));
+    assert!(browser.get("/dictionary?word=hyprland").await.body.contains("Your Nix config has this version"));
     refused_with(
-        &browser.post("/dictionary/terms/hyprland", &[("text", "Wayland")]).await,
-        "renaming is a hide plus an add",
+        &browser.post("/dictionary/terms/hyprland", &[("text", "Kubernetes")]).await,
+        "already in the dictionary",
     );
+    let kept = view(&server).await.terms.into_iter().find(|t| t.id == "hyprland").unwrap();
+    assert_eq!(
+        (kept.layer, kept.term.unwrap().sounds_like.len()),
+        (TermLayer::Replaced, 2),
+        "a refused rename changes nothing"
+    );
+    see_other(
+        &browser.post("/dictionary/terms/hyprland", &[("text", "Wayland"), ("sounds_like", "hyperland")]).await,
+        "/dictionary",
+    );
+    assert_eq!(
+        (layer(&server, "hyprland").await, layer(&server, "wayland").await),
+        (Some(TermLayer::Hidden), Some(TermLayer::Added))
+    );
+    see_other(&browser.post("/dictionary/terms/wayland/hide", &[]).await, "/dictionary");
 
     // Hide, reset and remove.
     see_other(&browser.post("/dictionary/terms/go/hide", &[]).await, "/dictionary");
@@ -119,11 +138,11 @@ async fn every_dictionary_action_works_through_the_pages() {
     // Never rules.
     see_other(
         &browser.post("/dictionary/never", &[("term", "Kubernetes"), ("span", "cube nettie")]).await,
-        "/dictionary",
+        "/dictionary?word=kubernetes",
     );
     let rule = view(&server).await.never.pop().expect("the never rule");
     assert_eq!((rule.term.as_str(), rule.span_key.as_str()), ("kubernetes", "cubenettie"));
-    assert!(browser.get("/dictionary").await.body.contains("never replaces “cube nettie”"));
+    assert!(browser.get("/dictionary?word=kubernetes").await.body.contains("<li class=\"chip\">cube nettie"));
     refused_with(&browser.post("/dictionary/never", &[("term", "Nope"), ("span", "x")]).await, "no term `Nope`");
     see_other(&browser.post(&format!("/dictionary/never/{}/remove", rule.id), &[]).await, "/dictionary");
     assert!(view(&server).await.never.is_empty());
@@ -150,9 +169,13 @@ async fn pages_escape_what_the_dictionary_and_the_request_hold() {
     let page = browser.get("/dictionary").await;
     assert!(!page.body.contains("<script>alert") && !page.body.contains("<img"), "{}", page.body);
     assert!(page.body.contains("&lt;script&gt;alert(1)&lt;&#x2f;script&gt;"), "{}", page.body);
-    assert!(page.body.contains("a&amp;b") && page.body.contains("&quot;&gt;&lt;img src=x"), "{}", page.body);
+    let panel = browser.get("/dictionary?word=%3Cscript%3Ealert(1)%3C%2Fscript%3E").await;
+    assert!(!panel.body.contains("<script>alert") && !panel.body.contains("<img"), "{}", panel.body);
+    assert!(panel.body.contains("a&amp;b") && panel.body.contains("&quot;&gt;&lt;img src=x"), "{}", panel.body);
     // An identity is one path segment, `/` and all.
-    assert!(page.body.contains("action=\"/dictionary/terms/ci%2Fcd/hide\""), "{}", page.body);
+    assert!(page.body.contains("href=\"/dictionary?word=ci%2Fcd\""), "{}", page.body);
+    let panel = browser.get("/dictionary?word=ci%2Fcd").await;
+    assert!(panel.body.contains("action=\"/dictionary/terms/ci%2Fcd/hide\""), "{}", panel.body);
     see_other(&browser.post("/dictionary/terms/ci%2Fcd/hide", &[]).await, "/dictionary");
     assert_eq!(layer(&server, "ci/cd").await, None);
 
@@ -169,7 +192,7 @@ async fn pages_need_a_session_or_a_token_and_refuse_posts_from_elsewhere() {
     let page = anonymous.get("/dictionary").await;
     assert_eq!(page.status, 401);
     assert!(page.body.contains("psst ui"), "{}", page.body);
-    assert_eq!(anonymous.get("/").await.header("location"), Some("/dictionary"));
+    assert_eq!(anonymous.get("/").await.header("location"), Some("/history"));
 
     // A paired device's token works too, with nothing to log out of.
     let paired = pair(&server).await;
@@ -223,39 +246,45 @@ async fn profiles_are_edited_added_and_reset_through_the_pages() {
     let browser = logged_in(&server).await;
     let page = browser.get("/profiles").await;
     assert_eq!(page.status, 200);
-    for text in ["<h2>czech</h2>", "<h2>default</h2>", "action=\"/profiles/czech\"", "File style."] {
+    for text in ["<span class=\"pname\">czech</span>", "<span class=\"pname\">default</span>", "“File style.”"] {
         assert!(page.body.contains(text), "{text} on the page: {}", page.body);
     }
+    let panel = browser.get("/profiles?profile=czech").await;
+    assert!(panel.body.contains("action=\"/profiles/czech\""), "{}", panel.body);
 
-    let czech = [("language", "cs"), ("prompt_style", "Nový styl."), ("rules", "whitespace capitalize")];
+    let czech = [
+        ("language", "cs"),
+        ("prompt_style", "Nový styl."),
+        ("order", "whitespace capitalize"),
+        ("rule_whitespace", "on"),
+        ("rule_capitalize", "on"),
+    ];
     see_other(&browser.post("/profiles/czech", &czech).await, "/profiles");
     let stored = profiles(&server).await.profiles.into_iter().find(|p| p.name == "czech").unwrap();
     assert_eq!(
         (stored.layer, stored.profile.rules.join(",")),
         (ProfileLayer::Replaced, "whitespace,capitalize".into())
     );
-    assert!(browser.get("/profiles").await.body.contains("Reset to profiles.toml"));
-    let refused = browser.post("/profiles/czech", &[("language", "cs"), ("rules", "fillers, shout")]).await;
+    assert!(browser.get("/profiles?profile=czech").await.body.contains("Use the Nix version"));
+    let shout = [("language", "cs"), ("order", "fillers, shout"), ("rule_fillers", "on"), ("rule_shout", "on")];
+    let refused = browser.post("/profiles/czech", &shout).await;
     refused_with(&refused, "unknown rule `shout`");
-    assert!(refused.body.contains("value=\"fillers, shout\""), "the entered values are kept");
+    assert!(refused.body.contains("value=\"fillers, shout,"), "the entered values are kept: {}", refused.body);
     let long = "word ".repeat(100);
     see_other(&browser.post("/profiles/czech", &[("language", "cs"), ("prompt_style", &long)]).await, "/profiles");
     assert!(browser.get("/profiles").await.body.contains("profiles.czech.prompt_style is over about 100 tokens"));
 
     // Add, with a name the page has to escape.
-    let new = [
-        ("name", "<b>notes</b>"),
-        ("language", "en"),
-        ("prompt_style", "</textarea><script>x()</script>"),
-        ("rules", ""),
-    ];
+    let new = [("name", "<b>notes</b>"), ("language", "en"), ("prompt_style", "</textarea><script>x()</script>")];
     see_other(&browser.post("/profiles", &new).await, "/profiles");
     let added = profiles(&server).await.profiles.into_iter().find(|p| p.name == "<b>notes</b>").expect("added");
     assert_eq!((added.layer, added.profile.rules.len()), (ProfileLayer::Added, 0));
     let page = browser.get("/profiles").await;
-    assert!(page.body.contains("<h2>&lt;b&gt;notes&lt;&#x2f;b&gt;</h2>"), "{}", page.body);
+    assert!(page.body.contains("<span class=\"pname\">&lt;b&gt;notes&lt;&#x2f;b&gt;</span>"), "{}", page.body);
     assert!(!page.body.contains("<script>x()"), "{}", page.body);
-    assert!(page.body.contains("action=\"/profiles/%3Cb%3Enotes%3C%2Fb%3E/reset\""), "{}", page.body);
+    let panel = browser.get("/profiles?profile=%3Cb%3Enotes%3C%2Fb%3E").await;
+    assert!(!panel.body.contains("<script>x()"), "{}", panel.body);
+    assert!(panel.body.contains("action=\"/profiles/%3Cb%3Enotes%3C%2Fb%3E/reset\""), "{}", panel.body);
     refused_with(&browser.post("/profiles", &[("name", "default"), ("language", "en")]).await, "already");
 
     // The export, then reset and remove.

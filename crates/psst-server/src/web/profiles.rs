@@ -1,12 +1,19 @@
-//! The profiles page: every profile, each editable, reset for the database's versions,
-//! a form to add one, and the export. Every change goes through the same function as
-//! `/api/profiles`.
+//! The profiles page (plan 6.8): every profile as a list, and a side panel for one (`?profile=`)
+//! or a new one (`?new`): language, prompt style and clean-up rules, with the rules' order and
+//! profiles.toml's version under Advanced; reset for the database's versions, and the export.
+//! Every change goes through the same function as `/api/profiles`.
 
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashMap},
+    sync::Arc,
+};
 
 use axum::{
     Form,
-    extract::{Path, State, rejection::FormRejection},
+    extract::{
+        Path, Query, State,
+        rejection::{FormRejection, QueryRejection},
+    },
     http::StatusCode,
     response::{IntoResponse, Redirect, Response},
 };
@@ -20,39 +27,82 @@ use crate::{api::ApiErr, profiles, state::AppState};
 
 type AppRef = Arc<AppState>;
 
+#[derive(Debug, Default, Deserialize)]
+pub struct PageQuery {
+    /// The profile whose panel is open.
+    profile: Option<String>,
+    /// Any value opens the panel for a new profile.
+    new: Option<String>,
+}
+
+/// What each clean-up rule is called on the page, and what it does.
+fn describe(rule: &str) -> (&'static str, &'static str) {
+    match rule {
+        "fillers" => ("Remove fillers", "Removes filler words like um and uh."),
+        "whitespace" => ("Tidy spaces", "Removes extra spaces."),
+        "capitalize" => {
+            ("Capitalise the start", "Starts the text with a capital letter, unless it starts with a dictionary word.")
+        }
+        "trailing_space" => {
+            ("Trailing space", "Adds a space at the end, so the next dictation doesn't run into this one.")
+        }
+        _ => ("", ""),
+    }
+}
+
 /// A profile's form, as entered.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProfileForm {
     /// Only in the form that adds a profile.
-    #[serde(default, skip_serializing)]
     name: String,
-    #[serde(default)]
     language: String,
-    #[serde(default)]
     prompt_style: String,
-    /// Rule ids, separated by commas or spaces.
-    #[serde(default)]
-    rules: String,
-    /// The style's estimated length in tokens, for the page.
-    #[serde(default, skip_deserializing)]
-    tokens: usize,
+    /// Every rule id, in the order they run: the profile's rules first, then the others.
+    order: Vec<String>,
+    /// The rules switched on.
+    on: BTreeSet<String>,
 }
 
 impl ProfileForm {
     fn of(profile: &Profile) -> ProfileForm {
+        let mut order = profile.rules.clone();
+        order.extend(
+            Rule::ALL
+                .map(Rule::id)
+                .iter()
+                .filter(|id| !profile.rules.iter().any(|r| r == *id))
+                .map(|id| id.to_string()),
+        );
         ProfileForm {
             name: String::new(),
             language: profile.language.clone(),
             prompt_style: profile.prompt_style.clone(),
-            rules: profile.rules.join(", "),
-            tokens: 0,
+            order,
+            on: profile.rules.iter().cloned().collect(),
         }
-        .measured()
     }
 
-    fn measured(mut self) -> ProfileForm {
-        self.tokens = estimated_tokens(&self.prompt_style);
-        self
+    /// The fields as posted: `name`, `language`, `prompt_style`, `order` (rule ids separated by
+    /// commas or spaces) and a `rule_<id>` checkbox for each rule switched on.
+    fn from_fields(fields: &HashMap<String, String>) -> ProfileForm {
+        let get = |key: &str| fields.get(key).cloned().unwrap_or_default();
+        let mut order: Vec<String> = get("order")
+            .split([',', ' ', '\t', '\n'])
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+            .map(String::from)
+            .collect();
+        for id in Rule::ALL.map(Rule::id) {
+            if !order.iter().any(|r| r == id) {
+                order.push(id.to_owned());
+            }
+        }
+        let on = fields
+            .iter()
+            .filter(|(key, value)| key.starts_with("rule_") && !value.is_empty())
+            .map(|(key, _)| key["rule_".len()..].to_owned())
+            .collect();
+        ProfileForm { name: get("name"), language: get("language"), prompt_style: get("prompt_style"), order, on }
     }
 
     /// The profile as entered: the style exactly as written, since it's the start of the prompt.
@@ -60,13 +110,29 @@ impl ProfileForm {
         Profile {
             language: self.language.trim().to_owned(),
             prompt_style: self.prompt_style.clone(),
-            rules: self
-                .rules
-                .split([',', ' ', '\t', '\n'])
-                .map(str::trim)
-                .filter(|r| !r.is_empty())
-                .map(String::from)
-                .collect(),
+            rules: self.order.iter().filter(|id| self.on.contains(*id)).cloned().collect(),
+        }
+    }
+
+    /// What the template needs: the fields, each rule with its name and switch, and the size.
+    fn view(&self) -> Value {
+        let rules: Vec<Value> = self
+            .order
+            .iter()
+            .map(|id| {
+                let (name, what) = describe(id);
+                context! { id, name, what, on => self.on.contains(id) }
+            })
+            .collect();
+        let tokens = estimated_tokens(&self.prompt_style);
+        context! {
+            name => self.name.clone(),
+            language => self.language.clone(),
+            prompt_style => self.prompt_style.clone(),
+            order => self.order.join(", "),
+            rules,
+            tokens,
+            over => tokens > PROMPT_STYLE_WARN_TOKENS,
         }
     }
 }
@@ -81,51 +147,80 @@ struct Outcome {
     form: Option<ProfileForm>,
 }
 
-fn page(state: &AppState, viewer: &Viewer, outcome: Outcome) -> Response {
+fn page(state: &AppState, viewer: &Viewer, query: &PageQuery, outcome: Outcome) -> Response {
     let view = state.live.profile_layers().view();
-    let mut form = outcome.form;
-    let entered = |name: &str, form: &mut Option<ProfileForm>| {
-        (outcome.error_for.as_deref() == Some(name)).then(|| form.take()).flatten().map(ProfileForm::measured)
-    };
-    let cards: Vec<Value> = view
+    let list: Vec<Value> = view
         .profiles
         .iter()
         .map(|entry| {
-            let fields = entered(&entry.name, &mut form).unwrap_or_else(|| ProfileForm::of(&entry.profile));
-            let file = entry.file.as_ref().map(|file| {
-                context! {
-                    language => file.language.clone(),
-                    rules => file.rules.join(", "),
-                    prompt_style => format!("{:?}", file.prompt_style),
-                }
-            });
             context! {
                 name => entry.name.clone(),
-                layer => Value::from(Serde(entry.layer)),
-                same_as_file => entry.layer == ProfileLayer::Replaced && entry.file.as_ref() == Some(&entry.profile),
-                fields => Value::from(Serde(fields)),
-                file,
+                language => language_name(&entry.profile.language),
+                style => entry.profile.prompt_style.clone(),
             }
         })
         .collect();
-    let new_form = entered("new", &mut form);
-    let new_name = new_form.as_ref().map(|form| form.name.clone()).unwrap_or_default();
-    let new_fields = new_form.unwrap_or_else(|| ProfileForm::of(&Profile::default()));
+    let open_name = outcome.error_for.clone().filter(|n| n != "new").or(query.profile.clone());
+    let new = query.new.is_some() || outcome.error_for.as_deref() == Some("new");
+    let panel = if new {
+        let fields = outcome.form.clone().unwrap_or_else(|| ProfileForm::of(&Profile::default()));
+        Some(context! {
+            new => true,
+            title => "New profile",
+            fields => fields.view(),
+            error => outcome.error.clone().filter(|_| outcome.error_for.as_deref() == Some("new")),
+        })
+    } else {
+        open_name.and_then(|name| view.profiles.iter().find(|p| p.name == name)).map(|entry| {
+            let mine = outcome.error_for.as_deref() == Some(entry.name.as_str());
+            let fields = outcome.form.clone().filter(|_| mine).unwrap_or_else(|| ProfileForm::of(&entry.profile));
+            let file = entry.file.as_ref().map(|file| {
+                format!(
+                    "language = {:?}\nprompt_style = {:?}\nrules = [{}]",
+                    file.language,
+                    file.prompt_style,
+                    file.rules.iter().map(|r| format!("{r:?}")).collect::<Vec<_>>().join(", ")
+                )
+            });
+            let source = match entry.layer {
+                ProfileLayer::File => "From your Nix config (profiles.toml), unchanged.",
+                ProfileLayer::Added => "Added here, so it lives only on this server until you move it to your Nix config.",
+                ProfileLayer::Replaced => "Changed here. Your Nix config has this version:",
+            };
+            context! {
+                name => entry.name.clone(),
+                title => entry.name.clone(),
+                sub => if entry.name == "default" { "Used when you run psst toggle".to_owned() } else { format!("Used with psst toggle --profile {}", entry.name) },
+                layer => Value::from(Serde(entry.layer)),
+                same_as_file => entry.layer == ProfileLayer::Replaced && entry.file.as_ref() == Some(&entry.profile),
+                fields => fields.view(),
+                error => outcome.error.clone().filter(|_| mine),
+                source,
+                file,
+            }
+        })
+    };
     let mut languages: BTreeSet<String> = ["en", "cs"].map(String::from).into();
     languages.extend(view.profiles.iter().map(|p| p.profile.language.clone()));
     let ctx = context! {
-        profiles => cards,
+        profiles => list,
+        changes => view.profiles.iter().filter(|p| p.layer != ProfileLayer::File).count(),
         warnings => view.warnings,
-        rule_ids => Rule::ALL.map(Rule::id).to_vec(),
         warn_tokens => PROMPT_STYLE_WARN_TOKENS,
         languages => languages.into_iter().collect::<Vec<_>>(),
-        new_name,
-        new_fields => Value::from(Serde(new_fields)),
-        error => outcome.error,
-        error_for => outcome.error_for,
+        panel,
+        error => outcome.error.clone().filter(|_| outcome.error_for.is_none()),
         ..chrome(state, viewer, "profiles")
     };
     render(outcome.status.unwrap_or(StatusCode::OK), "profiles.html", ctx)
+}
+
+fn language_name(code: &str) -> String {
+    match code {
+        "en" => "English".into(),
+        "cs" => "Czech".into(),
+        other => other.into(),
+    }
 }
 
 fn back() -> Response {
@@ -147,20 +242,26 @@ fn refused(
         error_for: error_for.map(String::from),
         form,
     };
-    page(state, viewer, outcome)
+    page(state, viewer, &PageQuery::default(), outcome)
 }
 
 fn bad_form(state: &AppState, viewer: &Viewer, err: FormRejection) -> Response {
     page(
         state,
         viewer,
+        &PageQuery::default(),
         Outcome { status: Some(StatusCode::BAD_REQUEST), error: Some(err.body_text()), ..Outcome::default() },
     )
 }
 
-/// `GET /profiles`.
-pub async fn show(viewer: Viewer, State(state): State<AppRef>) -> Response {
-    page(&state, &viewer, Outcome::default())
+/// `GET /profiles?profile=&new=`.
+pub async fn show(
+    viewer: Viewer,
+    State(state): State<AppRef>,
+    query: Result<Query<PageQuery>, QueryRejection>,
+) -> Response {
+    let Query(query) = query.unwrap_or_default();
+    page(&state, &viewer, &query, Outcome::default())
 }
 
 /// `POST /profiles/{name}`: saves a profile over profiles.toml's.
@@ -168,10 +269,10 @@ pub async fn save(
     viewer: Viewer,
     State(state): State<AppRef>,
     Path(name): Path<String>,
-    form: Result<Form<ProfileForm>, FormRejection>,
+    form: Result<Form<HashMap<String, String>>, FormRejection>,
 ) -> Response {
-    let Form(form) = match form {
-        Ok(form) => form,
+    let form = match form {
+        Ok(Form(fields)) => ProfileForm::from_fields(&fields),
         Err(err) => return bad_form(&state, &viewer, err),
     };
     match profiles::change(&state.live, &state.db, &name, Some(form.profile())) {
@@ -184,17 +285,17 @@ pub async fn save(
 pub async fn add(
     viewer: Viewer,
     State(state): State<AppRef>,
-    form: Result<Form<ProfileForm>, FormRejection>,
+    form: Result<Form<HashMap<String, String>>, FormRejection>,
 ) -> Response {
-    let Form(form) = match form {
-        Ok(form) => form,
+    let form = match form {
+        Ok(Form(fields)) => ProfileForm::from_fields(&fields),
         Err(err) => return bad_form(&state, &viewer, err),
     };
     let name = form.name.trim().to_owned();
     let error = if name.is_empty() {
         Some("the profile needs a name".to_owned())
     } else if state.live.profile_layers().effective().profiles.contains_key(&name) {
-        Some(format!("there's a profile `{name}` already; change it above"))
+        Some(format!("there's a profile `{name}` already; open it to change it"))
     } else {
         None
     };

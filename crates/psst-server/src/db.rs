@@ -130,6 +130,26 @@ fn now_ms() -> i64 {
     Timestamp::now().as_millisecond()
 }
 
+const HISTORY_COLUMNS: &str =
+    "SELECT id, session_id, device, profile, created_ms, model, revision, final, server_timings, client_timings";
+
+/// A [`HISTORY_COLUMNS`] row.
+fn history_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryRow> {
+    let session_id: String = row.get(1)?;
+    Ok(HistoryRow {
+        id: row.get::<_, i64>(0)? as HistoryId,
+        session_id: session_id.parse().unwrap_or_default(),
+        device: row.get(2)?,
+        profile: row.get(3)?,
+        created_at: timestamp(row.get(4)?),
+        model: row.get(5)?,
+        revision: row.get(6)?,
+        r#final: parse(row.get(7)?),
+        server_timings: parse(row.get(8)?),
+        client_timings: parse(row.get(9)?),
+    })
+}
+
 fn timestamp(ms: i64) -> Timestamp {
     Timestamp::from_millisecond(ms).unwrap_or(Timestamp::UNIX_EPOCH)
 }
@@ -308,27 +328,16 @@ impl Db {
     /// The newest `limit` rows, newest first.
     pub fn history(&self, limit: u32) -> Result<Vec<HistoryRow>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT id, session_id, device, profile, created_ms, model, revision, final, server_timings,
-                    client_timings
-             FROM history ORDER BY id DESC LIMIT ?1",
-        )?;
-        let rows = stmt.query_map(params![limit], |row| {
-            let session_id: String = row.get(1)?;
-            Ok(HistoryRow {
-                id: row.get::<_, i64>(0)? as HistoryId,
-                session_id: session_id.parse().unwrap_or_default(),
-                device: row.get(2)?,
-                profile: row.get(3)?,
-                created_at: timestamp(row.get(4)?),
-                model: row.get(5)?,
-                revision: row.get(6)?,
-                r#final: parse(row.get(7)?),
-                server_timings: parse(row.get(8)?),
-                client_timings: parse(row.get(9)?),
-            })
-        })?;
+        let mut stmt = conn.prepare(&format!("{HISTORY_COLUMNS} FROM history ORDER BY id DESC LIMIT ?1"))?;
+        let rows = stmt.query_map(params![limit], history_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// One history row, if it's still kept.
+    pub fn history_row(&self, id: HistoryId) -> Result<Option<HistoryRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&format!("{HISTORY_COLUMNS} FROM history WHERE id = ?1"))?;
+        Ok(stmt.query_row(params![id as i64], history_row).optional()?)
     }
 
     /// Timings of every finished session.
@@ -398,24 +407,32 @@ impl Db {
         Ok(terms)
     }
 
-    /// Stores the entry for an identity, replacing any it had.
-    pub fn put_dictionary_term(&self, id: &str, entry: &LayerEntry, saved: u64) -> Result<()> {
-        let term = match entry {
-            LayerEntry::Set(spec) => Some(json(&Term::from(spec))),
-            LayerEntry::Hide => None,
-        };
-        self.conn().execute(
-            "INSERT INTO dictionary_terms (id, term, saved, updated_ms) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT (id) DO UPDATE SET term = excluded.term, saved = excluded.saved,
-                                            updated_ms = excluded.updated_ms",
-            params![id, term, saved as i64, now_ms()],
-        )?;
+    /// Stores each identity's new entry, replacing any it had, or deletes its entry for `None`;
+    /// all of them, or none.
+    pub fn store_dictionary_terms(&self, terms: &[(TermId, Option<LayerTerm>)]) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        for (id, term) in terms {
+            match term {
+                Some(LayerTerm { entry, saved }) => {
+                    let term = match entry {
+                        LayerEntry::Set(spec) => Some(json(&Term::from(spec))),
+                        LayerEntry::Hide => None,
+                    };
+                    tx.execute(
+                        "INSERT INTO dictionary_terms (id, term, saved, updated_ms) VALUES (?1, ?2, ?3, ?4)
+                         ON CONFLICT (id) DO UPDATE SET term = excluded.term, saved = excluded.saved,
+                                                        updated_ms = excluded.updated_ms",
+                        params![id, term, *saved as i64, now_ms()],
+                    )?;
+                }
+                None => {
+                    tx.execute("DELETE FROM dictionary_terms WHERE id = ?1", params![id])?;
+                }
+            }
+        }
+        tx.commit()?;
         Ok(())
-    }
-
-    /// Deletes the entry for an identity; false if it had none.
-    pub fn delete_dictionary_term(&self, id: &str) -> Result<bool> {
-        Ok(self.conn().execute("DELETE FROM dictionary_terms WHERE id = ?1", params![id])? > 0)
     }
 
     /// Every never rule, oldest first.

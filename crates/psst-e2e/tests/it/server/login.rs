@@ -37,7 +37,7 @@ async fn a_login_link_logs_a_browser_in_once() {
 
     let mut browser = Browser::new(addr);
     let redeemed = browser.log_in(&link).await;
-    assert_eq!((redeemed.status, redeemed.header("location")), (303, Some("/dictionary")));
+    assert_eq!((redeemed.status, redeemed.header("location")), (303, Some("/history")));
     let cookie = redeemed.header("set-cookie").unwrap();
     for attribute in ["HttpOnly", "SameSite=Strict", "Path=/", "Max-Age=604800"] {
         assert!(cookie.split("; ").any(|a| a == attribute), "{attribute} in {cookie}");
