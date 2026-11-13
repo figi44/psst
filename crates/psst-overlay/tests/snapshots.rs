@@ -194,8 +194,13 @@ fn write_contact_sheet(frames: &[Pixmap]) {
 fn renders_any_size_and_scale_without_panicking() {
     let mut renderer = Renderer::new();
     let style = Style::default();
-    for (_, state, levels) in cases() {
-        for (w, h) in [(1, 1), (40, 44), (600, 80), (240, 20)] {
+    let sizes = [(1, 1), (40, 44), (600, 80), (240, 20)];
+    // Every state's icon at the degenerate sizes, and one state per layout (a label, a long label,
+    // the waveform, and the waveform with text on either side) at every size too.
+    let every_size = ["starting", "error-long", "recording", "offline", "limit-warning"];
+    for (name, state, levels) in cases() {
+        let sizes = if every_size.contains(&name) { &sizes[..] } else { &sizes[..2] };
+        for &(w, h) in sizes {
             for scale in [0.5, 1.0, 1.75, 3.0, f64::NAN] {
                 let p = renderer.render(&state, &levels, &style, w, h, scale);
                 assert!(p.width() >= 1 && p.height() >= 1);

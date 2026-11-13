@@ -1,11 +1,24 @@
-# `paste_timing` asserts a 50 ms p95 through llvmpipe, so it runs alone.
+# `paste_timing` asserts a 50 ms p95 through llvmpipe, so it runs alone. It starts first, while
+# no other test holds a slot: later on, the run would stall while every slot drained for it.
 [[profile.default.overrides]]
 filter = 'binary_id(psst-e2e::it) & test(=wayland::paste_timing)'
 threads-required = "num-test-threads"
+priority = 100
+
+# The run takes at least as long as its slowest tests, so they start next and the rest fill in
+# around them: 23 s → 16 s locally.
+[[profile.default.overrides]]
+filter = '''binary_id(psst-e2e::it) & (
+    test(=desktop::dictation_timings)
+    | test(=desktop::a_dictation_is_pasted_into_the_focused_app_and_the_clipboard_comes_back)
+    | test(=server::engine::a_request_that_runs_out_of_its_budget_twice_fails_with_timeout)
+    | test(=server::sessions::a_recording_without_its_connection_is_dropped_after_10_s_without_audio)
+)'''
+priority = 90
 
 # CI's runners have 2 CPUs, but most of the suite's time is spent waiting on real timers (a 10 s
-# audio timeout, 5 s clipboard restores, retry windows), so it runs 8 tests at a time: 72 s → 22 s
-# on 2 CPUs.
+# audio timeout, 5 s engine attempts, clipboard restores, retry windows), so it runs 8 tests at a
+# time: 64 s → 19 s on 2 CPUs.
 [profile.ci]
 test-threads = 8
 fail-fast = false

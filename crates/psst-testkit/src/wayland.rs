@@ -163,18 +163,6 @@ fn dispatch_for(conn: &Connection, queue: &mut EventQueue<Client>, st: &mut Clie
     queue.dispatch_pending(st).expect("dispatch");
 }
 
-/// Clears the clipboard, as a clipboard manager's "clear" does.
-pub fn clear_clipboard(sandbox: &Sandbox) {
-    let (_conn, globals, mut queue) = connect(sandbox.wayland_socket());
-    let qh = queue.handle();
-    let mut st = Client::default();
-    let seat: WlSeat = globals.bind(&qh, 1..=8, ()).expect("wl_seat");
-    let manager: ExtDataControlManagerV1 = globals.bind(&qh, 1..=1, ()).expect("ext data control");
-    let device = manager.get_data_device(&seat, &qh, ());
-    device.set_selection(None);
-    queue.roundtrip(&mut st).expect("roundtrip");
-}
-
 /// The clipboard as a clipboard manager sees it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Selection {

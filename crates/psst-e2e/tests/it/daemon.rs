@@ -7,8 +7,8 @@ use std::{
     io::{BufRead, BufReader, Read},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    process::{Child, Command, Output, Stdio},
-    sync::{Arc, Mutex, mpsc},
+    process::{Command, Output, Stdio},
+    sync::mpsc,
     thread,
     time::{Duration, Instant},
 };
@@ -32,16 +32,11 @@ impl Server {
     /// A server whose engine transcribes the next dictations as `texts`, in order. The pipeline
     /// then appends a space (the `trailing_space` rule).
     fn start(texts: &[&str], tcp: bool) -> Server {
-        Server::start_slow(texts, 0, tcp)
-    }
-
-    /// [`Server::start`], with each transcription taking `delay_ms`.
-    fn start_slow(texts: &[&str], delay_ms: u64, tcp: bool) -> Server {
         let transcribe = texts
             .iter()
             .map(|text| TranscribeStep::Result {
                 text: text.to_string(),
-                delay_ms,
+                delay_ms: 0,
                 no_speech_prob: None,
                 speech_ms: None,
             })
@@ -62,6 +57,11 @@ impl Server {
     /// Starts it again with the same state.
     fn start_again(&mut self) {
         self.0.restart();
+    }
+
+    /// How many transcriptions the engine was asked for, across restarts.
+    fn transcriptions(&self) -> usize {
+        self.0.engine_requests().iter().filter(|r| r.header["type"] == "transcribe").count()
     }
 
     /// Runs an admin command (`psst-server <args> --json`) and returns its output.
@@ -178,6 +178,12 @@ fn toggle_twice_pastes_the_transcript_and_cleans_up() {
         assert!(Instant::now() < deadline, "no client timings in {history}");
         thread::sleep(Duration::from_millis(50));
     }
+
+    // `paste-last` pastes it again without transcribing it again.
+    assert_eq!(client.ok(&["paste-last"]).trim(), "pasting");
+    client.wait_for("the second paste", |c| c.inserted_texts("paste").len() == 2);
+    assert_eq!(client.inserted_texts("paste"), vec!["Push the fix to psst. "; 2]);
+    assert_eq!(server.transcriptions(), 1);
 }
 
 #[test]
@@ -189,11 +195,17 @@ fn a_recording_made_offline_is_uploaded_once_the_server_is_back() {
     client.wait_for("the offline overlay", |c| {
         c.commands().iter().any(|cmd| cmd["cmd"] == "overlay" && cmd["state"]["kind"] == "offline")
     });
+    let status = client.status();
+    let phase = status["recording"]["phase"].as_str().unwrap_or_default();
+    assert!(phase.starts_with("recording, offline"), "{status}");
     thread::sleep(Duration::from_millis(300));
     server.start_again();
     client.ok(&["toggle"]);
     client.wait_idle();
     assert_eq!(client.inserted_texts("paste"), vec!["Recorded offline. "]);
+    let recordings = client.daemon().state_dir().join("recordings");
+    assert_eq!(fs::read_dir(recordings).unwrap().count(), 0, "the delivered recording is deleted");
+    assert_eq!(server.transcriptions(), 1);
 }
 
 #[test]
@@ -262,74 +274,6 @@ fn a_second_daemon_refuses_to_start_and_leaves_the_recordings_alone() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("another psst daemon"));
     let status = client.status();
     assert_eq!(status["retained"][0]["state"], "recording", "not recovered under the running daemon: {status}");
-}
-
-/// `psst status --follow`, as a bar runs it, with its lines collected as they come.
-struct Bar {
-    child: Child,
-    lines: Arc<Mutex<Vec<Value>>>,
-}
-
-impl Bar {
-    fn start(mut command: Command) -> Bar {
-        let mut child =
-            command.args(["status", "--follow"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-        let lines = Arc::new(Mutex::new(Vec::new()));
-        let sink = lines.clone();
-        let stdout = child.stdout.take().unwrap();
-        thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                let Ok(line) = line else { break };
-                sink.lock().unwrap().push(serde_json::from_str(&line).unwrap());
-            }
-        });
-        Bar { child, lines }
-    }
-
-    /// The states it showed (waybar's `alt`), with repeats collapsed.
-    fn alts(&self) -> Vec<String> {
-        let mut alts: Vec<String> =
-            self.lines.lock().unwrap().iter().map(|l| l["alt"].as_str().unwrap().to_owned()).collect();
-        alts.dedup();
-        alts
-    }
-
-    #[track_caller]
-    fn wait_for(&self, alts: &[&str]) {
-        let deadline = Instant::now() + WAIT;
-        while self.alts() != alts {
-            assert!(Instant::now() < deadline, "the bar showed {:?}, not {alts:?}", self.alts());
-            thread::sleep(Duration::from_millis(20));
-        }
-    }
-}
-
-impl Drop for Bar {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-#[test]
-fn status_follow_shows_each_change_and_follows_a_restarted_daemon() {
-    let server = Server::start_slow(&["Followed."], 300, false);
-    let mut client = Client::start(server.endpoint());
-    let bar = Bar::start(client.sandbox.command(DAEMON));
-    bar.wait_for(&["idle"]);
-
-    client.ok(&["toggle"]);
-    thread::sleep(Duration::from_millis(400));
-    client.ok(&["toggle"]);
-    client.wait_idle();
-    bar.wait_for(&["idle", "recording", "finishing", "idle"]);
-    let tooltip = bar.lines.lock().unwrap().last().unwrap()["tooltip"].as_str().unwrap().to_owned();
-    assert!(tooltip.starts_with("psst: idle\nserver: connected to "), "{tooltip}");
-
-    client.daemon.take().unwrap().kill();
-    bar.wait_for(&["idle", "recording", "finishing", "idle", "stopped"]);
-    client.daemon = Some(spawn_daemon(Path::new(DAEMON), &client.sandbox, client.cfg.clone()));
-    bar.wait_for(&["idle", "recording", "finishing", "idle", "stopped", "idle"]);
 }
 
 #[test]

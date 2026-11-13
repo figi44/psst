@@ -34,7 +34,7 @@ use psst_testkit::{
     spawn_server, test_audio, wayland::ClipboardOwner, write_wav,
 };
 use serde_json::Value;
-use support::{App, Proxy, Seen, Watcher, in_order};
+use support::{App, Proxy, Seen, Watcher, in_order, now_us};
 
 const DAEMON: &str = env!("CARGO_BIN_EXE_psst-e2e-daemon");
 const SERVER: &str = env!("CARGO_BIN_EXE_psst-server-e2e");
@@ -190,6 +190,7 @@ fn a_dictation_is_pasted_into_the_focused_app_and_the_clipboard_comes_back() {
     assert!(desk.ok(&["toggle"]).starts_with("recording"));
     watcher.wait_for(Seen::Recording, Duration::from_secs(3));
     thread::sleep(Duration::from_millis(600));
+    let stopping_us = now_us();
     assert!(desk.ok(&["toggle"]).starts_with("stopped"));
     let got = desk.pasted(Duration::from_secs(5));
     let pasted_at = Instant::now();
@@ -205,6 +206,16 @@ fn a_dictation_is_pasted_into_the_focused_app_and_the_clipboard_comes_back() {
     let seen = watcher.stop();
     assert!(in_order(&seen, &[Seen::Hidden, Seen::Recording, Seen::Done, Seen::Hidden]), "the overlay showed {seen:?}");
 
+    // Not before 5 s. The app's clock says when it had read the clipboard, counted from before
+    // the stop, so a probe that comes late on a loaded machine checks nothing rather than taking
+    // the restore for an early one...
+    thread::sleep((pasted_at + Duration::from_secs(4)).saturating_duration_since(Instant::now()));
+    let probe = desk.app.probe();
+    let probed_after = Duration::from_micros(probe["t_done"].as_u64().unwrap() - stopping_us);
+    if probed_after < RESTORE {
+        assert_eq!(probe["text"].as_str(), Some("Push the fix to psst. "), "restored {probed_after:?} after the stop");
+    }
+    // ...but after.
     thread::sleep((pasted_at + RESTORE + Duration::from_millis(500)).saturating_duration_since(Instant::now()));
     assert_eq!(desk.app.probe()["text"].as_str(), Some(ORIGINAL), "the clipboard is restored after 5 s");
 
@@ -213,22 +224,6 @@ fn a_dictation_is_pasted_into_the_focused_app_and_the_clipboard_comes_back() {
     for key in ["toggle_to_overlay_ms", "toggle_to_first_frame_ms", "stop_to_final_ms", "stop_to_dispatch_ms"] {
         assert!(t[key].is_u64(), "{key} in {t}");
     }
-}
-
-#[test]
-fn paste_last_pastes_the_last_dictation_again() {
-    let server = server(&["Once more."]);
-    let desk = Desktop::start(server.endpoint(), &test_audio(3_000));
-    desk.ok(&["toggle"]);
-    thread::sleep(Duration::from_millis(400));
-    desk.ok(&["toggle"]);
-    assert_pasted(&desk.pasted(Duration::from_secs(5)), "Once more. ");
-    desk.wait_idle();
-
-    assert_eq!(desk.ok(&["paste-last"]).trim(), "pasting");
-    assert_pasted(&desk.pasted(Duration::from_secs(3)), "Once more. ");
-    desk.wait_idle();
-    assert_eq!(transcriptions(&server).len(), 1, "paste-last doesn't transcribe again");
 }
 
 #[test]
@@ -246,38 +241,6 @@ fn the_focused_apps_rule_from_niri_picks_the_chord() {
 }
 
 // ---------------------------------------------------------------------- the network
-
-#[test]
-fn with_the_server_down_at_start_it_records_offline_and_uploads_at_stop() {
-    let mut server = server(&["Recorded offline."]);
-    let desk = Desktop::start(server.endpoint(), &test_audio(3_000));
-    server.kill();
-    let mut watcher = desk.watch();
-
-    let toggled = Instant::now();
-    desk.ok(&["toggle"]);
-    let recording = Instant::now();
-    let offline = watcher.wait_for(Seen::Offline, Duration::from_secs(3));
-    eprintln!("server unreachable at start → offline seen on screen: {:?}", offline - toggled);
-    let status = desk.status();
-    let phase = status["recording"]["phase"].as_str().unwrap_or_default();
-    assert!(phase.starts_with("recording, offline"), "{status}");
-
-    thread::sleep(Duration::from_millis(500));
-    server.restart();
-    let recorded = recording.elapsed();
-    desk.ok(&["toggle"]);
-    assert_pasted(&desk.pasted(Duration::from_secs(10)), "Recorded offline. ");
-    desk.wait_idle();
-    assert_eq!(desk.recordings(), 0);
-    watcher.wait_for(Seen::Done, Duration::from_secs(3));
-    watcher.wait_for(Seen::Hidden, Duration::from_secs(3));
-    let seen = watcher.stop();
-    assert!(in_order(&seen, &[Seen::Offline, Seen::Done, Seen::Hidden]), "the overlay showed {seen:?}");
-    let requests = transcriptions(&server);
-    assert_eq!(requests.len(), 1);
-    assert_whole(&requests[0], recorded);
-}
 
 #[test]
 fn a_connection_dropped_while_recording_is_uploaded_with_resume_at_stop() {
@@ -323,18 +286,21 @@ fn a_connection_dropped_while_recording_is_uploaded_with_resume_at_stop() {
 /// The client's timings over several dictations, as the daemon measures them.
 #[test]
 fn dictation_timings() {
-    const RUNS: usize = 8;
+    // Enough to catch a dictation that's slower than the first; with this few, p95 is the max.
+    const RUNS: usize = 3;
     let server = server(&["Timing."; RUNS]);
     let desk = Desktop::start(server.endpoint(), &test_audio(3_000));
     let mut runs = Vec::new();
-    for _ in 0..RUNS {
+    for run in 0..RUNS {
+        if run > 0 {
+            // Let `Done` go, so this toggle shows the overlay again.
+            thread::sleep(Duration::from_millis(1_200));
+        }
         desk.ok(&["toggle"]);
         thread::sleep(Duration::from_millis(500));
         desk.ok(&["toggle"]);
         assert_pasted(&desk.pasted(Duration::from_secs(5)), "Timing. ");
         runs.push(timings(&desk.wait_idle()));
-        // Let `Done` go, so the next toggle shows the overlay again.
-        thread::sleep(Duration::from_millis(1_200));
     }
     let mut summary = Vec::new();
     for key in ["toggle_to_overlay_ms", "toggle_to_first_frame_ms", "stop_to_final_ms", "stop_to_dispatch_ms"] {

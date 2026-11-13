@@ -26,6 +26,12 @@ use serde_json::Value;
 
 pub const TARGET: &str = env!("CARGO_BIN_EXE_psst-paste-target");
 
+/// CLOCK_MONOTONIC µs, the clock the app stamps its events with.
+pub fn now_us() -> u64 {
+    let t = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
+    t.tv_sec as u64 * 1_000_000 + t.tv_nsec as u64 / 1_000
+}
+
 // ---------------------------------------------------------------------- the app
 
 /// The test app: it has keyboard focus and reports what it pastes.
