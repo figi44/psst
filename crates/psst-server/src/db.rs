@@ -1,5 +1,6 @@
 //! The server's SQLite database (`<state dir>/psst.db`, WAL): devices, history, the dictionary's
-//! database layer, and small pieces of state such as a deliberate unload.
+//! database layer, profiles stored over `profiles.toml`, and small pieces of state such as a
+//! deliberate unload.
 //!
 //! Every statement is short, so callers run them inline under one connection mutex.
 
@@ -14,8 +15,8 @@ use jiff::Timestamp;
 use psst_config::TermSpec;
 use psst_dict::{LayerEntry, LayerTerm};
 use psst_proto::{
-    ClientTimings, Final, HistoryId, ServerTimings, SessionId, TermId,
-    api::{Device, DeviceKind, HistoryRow, NeverRuleId, Term},
+    ClientTimings, DeviceId, Final, HistoryId, ServerTimings, SessionId, TermId,
+    api::{Device, DeviceKind, HistoryRow, NeverRuleId, Profile, Term},
 };
 use rand::RngExt;
 use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
@@ -65,6 +66,23 @@ CREATE TABLE IF NOT EXISTS dictionary_never (
     created_ms INTEGER NOT NULL,
     UNIQUE (term, span_key)
 );
+-- Whole profiles by name, each replacing profiles.toml's profile with that name or adding one
+-- (plan 6.5).
+CREATE TABLE IF NOT EXISTS profiles (
+    name TEXT PRIMARY KEY,
+    -- An API `Profile` as JSON.
+    profile TEXT NOT NULL,
+    updated_ms INTEGER NOT NULL
+);
+-- The web UI's browser sessions (plan 6.6), by the SHA-256 of their cookie.
+CREATE TABLE IF NOT EXISTS web_sessions (
+    token_hash TEXT PRIMARY KEY,
+    -- Who asked for the login link: `local:<user>`, or a paired device's id.
+    device TEXT NOT NULL,
+    created_ms INTEGER NOT NULL,
+    expires_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS web_sessions_device ON web_sessions (device);
 ";
 
 /// Key in `state` holding the boot id of a deliberate unload.
@@ -228,6 +246,7 @@ impl Db {
             Some("local") => Ok(Revoke::Local),
             Some(_) => {
                 conn.execute("UPDATE devices SET revoked_ms = ?2 WHERE id = ?1", params![id, now_ms()])?;
+                conn.execute("DELETE FROM web_sessions WHERE device = ?1", params![id])?;
                 Ok(Revoke::Revoked)
             }
         }
@@ -426,6 +445,68 @@ impl Db {
     /// Deletes a never rule; false if there's none with this id.
     pub fn delete_never_rule(&self, id: NeverRuleId) -> Result<bool> {
         Ok(self.conn().execute("DELETE FROM dictionary_never WHERE id = ?1", params![id as i64])? > 0)
+    }
+}
+
+impl Db {
+    /// The stored profiles by name; one that can't be read comes with the reason.
+    pub fn profiles(&self) -> Result<Vec<(String, std::result::Result<Profile, String>)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT name, profile FROM profiles ORDER BY name")?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+        let mut profiles = Vec::new();
+        for row in rows {
+            let (name, profile) = row?;
+            profiles.push((name, serde_json::from_str(&profile).map_err(|err| err.to_string())));
+        }
+        Ok(profiles)
+    }
+
+    /// Stores a profile, replacing the one stored under its name.
+    pub fn put_profile(&self, name: &str, profile: &Profile) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO profiles (name, profile, updated_ms) VALUES (?1, ?2, ?3)
+             ON CONFLICT (name) DO UPDATE SET profile = excluded.profile, updated_ms = excluded.updated_ms",
+            params![name, json(profile), now_ms()],
+        )?;
+        Ok(())
+    }
+
+    /// Starts a browser session for `device`, until `expires`.
+    pub fn add_web_session(&self, token_hash: &str, device: &str, expires: Timestamp) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO web_sessions (token_hash, device, created_ms, expires_ms) VALUES (?1, ?2, ?3, ?4)",
+            params![token_hash, device, now_ms(), expires.as_millisecond()],
+        )?;
+        Ok(())
+    }
+
+    /// The device of the browser session with this cookie, unless it has expired.
+    pub fn web_session(&self, token_hash: &str) -> Result<Option<DeviceId>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT device FROM web_sessions WHERE token_hash = ?1 AND expires_ms > ?2",
+                params![token_hash, now_ms()],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Ends a browser session.
+    pub fn delete_web_session(&self, token_hash: &str) -> Result<()> {
+        self.conn().execute("DELETE FROM web_sessions WHERE token_hash = ?1", params![token_hash])?;
+        Ok(())
+    }
+
+    /// Deletes expired browser sessions.
+    pub fn prune_web_sessions(&self) -> Result<usize> {
+        Ok(self.conn().execute("DELETE FROM web_sessions WHERE expires_ms <= ?1", params![now_ms()])?)
+    }
+
+    /// Deletes a stored profile; false if there's none by this name.
+    pub fn delete_profile(&self, name: &str) -> Result<bool> {
+        Ok(self.conn().execute("DELETE FROM profiles WHERE name = ?1", params![name])? > 0)
     }
 }
 

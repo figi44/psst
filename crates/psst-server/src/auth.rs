@@ -1,5 +1,5 @@
-//! Who is calling: local users by their peer credentials, other devices by token (plan 6.6), and
-//! the pairing that hands out tokens.
+//! Who is calling: local users by their peer credentials, other devices by token (plan 6.6), the
+//! pairing that hands out tokens, and the one-time links that log browsers in.
 
 use std::{
     collections::HashMap,
@@ -24,7 +24,14 @@ const CODE_ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTVWXYZ23456789";
 const TOKEN_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 /// Prefix of every device token, so a leaked one is recognisable.
 pub const TOKEN_PREFIX: &str = "psst_";
-/// Redemptions allowed per source address, and from everyone together, per window.
+/// A login link is valid this long, for one login.
+pub const LINK_TTL: Duration = Duration::from_secs(60);
+/// A browser session lasts this long from its login.
+pub const SESSION_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
+/// The cookie that holds a browser's session.
+pub const SESSION_COOKIE: &str = "psst_session";
+/// Redemptions (of pairing codes, and of login links) allowed per source address, and from
+/// everyone together, per window.
 const REDEEM_PER_ADDR: u32 = 10;
 const REDEEM_TOTAL: u32 = 30;
 const REDEEM_WINDOW: Duration = Duration::from_secs(60);
@@ -50,10 +57,12 @@ impl Identity {
 /// Why a caller isn't let in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
-    /// No credentials, or unknown or revoked ones.
+    /// No credentials, or unknown, revoked or expired ones.
     Unauthorized,
     /// A local user who isn't in `local_users`.
     Forbidden,
+    /// A browser's state-changing request that didn't come from the web UI's own origin.
+    CrossSite,
 }
 
 fn random_string(alphabet: &[u8], len: usize) -> String {
@@ -64,6 +73,11 @@ fn random_string(alphabet: &[u8], len: usize) -> String {
 /// A new device token: `psst_` and 40 random alphanumerics (about 238 bits).
 pub fn new_token() -> String {
     format!("{TOKEN_PREFIX}{}", random_string(TOKEN_ALPHABET, 40))
+}
+
+/// A secret for a login link or a browser session: 40 random alphanumerics (about 238 bits).
+pub fn new_secret() -> String {
+    random_string(TOKEN_ALPHABET, 40)
 }
 
 /// What the database keeps instead of the token: its SHA-256, in hex. Tokens are random, so a
@@ -81,8 +95,7 @@ pub struct Pairings {
 #[derive(Debug, Default)]
 struct PairingState {
     codes: Vec<PendingCode>,
-    per_addr: HashMap<IpAddr, Window>,
-    total: Option<Window>,
+    limit: RedeemLimit,
 }
 
 #[derive(Debug)]
@@ -108,6 +121,26 @@ impl Window {
         };
         window.count += 1;
         window.count <= limit
+    }
+}
+
+/// The rate limit of unauthenticated redemptions: [`REDEEM_PER_ADDR`] per source address and
+/// [`REDEEM_TOTAL`] from everyone, per [`REDEEM_WINDOW`].
+#[derive(Debug, Default)]
+pub struct RedeemLimit {
+    per_addr: HashMap<IpAddr, Window>,
+    total: Option<Window>,
+}
+
+impl RedeemLimit {
+    /// Counts one attempt from `addr`; false if it's over either limit.
+    pub fn admit(&mut self, addr: IpAddr, now: Instant) -> bool {
+        self.per_addr.retain(|_, window| now.duration_since(window.start) < REDEEM_WINDOW);
+        let mut slot = self.per_addr.get(&addr).copied();
+        let addr_ok = Window::admit(&mut slot, now, REDEEM_PER_ADDR);
+        self.per_addr.insert(addr, slot.expect("admit fills the slot"));
+        let total_ok = Window::admit(&mut self.total, now, REDEEM_TOTAL);
+        addr_ok && total_ok
     }
 }
 
@@ -143,13 +176,7 @@ impl Pairings {
     pub fn redeem(&self, addr: IpAddr, code: &str) -> Result<String, RedeemError> {
         let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
-        let state = &mut *state;
-        state.per_addr.retain(|_, window| now.duration_since(window.start) < REDEEM_WINDOW);
-        let mut slot = state.per_addr.get(&addr).copied();
-        let addr_ok = Window::admit(&mut slot, now, REDEEM_PER_ADDR);
-        state.per_addr.insert(addr, slot.expect("admit fills the slot"));
-        let total_ok = Window::admit(&mut state.total, now, REDEEM_TOTAL);
-        if !addr_ok || !total_ok {
+        if !state.limit.admit(addr, now) {
             return Err(RedeemError::RateLimited);
         }
 
@@ -164,5 +191,73 @@ impl Pairings {
         }
         state.codes.retain(|pending| pending.wrong < MAX_WRONG_ATTEMPTS);
         Err(RedeemError::Invalid)
+    }
+}
+
+/// Pending login links (plan 6.6), by the SHA-256 of their token, and the rate limit of their
+/// redemption. They live only in memory: a link outlives neither its minute nor a restart.
+#[derive(Debug, Default)]
+pub struct LoginLinks {
+    inner: Mutex<LinkState>,
+}
+
+#[derive(Debug, Default)]
+struct LinkState {
+    links: HashMap<String, PendingLink>,
+    limit: RedeemLimit,
+}
+
+#[derive(Debug)]
+struct PendingLink {
+    /// Who asked for it: the session it gives belongs to this device.
+    device: DeviceId,
+    expires: Instant,
+}
+
+impl LoginLinks {
+    /// A new link's token, valid for [`LINK_TTL`] from `now`, logging in for `device`.
+    pub fn create(&self, device: DeviceId, now: Instant) -> String {
+        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        state.links.retain(|_, link| link.expires > now);
+        let token = new_secret();
+        state.links.insert(hash_token(&token), PendingLink { device, expires: now + LINK_TTL });
+        token
+    }
+
+    /// Uses up a link's token and returns the device it logs in for.
+    pub fn redeem(&self, addr: IpAddr, token: &str, now: Instant) -> Result<DeviceId, RedeemError> {
+        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if !state.limit.admit(addr, now) {
+            return Err(RedeemError::RateLimited);
+        }
+        state.links.retain(|_, link| link.expires > now);
+        state.links.remove(&hash_token(token.trim())).map(|link| link.device).ok_or(RedeemError::Invalid)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::Ipv4Addr;
+
+    use super::*;
+
+    const LAPTOP: IpAddr = IpAddr::V4(Ipv4Addr::new(100, 64, 0, 2));
+
+    #[test]
+    fn a_login_link_logs_in_once_within_its_minute() {
+        let links = LoginLinks::default();
+        let now = Instant::now();
+        let token = links.create("d81f".into(), now);
+        assert_eq!(links.redeem(LAPTOP, "not-the-token", now), Err(RedeemError::Invalid));
+        assert_eq!(links.redeem(LAPTOP, &token, now + LINK_TTL - Duration::from_millis(1)), Ok("d81f".into()));
+        assert_eq!(links.redeem(LAPTOP, &token, now + Duration::from_secs(2)), Err(RedeemError::Invalid));
+    }
+
+    #[test]
+    fn a_login_link_expires_after_a_minute() {
+        let links = LoginLinks::default();
+        let now = Instant::now();
+        let token = links.create("local:alice".into(), now);
+        assert_eq!(links.redeem(LAPTOP, &token, now + LINK_TTL), Err(RedeemError::Invalid));
     }
 }

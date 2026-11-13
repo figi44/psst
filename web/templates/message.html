@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} · psst{% endblock %}
+{% block main %}
+<section class="card narrow">
+  <h1>{{ title }}</h1>
+  <p>{{ text }}</p>
+  {%- if command %}
+  <pre class="command"><code>{{ command }}</code></pre>
+  {%- endif %}
+</section>
+{% endblock %}

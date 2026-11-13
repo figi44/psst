@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}psst{% endblock %}</title>
+<link rel="stylesheet" href="/static/psst.css?v={{ assets }}">
+{%- if signed_in %}
+<meta name="htmx-config" content='{"includeIndicatorStyles": false, "allowEval": false, "scrollIntoViewOnBoost": false, "responseHandling": [{"code": "204", "swap": false}, {"code": "[23]..", "swap": true}, {"code": "422", "swap": true}, {"code": "[45]..", "swap": false, "error": true}]}'>
+<script src="/static/htmx.min.js?v={{ assets }}" defer></script>
+{%- endif %}
+</head>
+<body{% if signed_in %} hx-boost="true"{% endif %}>
+<header class="top">
+  <a class="brand" href="/">psst</a>
+  {%- if signed_in %}
+  <nav>
+    <a href="/dictionary"{% if page == "dictionary" %} aria-current="page"{% endif %}>Dictionary</a>
+    <a href="/profiles"{% if page == "profiles" %} aria-current="page"{% endif %}>Profiles</a>
+  </nav>
+  <p class="model model-{{ model_state }}" title="The model">{{ model }}</p>
+  {%- if browser %}
+  <form method="post" action="/logout" class="logout"><button type="submit" class="quiet">Log out</button></form>
+  {%- endif %}
+  {%- endif %}
+</header>
+<main>
+{% block main %}{% endblock %}
+</main>
+</body>
+</html>

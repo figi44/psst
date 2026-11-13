@@ -1,15 +1,12 @@
 //! `psst dict add|rm|reset|list|never|test`: the dictionary's database layer, through the server's
-//! API (plan 5.2 Phase 2). The server is `client.toml`'s: its socket on the server's machine, TCP
-//! with the token from `psst pair` elsewhere. The daemon isn't involved.
+//! API (plan 5.2 Phase 2), at the server `client.toml` names ([`crate::server_api`]).
 
 use std::{fmt::Write as _, process::ExitCode};
 
-use anyhow::{Context, anyhow};
 use clap::{Args, Subcommand};
 use psst_client::api::{ApiCallError, ApiClient, Method};
-use psst_config::{ClientConfig, ConfigFile};
 use psst_proto::{
-    Edit, Endpoint, Final, Stage,
+    Edit, Final, Stage,
     api::{
         ApiErrorCode, DictionaryTerm, DictionaryTest, DictionaryView, NeverRule, NewNeverRule, Term, TermChange,
         TermLayer,
@@ -18,7 +15,7 @@ use psst_proto::{
 };
 use serde::Serialize;
 
-use crate::pair::Credentials;
+use crate::server_api;
 
 #[derive(Debug, Args)]
 pub struct DictArgs {
@@ -81,35 +78,12 @@ enum DictCommand {
 
 /// Runs one `psst dict` command.
 pub fn run(args: DictArgs) -> anyhow::Result<ExitCode> {
-    let api = connect()?;
+    let api = server_api::connect()?;
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
-    runtime.block_on(execute(&api, args.json, args.command)).map_err(|err| describe(err, api.endpoint()))?;
+    runtime
+        .block_on(execute(&api, args.json, args.command))
+        .map_err(|err| server_api::describe(err, api.endpoint()))?;
     Ok(ExitCode::SUCCESS)
-}
-
-/// The server from `client.toml`, with this device's token over TCP.
-fn connect() -> anyhow::Result<ApiClient> {
-    let path = ClientConfig::default_path().ok_or_else(|| anyhow!("cannot find client.toml"))?;
-    let server = ClientConfig::load_or_default(&path)?.server;
-    let token = match &server {
-        Endpoint::Unix(_) => None,
-        Endpoint::Tcp { .. } => {
-            let credentials = crate::state_dir()?.join("credentials");
-            let creds = Credentials::load(&credentials)
-                .with_context(|| format!("cannot read {}", credentials.display()))?
-                .ok_or_else(|| anyhow!("this device isn't paired with {server}; run `psst pair {server} <code>`"))?;
-            Some(creds.token)
-        }
-    };
-    Ok(ApiClient::new(server, token))
-}
-
-fn describe(err: ApiCallError, endpoint: &Endpoint) -> anyhow::Error {
-    match err {
-        ApiCallError::Api { error, .. } => anyhow!("{}", error.message),
-        ApiCallError::Connect { .. } => anyhow!("{err}; is psst-server running at {endpoint}?"),
-        other => anyhow!(other),
-    }
 }
 
 async fn execute(api: &ApiClient, json: bool, command: DictCommand) -> Result<(), ApiCallError> {

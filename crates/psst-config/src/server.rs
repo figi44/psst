@@ -22,6 +22,10 @@ pub struct ServerConfig {
     pub history_days: u32,
     /// Accept `start.eval` and send `trace` with every `final`. For evals only.
     pub eval_mode: bool,
+    /// Where browsers reach the web UI, as `http://host[:port]` or `https://…`: the start of
+    /// every login link. Unset, a link uses the address the client reached the server by.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_url: Option<String>,
     pub limits: Limits,
     pub model: ModelConfig,
 }
@@ -38,6 +42,7 @@ impl Default for ServerConfig {
             load_deadline_s: 120,
             history_days: 30,
             eval_mode: false,
+            web_url: None,
             limits: Limits::default(),
             model: ModelConfig::default(),
         }
@@ -155,6 +160,11 @@ impl ConfigFile for ServerConfig {
         if self.load_deadline_s == 0 {
             return Err("load_deadline_s must be at least 1".into());
         }
+        if let Some(url) = &self.web_url
+            && web_origin(url).is_none()
+        {
+            return Err(format!("web_url must be http://host[:port] or https://host[:port], not `{url}`"));
+        }
         if self.limits.max_recording_s == 0 || self.limits.max_active_sessions == 0 {
             return Err("limits must be at least 1".into());
         }
@@ -174,4 +184,15 @@ impl ConfigFile for ServerConfig {
         }
         Ok(())
     }
+}
+
+/// `url` without a trailing slash, if it's `http://` or `https://` followed by a host and an
+/// optional port, and nothing else.
+pub fn web_origin(url: &str) -> Option<&str> {
+    let url = url.strip_suffix('/').unwrap_or(url);
+    let authority = url.strip_prefix("http://").or_else(|| url.strip_prefix("https://"))?;
+    let valid = !authority.is_empty()
+        && authority.bytes().all(|b| b.is_ascii_alphanumeric() || b".-_:[]".contains(&b))
+        && !authority.starts_with(':');
+    valid.then_some(url)
 }

@@ -19,6 +19,7 @@ wayland-client = "0.31.15"
 [dev-dependencies]
 claxon = "0.4.3"
 futures-util = "0.3.34"
+jiff = "0.2.39"
 nix = { version = "0.31.3", features = ["signal", "user"] }
 psst-client = { path = "../psst-client" }
 psst-config = { path = "../psst-config" }

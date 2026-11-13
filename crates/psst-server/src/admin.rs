@@ -9,7 +9,7 @@ use hyper::{Method, Request, StatusCode, body::Bytes, header};
 use hyper_util::rt::TokioIo;
 use psst_proto::api::{
     ApiError, Device, DeviceKind, DictionaryExport, HistoryRow, ModelState, ModelStatus, Pairing, PairingRequest,
-    Stats, routes,
+    ProfilesExport, Stats, routes,
 };
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -25,6 +25,7 @@ pub enum Action {
     Stats,
     History { limit: u32 },
     DictExport,
+    ProfilesExport,
 }
 
 /// Runs one admin command against the server at `socket`.
@@ -118,6 +119,15 @@ async fn execute(socket: &Path, json: bool, action: Action) -> Result<ExitCode> 
             }
             Ok(ExitCode::SUCCESS)
         }
+        Action::ProfilesExport => {
+            let export: ProfilesExport = api.call(Method::GET, routes::PROFILES_EXPORT, None::<()>).await?;
+            if json {
+                print(json, &export, |_| String::new());
+            } else {
+                print!("{}", export.toml);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         Action::Stats => {
             let stats: Stats = api.call(Method::GET, routes::STATS, None::<()>).await?;
             print(json, &stats, |stats| {
@@ -150,7 +160,8 @@ async fn execute(socket: &Path, json: bool, action: Action) -> Result<ExitCode> 
     }
 }
 
-fn describe_model(status: &ModelStatus) -> String {
+/// The model's state in one line, as `model status` prints it and the web UI's header shows it.
+pub(crate) fn describe_model(status: &ModelStatus) -> String {
     let state = match status.state {
         ModelState::Missing => "missing".to_owned(),
         ModelState::Downloading => match status.progress {

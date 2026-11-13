@@ -8,6 +8,8 @@
 //! - `api`: HTTP routes; `conn`: one client WebSocket; `registry`: the session registry.
 //! - `engine`: the engine supervisor; `db`: SQLite; `auth`: identities, tokens and pairing.
 //! - `dictionary`: the dictionary's database layer and the `/api/dictionary` operations.
+//! - `profiles`: profiles stored over `profiles.toml` and the `/api/profiles` operations.
+//! - `web`: the web UI's pages and the browser login.
 //! - `admin`: the admin subcommands, as thin clients of `/api` over the socket.
 
 mod admin;
@@ -18,9 +20,11 @@ mod db;
 mod dictionary;
 mod engine;
 mod listen;
+mod profiles;
 mod registry;
 mod sleep;
 mod state;
+mod web;
 
 use std::{
     fs,
@@ -42,6 +46,7 @@ use crate::{
     dictionary::Layered,
     engine::{EngineConfig, Supervisor},
     listen::{Peer, TcpSocket, UnixSocket},
+    profiles::ProfileLayers,
     registry::Registry,
     state::{AppState, ConnTable, LiveConfig, LocalPolicy},
 };
@@ -137,6 +142,7 @@ async fn start(cfg: ServeConfig, systemd: Option<std::os::unix::net::UnixListene
         fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     }
     let db = Db::open(&cfg.state_dir.join("psst.db"))?;
+    let (profile_layers, profiles) = ProfileLayers::load(files.profiles, &db)?;
     let (layered, dictionary) = Layered::load(files.dictionary, &db)?;
     for warning in dictionary.warnings() {
         tracing::warn!("{warning}");
@@ -192,13 +198,15 @@ async fn start(cfg: ServeConfig, systemd: Option<std::os::unix::net::UnixListene
         Supervisor::start(EngineConfig::from_server(&server, cfg.cache_dir.clone()), server.model.preload && !unloaded);
     let (shutdown, shutdown_rx) = watch::channel(false);
     let state = Arc::new(AppState {
-        live: LiveConfig::new(cfg.config_dir.clone(), files.profiles, layered, dictionary),
+        live: LiveConfig::new(cfg.config_dir.clone(), profile_layers, profiles, layered, dictionary),
         db,
         registry: Registry::new(server.limits.max_active_sessions as usize),
         engine,
         pairings: Default::default(),
+        logins: Default::default(),
         conns: ConnTable::default(),
         local: LocalPolicy { users: server.local_users.clone(), own_uid },
+        tcp_addrs: tcp_addrs.clone(),
         shutdown: shutdown_rx.clone(),
         server,
     });
@@ -234,10 +242,13 @@ async fn start(cfg: ServeConfig, systemd: Option<std::os::unix::net::UnixListene
             sweep.tick().await;
             maintenance.registry.sweep();
             ticks += 1;
-            if ticks.is_multiple_of(720)
-                && let Err(err) = maintenance.db.prune_history(maintenance.server.history_days)
-            {
-                tracing::warn!("cannot prune history: {err:#}");
+            if ticks.is_multiple_of(720) {
+                if let Err(err) = maintenance.db.prune_history(maintenance.server.history_days) {
+                    tracing::warn!("cannot prune history: {err:#}");
+                }
+                if let Err(err) = maintenance.db.prune_web_sessions() {
+                    tracing::warn!("cannot prune browser sessions: {err:#}");
+                }
             }
         }
     }));
@@ -307,6 +318,13 @@ enum Command {
         #[command(flatten)]
         connection: Connection,
     },
+    /// Profiles stored in the server's database over profiles.toml.
+    Profiles {
+        #[command(subcommand)]
+        action: ProfilesAction,
+        #[command(flatten)]
+        connection: Connection,
+    },
     /// Print recent dictations.
     History {
         #[arg(long, default_value_t = 20)]
@@ -348,6 +366,13 @@ enum DictAction {
 }
 
 #[derive(Debug, Subcommand)]
+enum ProfilesAction {
+    /// Print profiles.toml with the database's profiles in place of the file's, for moving into
+    /// the file (the host config's settings.profiles).
+    Export,
+}
+
+#[derive(Debug, Subcommand)]
 enum DevicesAction {
     /// List paired and local devices.
     List,
@@ -381,6 +406,9 @@ pub fn main() -> ExitCode {
             },
         ),
         Command::Dict { action: DictAction::Export, connection } => admin(connection, admin::Action::DictExport),
+        Command::Profiles { action: ProfilesAction::Export, connection } => {
+            admin(connection, admin::Action::ProfilesExport)
+        }
         Command::Stats { connection } => admin(connection, admin::Action::Stats),
         Command::History { limit, connection } => admin(connection, admin::Action::History { limit }),
     }

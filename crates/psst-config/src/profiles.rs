@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use psst_proto::api::Profile as ApiProfile;
 use serde::{Deserialize, Serialize};
 
 use crate::ConfigFile;
@@ -64,6 +65,53 @@ pub enum Rule {
     TrailingSpace,
 }
 
+impl Rule {
+    /// Every rule, in the default order.
+    pub const ALL: [Rule; 4] = [Rule::Fillers, Rule::Whitespace, Rule::Capitalize, Rule::TrailingSpace];
+
+    /// The rule's id, as `rules` lists it.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Fillers => "fillers",
+            Self::Whitespace => "whitespace",
+            Self::Capitalize => "capitalize",
+            Self::TrailingSpace => "trailing_space",
+        }
+    }
+
+    /// The rule with this id. The error is the one a file with it gets.
+    pub fn from_id(id: &str) -> Result<Rule, String> {
+        Self::ALL.into_iter().find(|rule| rule.id() == id).ok_or_else(|| {
+            let ids = Self::ALL.map(|rule| format!("`{}`", rule.id())).join(", ");
+            format!("unknown rule `{id}`, expected one of {ids}")
+        })
+    }
+}
+
+/// The API's form of a profile (`/api/profiles`) has the same keys and defaults. Rules are ids
+/// there, so an unknown one is an error here.
+impl TryFrom<ApiProfile> for ProfileSpec {
+    type Error = String;
+
+    fn try_from(profile: ApiProfile) -> Result<Self, String> {
+        Ok(Self {
+            language: profile.language,
+            prompt_style: profile.prompt_style,
+            rules: profile.rules.iter().map(|id| Rule::from_id(id)).collect::<Result<_, _>>()?,
+        })
+    }
+}
+
+impl From<&ProfileSpec> for ApiProfile {
+    fn from(spec: &ProfileSpec) -> Self {
+        Self {
+            language: spec.language.clone(),
+            prompt_style: spec.prompt_style.clone(),
+            rules: spec.rules.iter().map(|rule| rule.id().to_owned()).collect(),
+        }
+    }
+}
+
 /// A profile resolved for use: its filler list filled in from its language.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Profile {
@@ -93,8 +141,11 @@ impl ProfilesFile {
     }
 }
 
+/// The prompt style's length in engine tokens above which `check-config` warns.
+pub const PROMPT_STYLE_WARN_TOKENS: usize = 100;
+
 /// A rough token count for a prompt: UTF-8 bytes / 4, rounded up.
-fn estimated_tokens(text: &str) -> usize {
+pub fn estimated_tokens(text: &str) -> usize {
     text.len().div_ceil(4)
 }
 
@@ -115,7 +166,7 @@ impl ConfigFile for ProfilesFile {
             if let Some(rule) =
                 spec.rules.iter().enumerate().find_map(|(i, r)| spec.rules[..i].contains(r).then_some(r))
             {
-                return Err(format!("profiles.{name}.rules lists {rule:?} twice"));
+                return Err(format!("profiles.{name}.rules lists `{}` twice", rule.id()));
             }
         }
         Ok(())
@@ -124,7 +175,7 @@ impl ConfigFile for ProfilesFile {
     fn warnings(&self) -> Vec<String> {
         self.profiles
             .iter()
-            .filter(|(_, spec)| estimated_tokens(&spec.prompt_style) > 100)
+            .filter(|(_, spec)| estimated_tokens(&spec.prompt_style) > PROMPT_STYLE_WARN_TOKENS)
             .map(|(name, _)| {
                 format!("profiles.{name}.prompt_style is over about 100 tokens; it crowds out dictionary terms")
             })

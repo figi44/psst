@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Profiles · psst{% endblock %}
+
+{%- macro profile_fields(f, prefix) %}
+<div class="fields">
+  <div>
+    <label for="{{ prefix }}-language">Language <span class="hint">(ISO 639-1, for example en or cs)</span></label>
+    <input type="text" id="{{ prefix }}-language" name="language" value="{{ f.language }}" list="languages" required autocomplete="off">
+  </div>
+  <div>
+    <label for="{{ prefix }}-rules">Rules <span class="hint">(in order: {{ rule_ids|join(", ") }})</span></label>
+    <input type="text" id="{{ prefix }}-rules" name="rules" value="{{ f.rules }}" autocomplete="off">
+  </div>
+  <div class="wide">
+    <label for="{{ prefix }}-style">Prompt style <span class="hint">(a sentence in the style you dictate; about {{ f.tokens }} tokens, over {{ warn_tokens }} crowds out dictionary terms)</span></label>
+    <textarea id="{{ prefix }}-style" name="prompt_style">{{ f.prompt_style }}</textarea>
+  </div>
+</div>
+{%- endmacro %}
+
+{% block main %}
+<h1>Profiles</h1>
+{%- if error and not error_for %}
+<div class="notice error" role="alert">{{ error }}</div>
+{%- endif %}
+{%- if warnings %}
+<div class="notice warning"><ul>{% for warning in warnings %}<li>{{ warning }}</li>{% endfor %}</ul></div>
+{%- endif %}
+<p class="hint">A saved profile replaces profiles.toml's version for new dictations, without restarting the engine. <a href="/profiles.toml" download hx-boost="false">Export profiles.toml</a> to move your changes into the file.</p>
+
+<datalist id="languages">{% for language in languages %}<option value="{{ language }}">{% endfor %}</datalist>
+
+{%- for p in profiles %}
+<section class="card">
+  <div class="profile-head">
+    <h2>{{ p.name }}</h2>
+    <span class="badge {{ p.layer }}">{{ p.layer }}</span>
+    {%- if p.same_as_file %}<span class="muted">same as profiles.toml's: reset it to follow the file</span>{% endif %}
+  </div>
+  <form method="post" action="/profiles/{{ p.name|segment }}">
+    {%- if error_for == p.name %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
+    {{ profile_fields(p.fields, "profile-" ~ loop.index) }}
+    <div class="actions"><button type="submit">Save</button></div>
+  </form>
+  {%- if p.layer != "file" %}
+  <div class="actions">
+    <form method="post" action="/profiles/{{ p.name|segment }}/reset">
+      <button type="submit" class="{% if p.layer == "added" %}danger{% else %}quiet{% endif %}">{% if p.layer == "added" %}Remove{% else %}Reset to profiles.toml's{% endif %}</button>
+    </form>
+  </div>
+  {%- endif %}
+  {%- if p.file %}
+  <details class="file">
+    <summary>profiles.toml's version</summary>
+    <pre>language = {{ p.file.language }}
+rules = {{ p.file.rules }}
+prompt_style = {{ p.file.prompt_style }}</pre>
+  </details>
+  {%- endif %}
+</section>
+{%- endfor %}
+
+<section class="card">
+  <h2>Add a profile</h2>
+  <form method="post" action="/profiles">
+    {%- if error_for == "new" %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
+    <div class="fields">
+      <div>
+        <label for="new-name">Name <span class="hint">(as in psst toggle --profile)</span></label>
+        <input type="text" id="new-name" name="name" value="{{ new_name }}" required autocomplete="off">
+      </div>
+    </div>
+    {{ profile_fields(new_fields, "new") }}
+    <div class="actions"><button type="submit">Add</button></div>
+  </form>
+</section>
+{% endblock %}

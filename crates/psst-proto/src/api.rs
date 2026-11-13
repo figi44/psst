@@ -1,5 +1,6 @@
-//! HTTP routes and their bodies (plan 5.2): Phase 1, and the dictionary routes of Phase 2. All
-//! bodies are JSON.
+//! HTTP routes and their bodies (plan 5.2): Phase 1, the dictionary routes of Phase 2, and the
+//! profile and login routes of Phase 3. All bodies are JSON, except the login redemption, which
+//! is a browser form.
 //!
 //! Errors from `/api/*` come back with a non-2xx status and an [`ApiError`] body.
 
@@ -52,10 +53,29 @@ pub mod routes {
     pub const DICTIONARY_EXPORT: &str = "/api/dictionary/export";
     /// `POST` [`super::DictionaryTest`] → [`crate::Final`].
     pub const DICTIONARY_TEST: &str = "/api/dictionary/test";
+    /// `GET` → [`super::ProfilesView`].
+    pub const PROFILES: &str = "/api/profiles";
+    /// `GET` → [`super::ProfilesExport`].
+    pub const PROFILES_EXPORT: &str = "/api/profiles/export";
+    /// `PUT` [`super::Profile`] → [`super::ProfileChange`]: stores the profile `{name}` over
+    /// `profiles.toml`'s. Singular, so that every name (`export` too) has a path.
+    pub const PROFILE: &str = "/api/profile/{name}";
+    /// `POST` → [`super::ProfileChange`]: removes the database's version of the profile.
+    pub const PROFILE_RESET: &str = "/api/profile/{name}/reset";
+    /// `POST` → [`super::LoginLink`]. Over the socket or with a device token, not a browser
+    /// session.
+    pub const LOGIN_LINK: &str = "/api/login/link";
+    /// `POST`, a browser form with `token`: sets the session cookie and redirects to the web UI.
+    pub const LOGIN_REDEEM: &str = "/api/login/redeem";
 
     /// `template` with its `{id}` replaced by `id`, percent-encoded as one path segment.
     pub fn with_id(template: &str, id: &str) -> String {
         template.replace("{id}", &super::encode_segment(id))
+    }
+
+    /// `template` with its `{name}` replaced by `name`, percent-encoded as one path segment.
+    pub fn with_name(template: &str, name: &str) -> String {
+        template.replace("{name}", &super::encode_segment(name))
     }
 }
 
@@ -383,4 +403,86 @@ pub struct DictionaryTest {
     /// words and the fillers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+}
+
+/// A profile as the API carries it: the keys of a `[profiles.<name>]` table in `profiles.toml`,
+/// each with the same default. As in the file, unknown keys are errors.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Profile {
+    /// Language to transcribe in (ISO 639-1).
+    pub language: String,
+    /// A sentence in the style you dictate, used as the start of the engine prompt as written.
+    pub prompt_style: String,
+    /// Post-processing rule ids (`fillers`, `whitespace`, `capitalize`, `trailing_space`),
+    /// applied in this order.
+    pub rules: Vec<String>,
+}
+
+impl Default for Profile {
+    fn default() -> Self {
+        Self {
+            language: "en".into(),
+            prompt_style: String::new(),
+            rules: ["fillers", "whitespace", "capitalize", "trailing_space"].map(String::from).into(),
+        }
+    }
+}
+
+/// `GET /api/profiles`: every profile sessions can use, and where its version comes from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfilesView {
+    /// Sorted by name.
+    pub profiles: Vec<ProfileEntry>,
+    /// What `check-config` would warn about in the profiles sessions use now.
+    pub warnings: Vec<String>,
+}
+
+/// One profile by name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileEntry {
+    pub name: String,
+    pub layer: ProfileLayer,
+    /// The version sessions use: the database's for `replaced` and `added`.
+    pub profile: Profile,
+    /// `profiles.toml`'s version, for `replaced`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<Profile>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileLayer {
+    /// From `profiles.toml`, unchanged.
+    File,
+    /// The database's version replaces the file's.
+    Replaced,
+    /// Only in the database.
+    Added,
+}
+
+/// The answer to a change of one profile. A profile that fails the `check-config` checks gets
+/// `400 bad_request` instead, and changes nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileChange {
+    /// The profile afterwards; absent when an added profile was reset, so it's gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<ProfileEntry>,
+    /// What `check-config` warns about in this profile now, such as a long `prompt_style`.
+    pub warnings: Vec<String>,
+}
+
+/// `GET /api/profiles/export`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfilesExport {
+    /// `profiles.toml` with the database's profiles in place of the file's, for moving into the
+    /// file (the host config's `settings.profiles`).
+    pub toml: String,
+}
+
+/// `POST /api/login/link`: a one-time URL that logs a browser into the web UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoginLink {
+    pub url: String,
+    pub expires_at: Timestamp,
 }

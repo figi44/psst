@@ -55,6 +55,7 @@ fn every_server_and_client_key_has_a_table_row() {
     leaf_keys(&check_defaults::<ServerConfig>(), "", &mut keys);
     leaf_keys(&check_defaults::<ClientConfig>(), "", &mut keys);
     keys.push("model.revision".into());
+    keys.push("web_url".into());
     for key in keys.iter().filter(|k| *k != "apps") {
         assert!(DOC.contains(&format!("| `{key}` |")), "docs/config.md has no table row for `{key}`");
     }

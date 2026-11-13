@@ -27,8 +27,10 @@ pub use client::{
     PasteAction, PasteRule,
 };
 pub use dictionary::{DictionaryFile, TermLanguages, TermSpec};
-pub use profiles::{DEFAULT_PROFILE, Profile, ProfileSpec, ProfilesFile, Rule};
-pub use server::{DecodePath, Limits, ModelConfig, ModelOptions, ServerConfig, TermsAs};
+pub use profiles::{
+    DEFAULT_PROFILE, PROMPT_STYLE_WARN_TOKENS, Profile, ProfileSpec, ProfilesFile, Rule, estimated_tokens,
+};
+pub use server::{DecodePath, Limits, ModelConfig, ModelOptions, ServerConfig, TermsAs, web_origin};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {

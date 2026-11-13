@@ -2,6 +2,7 @@
 
 use std::{
     collections::HashMap,
+    net::SocketAddr,
     path::PathBuf,
     sync::{
         Arc, Mutex, MutexGuard, RwLock,
@@ -16,10 +17,11 @@ use psst_proto::{DeviceId, api::ModelState};
 use tokio::sync::watch;
 
 use crate::{
-    auth::{Identity, Pairings, Refusal},
+    auth::{Identity, LoginLinks, Pairings, Refusal},
     db::Db,
     dictionary::Layered,
     engine::Supervisor,
+    profiles::ProfileLayers,
     registry::{Attachment, ConnEvent, Registry},
 };
 
@@ -32,8 +34,11 @@ pub struct AppState {
     pub registry: Arc<Registry>,
     pub engine: Supervisor,
     pub pairings: Pairings,
+    pub logins: LoginLinks,
     pub conns: ConnTable,
     pub local: LocalPolicy,
+    /// The TCP addresses it listens on, with their actual ports.
+    pub tcp_addrs: Vec<SocketAddr>,
     /// Becomes true when the server shuts down.
     pub shutdown: watch::Receiver<bool>,
 }
@@ -68,14 +73,28 @@ impl LocalPolicy {
         }
         Err(Refusal::Forbidden)
     }
+
+    /// Whether `local:<user>` is still let in, for a browser session that user started.
+    pub fn allows_user(&self, user: &str) -> bool {
+        if self.users.iter().any(|allowed| allowed == user) {
+            return true;
+        }
+        let uid = User::from_name(user).ok().flatten().map(|user| user.uid.as_raw()).or_else(|| user.parse().ok());
+        uid.is_some_and(|uid| self.own_uid == Some(uid))
+    }
 }
 
-/// `profiles.toml`, and the dictionary (`dictionary.toml` with the database layer), each replaced
-/// as a whole on reload or change. Sessions snapshot them at `start`.
+/// The profiles (`profiles.toml` with the database's profiles), and the dictionary
+/// (`dictionary.toml` with the database layer), each replaced as a whole on reload or change.
+/// Sessions snapshot them at `start`.
 #[derive(Debug)]
 pub struct LiveConfig {
     dir: PathBuf,
+    /// The profiles sessions use.
     profiles: RwLock<Arc<ProfilesFile>>,
+    /// What they're resolved from. Held from reading it until the new profiles are swapped in, so
+    /// changes and reloads happen one at a time.
+    profile_layers: Mutex<ProfileLayers>,
     dictionary: RwLock<Arc<Dictionary>>,
     /// What the dictionary is resolved from. Held from reading it until the new dictionary is
     /// swapped in, so changes and reloads happen one at a time.
@@ -83,10 +102,17 @@ pub struct LiveConfig {
 }
 
 impl LiveConfig {
-    pub fn new(dir: PathBuf, profiles: ProfilesFile, layered: Layered, dictionary: Dictionary) -> Self {
+    pub fn new(
+        dir: PathBuf,
+        profile_layers: ProfileLayers,
+        profiles: ProfilesFile,
+        layered: Layered,
+        dictionary: Dictionary,
+    ) -> Self {
         Self {
             dir,
             profiles: RwLock::new(Arc::new(profiles)),
+            profile_layers: Mutex::new(profile_layers),
             dictionary: RwLock::new(Arc::new(dictionary)),
             layered: Mutex::new(layered),
         }
@@ -107,6 +133,16 @@ impl LiveConfig {
         Some(profile)
     }
 
+    /// The profiles' layers, locked for a change.
+    pub fn profile_layers(&self) -> MutexGuard<'_, ProfileLayers> {
+        self.profile_layers.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Swaps in new profiles. Sessions that started earlier keep theirs.
+    pub fn set_profiles(&self, profiles: ProfilesFile) {
+        *self.profiles.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(profiles);
+    }
+
     /// The dictionary a session starting now uses.
     pub fn dictionary(&self) -> Arc<Dictionary> {
         self.dictionary.read().unwrap_or_else(|e| e.into_inner()).clone()
@@ -123,15 +159,17 @@ impl LiveConfig {
     }
 
     /// Re-reads both files. A file that fails validation keeps its old version, and the error is
-    /// logged. The dictionary's database layer is resolved again on top of the new file.
+    /// logged. The database's profiles and dictionary layer go on top of the new files.
     pub fn reload(&self, server: &ServerConfig) {
+        let mut profile_layers = self.profile_layers();
         match ProfilesFile::load_or_default(&self.dir.join(ProfilesFile::FILE_NAME)) {
-            Ok(profiles) => {
-                *self.profiles.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(profiles);
+            Ok(file) => {
+                self.set_profiles(profile_layers.reload(file));
                 tracing::info!("{}: reloaded", ProfilesFile::FILE_NAME);
             }
             Err(err) => tracing::error!("{err}; keeping the previous {}", ProfilesFile::FILE_NAME),
         }
+        drop(profile_layers);
         let mut layered = self.layered();
         let file =
             DictionaryFile::load_or_default(&self.dir.join(DictionaryFile::FILE_NAME)).map_err(|e| e.to_string());
