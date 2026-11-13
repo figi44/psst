@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import sys
+import threading
 import time
+import traceback
 from array import array
 from dataclasses import dataclass, field
 from typing import Any, BinaryIO, Callable, Protocol
@@ -24,6 +27,13 @@ ProgressFn = Callable[[str, "int | None", "int | None"], None]
 
 class OutOfMemory(Exception):
     """The GPU ran out of memory. The engine replies ``oom`` and keeps running."""
+
+
+class Fatal(Exception):
+    """The engine can't go on, for example after a CUDA error other than running out of memory.
+
+    It exits without replying, so the server sees a crash, restarts it and retries.
+    """
 
 
 class LoadFailed(Exception):
@@ -79,7 +89,11 @@ class Model(Protocol):
         ...
 
     def transcribe(self, request: TranscribeRequest, samples: array) -> Transcription:
-        """Transcribes one recording. Raises ``OutOfMemory``; any other error ends the engine."""
+        """Transcribes one recording.
+
+        Raises ``InvalidRequest`` for bad options, ``OutOfMemory`` when the GPU runs out of memory,
+        and ``Fatal`` when the engine must exit. Any other error is answered with ``internal``.
+        """
         ...
 
 
@@ -127,9 +141,10 @@ class Engine:
     bias: bool = True
     clock: Callable[[], float] = time.monotonic
     _loaded: tuple[str, str] | None = field(default=None, init=False)
+    _send_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     def serve(self, inp: BinaryIO) -> None:
-        """Raises ``CorruptStream`` if the input is corrupt."""
+        """Raises ``CorruptStream`` if the input is corrupt, and ``Fatal`` if the engine must exit."""
         self._send(
             {
                 "type": "hello",
@@ -182,6 +197,12 @@ class Engine:
         except LoadFailed as err:
             self._error(None, "load_failed", str(err))
             return
+        except (InvalidRequest, Fatal):
+            raise
+        except Exception as err:
+            traceback.print_exc(file=sys.stderr)
+            self._error(None, "load_failed", f"{type(err).__name__}: {err}")
+            return
         self._loaded = (request.model, revision)
         load_ms = round((self.clock() - started) * 1000)
         self._send({"type": "loaded", "model": request.model, "revision": revision, "load_ms": load_ms})
@@ -200,6 +221,12 @@ class Engine:
             transcription = self.model.transcribe(request, samples)
         except OutOfMemory as err:
             self._error(request.id, "oom", str(err), retryable=True)
+            return
+        except (InvalidRequest, Fatal):
+            raise
+        except Exception as err:
+            traceback.print_exc(file=sys.stderr)
+            self._error(request.id, "internal", f"{type(err).__name__}: {err}")
             return
         decode_ms = round((self.clock() - started) * 1000)
         model, revision = self._loaded
@@ -233,4 +260,6 @@ class Engine:
         self._send(reply)
 
     def _send(self, message: dict[str, Any]) -> None:
-        write_frame(self.out, message)
+        # Download progress is reported from the downloader's threads.
+        with self._send_lock:
+            write_frame(self.out, message)

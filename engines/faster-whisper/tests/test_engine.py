@@ -5,7 +5,9 @@ from __future__ import annotations
 import io
 from typing import Any
 
-from psst_engine_faster_whisper.engine import Engine
+import pytest
+
+from psst_engine_faster_whisper.engine import Engine, Fatal
 from psst_engine_faster_whisper.protocol import parse_header, payload_from_samples, read_frame, write_frame
 from stub_model import FakeClock, StubModel
 
@@ -25,7 +27,12 @@ def transcribe(request_id: int) -> dict[str, Any]:
 AUDIO = payload_from_samples([0.0] * 1600)
 
 
-def serve(*requests: tuple[dict[str, Any] | bytes, bytes], oom_ids: frozenset[int] = frozenset()) -> list[dict]:
+def serve(
+    *requests: tuple[dict[str, Any] | bytes, bytes],
+    oom_ids: frozenset[int] = frozenset(),
+    errors: dict[int, Exception] | None = None,
+    replies: list[dict] | None = None,
+) -> list[dict]:
     inp = io.BytesIO()
     for header, payload in requests:
         if isinstance(header, bytes):
@@ -35,11 +42,13 @@ def serve(*requests: tuple[dict[str, Any] | bytes, bytes], oom_ids: frozenset[in
     inp.seek(0)
     out = io.BytesIO()
     clock = FakeClock()
-    Engine(StubModel(clock, oom_ids), out, clock=clock).serve(inp)
-    out.seek(0)
-    replies = []
-    while (frame := read_frame(out, 1 << 20)) is not None:
-        replies.append(parse_header(frame.header))
+    replies = [] if replies is None else replies
+    try:
+        Engine(StubModel(clock, oom_ids, errors), out, clock=clock).serve(inp)
+    finally:
+        out.seek(0)
+        while (frame := read_frame(out, 1 << 20)) is not None:
+            replies.append(parse_header(frame.header))
     return replies
 
 
@@ -85,3 +94,16 @@ def test_out_of_memory_is_an_error_reply_not_an_exit():
     replies = serve((LOAD, b""), (transcribe(1), AUDIO), (transcribe(2), AUDIO), oom_ids=frozenset({1}))
     assert replies[-2] == {"type": "error", "id": 1, "code": "oom", "message": "CUDA out of memory (stub)", "retryable": True}
     assert replies[-1]["type"] == "result" and replies[-1]["id"] == 2
+
+
+def test_other_model_errors_are_internal_errors_and_the_engine_keeps_serving():
+    replies = serve((LOAD, b""), (transcribe(1), AUDIO), (transcribe(2), AUDIO), errors={1: KeyError("segments")})
+    assert replies[-2] == {"type": "error", "id": 1, "code": "internal", "message": "KeyError: 'segments'", "retryable": False}
+    assert replies[-1]["type"] == "result" and replies[-1]["id"] == 2
+
+
+def test_a_fatal_model_error_ends_the_engine_without_a_reply():
+    replies: list[dict] = []
+    with pytest.raises(Fatal):
+        serve((LOAD, b""), (transcribe(1), AUDIO), (transcribe(2), AUDIO), errors={1: Fatal("CUDA error")}, replies=replies)
+    assert [r["type"] for r in replies] == ["hello", "progress", "progress", "loaded"]
