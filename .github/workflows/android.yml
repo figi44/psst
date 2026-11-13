@@ -3,9 +3,23 @@ name: Android
 on:
   pull_request:
   # Each push to main that changes the app publishes a prerelease; a tag makes a stable one.
+  # Pushes keep their paths filter, unlike pull requests: concurrency keeps one run waiting, and
+  # one for a push that skips the app would replace a waiting release.
   push:
     branches: [main]
     tags: ['v*']
+    paths:
+      - android/**
+      - crates/psst-android/**
+      - crates/psst-client/**
+      - crates/psst-proto/**
+      - Cargo.toml
+      - Cargo.lock
+      - flake.nix
+      - flake.lock
+      - justfile
+      - .github/workflows/android.yml
+      - .github/workflows/changes.yml
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
