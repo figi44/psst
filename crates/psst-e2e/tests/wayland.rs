@@ -1,0 +1,711 @@
+//! The Wayland thread end to end, in the offscreen sandbox (plan 9.5, 12): pasting into a real
+//! app (`psst-paste-target`), the clipboard it sees during and after the 5 s window, the
+//! overlay on screen, keyboard layouts, and the paste latency.
+//!
+//! Each test starts its own nested niri inside headless sway (`psst_testkit::nested_niri`); none
+//! of them can reach the live session. The restore delay is shortened to 1.5 s except in the
+//! first test, which keeps the real 5 s.
+
+use std::{
+    io::{BufRead, BufReader, Write},
+    process::{Child, ChildStdin, Stdio},
+    sync::mpsc::{self, Receiver, RecvTimeoutError},
+    thread,
+    time::{Duration, Instant},
+};
+
+use psst_testkit::{
+    Sandbox, headless_sway, nested_niri,
+    wayland::{ClipboardOwner, HostKeyboard, TEXT_MIMES, clear_clipboard, keys, read_clipboard, screenshot},
+};
+use psst_wayland::{Chord, DataControl, Options, OverlayState, WaylandCmd, WaylandEvent, WaylandThread};
+use serde_json::Value;
+
+const TARGET: &str = env!("CARGO_BIN_EXE_psst-paste-target");
+const RESTORE: Duration = Duration::from_millis(1500);
+const DICTATED: &str = "Dictated: Příliš žluťoučký kůň úpěl ďábelské ódy — ✓ 42";
+
+// ---------------------------------------------------------------------- helpers
+
+/// The Wayland thread, connected to the sandbox's compositor by path.
+struct Paster {
+    thread: WaylandThread,
+    rx: Receiver<WaylandEvent>,
+}
+
+impl Paster {
+    fn new(sandbox: &Sandbox, restore_after: Duration) -> Self {
+        Self::with(sandbox, Options { restore_after, ..Options::default() })
+    }
+
+    fn with(sandbox: &Sandbox, options: Options) -> Self {
+        let options = Options { display: Some(sandbox.wayland_socket().to_path_buf()), ..options };
+        let (tx, rx) = mpsc::channel();
+        let thread = WaylandThread::spawn(options, move |event| {
+            let _ = tx.send(event);
+        })
+        .expect("spawn the Wayland thread");
+        Self { thread, rx }
+    }
+
+    fn send(&self, cmd: WaylandCmd) {
+        self.thread.send(cmd).expect("the Wayland thread runs");
+    }
+
+    fn expect(&self, want: &WaylandEvent, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match self.rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(event) if &event == want => return,
+                Ok(_) => {}
+                Err(_) => panic!("no {want:?} within {timeout:?}"),
+            }
+        }
+    }
+
+    /// Snapshot, paste and wait for `Pasted`; returns the time from sending `Paste` (the text is
+    /// ready) to `Pasted` (dispatched).
+    fn dictate(&self, generation: u64, text: &str, chord: Chord) -> Duration {
+        self.send(WaylandCmd::SnapshotClipboard { generation });
+        self.paste(generation, text, chord)
+    }
+
+    fn paste(&self, generation: u64, text: &str, chord: Chord) -> Duration {
+        let ready = Instant::now();
+        self.send(WaylandCmd::Paste { generation, text: text.into(), chord, delay_ms: 0 });
+        self.expect(&WaylandEvent::Pasted { generation }, Duration::from_secs(3));
+        ready.elapsed()
+    }
+}
+
+/// The test app: it has keyboard focus and reports what it pastes.
+struct App {
+    child: Child,
+    stdin: ChildStdin,
+    rx: Receiver<Value>,
+}
+
+impl App {
+    /// Starts the app and waits until it has keyboard focus. Start the [`Paster`] first: on
+    /// headless sway its virtual keyboard is the seat's only keyboard.
+    fn start(sandbox: &Sandbox) -> Self {
+        let mut child = sandbox
+            .command(TARGET)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("start psst-paste-target");
+        let stdin = child.stdin.take().expect("stdin");
+        let stdout = child.stdout.take().expect("stdout");
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if let Ok(v) = serde_json::from_str::<Value>(&line)
+                    && tx.send(v).is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let app = Self { child, stdin, rx };
+        app.wait("focus", Duration::from_secs(10));
+        app
+    }
+
+    /// The next event named `ev`; others are dropped.
+    fn wait(&self, ev: &str, timeout: Duration) -> Value {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match self.rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(v) if v["ev"] == ev => return v,
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout) => panic!("the app sent no {ev} event within {timeout:?}"),
+                Err(RecvTimeoutError::Disconnected) => panic!("the app exited"),
+            }
+        }
+    }
+
+    /// Every event up to and including the next `ev`.
+    fn until(&self, ev: &str, timeout: Duration) -> Vec<Value> {
+        let deadline = Instant::now() + timeout;
+        let mut events = Vec::new();
+        loop {
+            let v = self
+                .rx
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .unwrap_or_else(|_| panic!("the app sent no {ev} event within {timeout:?}"));
+            let done = v["ev"] == ev;
+            events.push(v);
+            if done {
+                return events;
+            }
+        }
+    }
+
+    fn drain(&self) {
+        while self.rx.try_recv().is_ok() {}
+    }
+
+    /// The paste the app received.
+    fn pasted(&self) -> Value {
+        self.wait("paste", Duration::from_secs(3))
+    }
+
+    /// What the app would paste now.
+    fn probe(&mut self) -> Value {
+        self.drain();
+        writeln!(self.stdin, "probe").expect("write to the app");
+        let v = self.pasted();
+        assert_eq!(v["chord"], "probe");
+        v
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn text(v: &Value) -> Option<&str> {
+    v["text"].as_str()
+}
+
+fn mimes(v: &Value) -> Vec<String> {
+    v["mimes"].as_array().map(|a| a.iter().filter_map(|m| m.as_str().map(String::from)).collect()).unwrap_or_default()
+}
+
+#[track_caller]
+fn assert_text(v: &Value, want: &str) {
+    assert_eq!(text(v), Some(want), "the app got {v}");
+}
+
+#[track_caller]
+fn assert_five_text_types(v: &Value) {
+    let got = mimes(v);
+    assert!(got.len() == 5 && TEXT_MIMES.iter().all(|t| got.iter().any(|g| g == t)), "offered {got:?}");
+}
+
+fn wait_for_restore(pasted_at: Instant, restore: Duration) {
+    let due = pasted_at + restore + Duration::from_millis(500);
+    thread::sleep(due.saturating_duration_since(Instant::now()));
+}
+
+fn pseudo_random(n: usize, seed: u64) -> Vec<u8> {
+    let mut x = seed | 1;
+    (0..n)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u8
+        })
+        .collect()
+}
+
+fn fnv1a(data: &[u8]) -> String {
+    let h = data.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x0100_0000_01b3));
+    format!("{h:016x}")
+}
+
+// ---------------------------------------------------------------------- the sandbox
+
+#[test]
+fn the_sandbox_is_offscreen_and_isolated() {
+    let sandbox = nested_niri();
+    let socket = sandbox.wayland_socket();
+    assert!(socket.starts_with(sandbox.root.path().canonicalize().unwrap()), "{}", socket.display());
+    for var in ["XDG_RUNTIME_DIR", "XDG_STATE_HOME", "XDG_CONFIG_HOME", "NIRI_SOCKET"] {
+        let value = sandbox.var(var).unwrap_or_else(|| panic!("{var} is set"));
+        assert!(std::path::Path::new(value).starts_with(sandbox.root.path().canonicalize().unwrap()), "{var}");
+    }
+    // niri IPC answers inside the sandbox.
+    let out = sandbox.niri_msg(&["--json", "keyboard-layouts"]);
+    let layouts: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(layouts["names"].as_array().map(Vec::len), Some(2), "{layouts}");
+    // A client started in the sandbox doesn't see the session's variables.
+    let out = sandbox
+        .command("sh")
+        .args(["-c", "echo \"$WAYLAND_SOCKET|$DISPLAY|$DBUS_SESSION_BUS_ADDRESS\""])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "||disabled:");
+}
+
+// ---------------------------------------------------------------------- pasting and restoring
+
+#[test]
+fn pastes_plain_text_and_restores_the_clipboard_after_5_s() {
+    let sandbox = nested_niri();
+    let paster = Paster::new(&sandbox, Options::default().restore_after);
+    let mut app = App::start(&sandbox);
+    let _owner = ClipboardOwner::new(
+        &sandbox,
+        &[("text/plain;charset=utf-8", "orig plain ✓".as_bytes()), ("text/plain", "orig plain ✓".as_bytes())],
+    );
+    // The overlay is up while pasting, and takes no focus.
+    paster.send(WaylandCmd::Overlay(Some(OverlayState::Processing)));
+    paster.dictate(1, DICTATED, Chord::CtrlV);
+    let pasted_at = Instant::now();
+    let got = app.pasted();
+    assert_text(&got, DICTATED);
+    assert_eq!(got["chord"], "ctrl+v");
+    paster.send(WaylandCmd::Overlay(None));
+
+    let during = app.probe();
+    assert_text(&during, DICTATED);
+    assert_five_text_types(&during);
+
+    // Not before 5 s...
+    thread::sleep(Duration::from_secs(4).saturating_sub(pasted_at.elapsed()));
+    assert_text(&app.probe(), DICTATED);
+    // ...but after.
+    wait_for_restore(pasted_at, Duration::from_secs(5));
+    let after = app.probe();
+    assert_text(&after, "orig plain ✓");
+    assert_five_text_types(&after);
+    let clipboard = read_clipboard(&sandbox).expect("a clipboard");
+    assert!(clipboard.text_under_all_types(), "{clipboard:?}");
+}
+
+#[test]
+fn rich_text_comes_back_as_plain_text() {
+    let sandbox = nested_niri();
+    let paster = Paster::new(&sandbox, RESTORE);
+    let mut app = App::start(&sandbox);
+    let _owner = ClipboardOwner::new(
+        &sandbox,
+        &[
+            ("text/html", b"<b>rich</b> <i>text</i>"),
+            ("text/plain;charset=utf-8", b"rich text"),
+            ("text/plain", b"rich text"),
+        ],
+    );
+    paster.dictate(1, DICTATED, Chord::CtrlV);
+    let pasted_at = Instant::now();
+    assert_text(&app.pasted(), DICTATED);
+    wait_for_restore(pasted_at, RESTORE);
+    let after = app.probe();
+    assert_text(&after, "rich text");
+    // One representation only: the formatting is gone.
+    assert_five_text_types(&after);
+}
+
+#[test]
+fn an_image_comes_back_byte_for_byte() {
+    let sandbox = nested_niri();
+    let paster = Paster::new(&sandbox, RESTORE);
+    let mut app = App::start(&sandbox);
+    let png = pseudo_random(300 * 1024, 7);
+    let _owner = ClipboardOwner::new(&sandbox, &[("image/png", &png)]);
+    paster.dictate(1, DICTATED, Chord::CtrlV);
+    let pasted_at = Instant::now();
+    assert_text(&app.pasted(), DICTATED);
+    wait_for_restore(pasted_at, RESTORE);
+    let after = app.probe();
+    assert_eq!(mimes(&after), ["image/png"]);
+    assert_eq!(after["blobs"]["image/png"]["len"], png.len());
+    assert_eq!(after["blobs"]["image/png"]["fnv"], fnv1a(&png));
+    assert_eq!(read_clipboard(&sandbox).unwrap().data["image/png"], png);
+}
+
+#[test]
+fn two_quick_dictations_bring_back_the_original() {
+    let sandbox = nested_niri();
+    let paster = Paster::new(&sandbox, RESTORE);
+    let mut app = App::start(&sandbox);
+    let _owner = ClipboardOwner::new(&sandbox, &[("text/plain;charset=utf-8", b"orig two")]);
+    paster.dictate(1, "first dictation", Chord::CtrlV);
+    let first_at = Instant::now();
+    assert_text(&app.pasted(), "first dictation");
+    thread::sleep(Duration::from_millis(700));
+    paster.dictate(2, "second dictation", Chord::CtrlV);
+    let second_at = Instant::now();
+    assert_text(&app.pasted(), "second dictation");
+    // The first dictation's timer is ignored...
+    wait_for_restore(first_at, RESTORE);
+    assert_text(&app.probe(), "second dictation");
+    // ...and the second one restores what was there before both.
+    wait_for_restore(second_at, RESTORE);
+    assert_text(&app.probe(), "orig two");
+}
+
+#[test]
+fn a_clipboard_manager_holding_the_dictation_doesnt_lose_the_original() {
+    let sandbox = nested_niri();
+    let paster = Paster::new(&sandbox, RESTORE);
+    let mut app = App::start(&sandbox);
+    let _owner = ClipboardOwner::new(&sandbox, &[("text/plain;charset=utf-8", b"orig mgr")]);
+    paster.dictate(1, "first via manager", Chord::CtrlV);
+    assert_text(&app.pasted(), "first via manager");
+    // A clipboard manager takes ownership of the dictated text.
+    let _manager = ClipboardOwner::new(
+        &sandbox,
+        &[("text/plain;charset=utf-8", b"first via manager"), ("text/plain", b"first via manager")],
+    );
+    thread::sleep(Duration::from_millis(200));
+    paster.dictate(2, "second via manager", Chord::CtrlV);
+    let pasted_at = Instant::now();
+    assert_text(&app.pasted(), "second via manager");
+    wait_for_restore(pasted_at, RESTORE);
+    assert_text(&app.probe(), "orig mgr");
+}
+
+#[test]
+fn a_copy_during_the_window_is_kept() {
+    let sandbox = nested_niri();
+    let paster = Paster::new(&sandbox, RESTORE);
+    let mut app = App::start(&sandbox);
+    let _owner = ClipboardOwner::new(&sandbox, &[("text/plain;charset=utf-8", b"orig uc")]);
+    paster.dictate(1, "dictation uc", Chord::CtrlV);
+    let pasted_at = Instant::now();
+    assert_text(&app.pasted(), "dictation uc");
+    thread::sleep(Duration::from_millis(500));
+    let _user = ClipboardOwner::new(&sandbox, &[("text/plain;charset=utf-8", b"user copied this")]);
+    wait_for_restore(pasted_at, RESTORE);
+    assert_text(&app.probe(), "user copied this");
+}
+
+#[test]
+fn a_change_between_snapshot_and_paste_is_what_comes_back() {
+    let sandbox = nested_niri();
+    let paster = Paster::new(&sandbox, RESTORE);
+    let mut app = App::start(&sandbox);
+    let _first = ClipboardOwner::new(&sandbox, &[("text/plain;charset=utf-8", b"orig x1")]);
+    paster.send(WaylandCmd::SnapshotClipboard { generation: 1 });
+    thread::sleep(Duration::from_millis(200));
+    let _second = ClipboardOwner::new(&sandbox, &[("text/plain;charset=utf-8", b"orig x2")]);
+    thread::sleep(Duration::from_millis(200));
+    paster.paste(1, "dictation x", Chord::CtrlV);
+    let pasted_at = Instant::now();
+    assert_text(&app.pasted(), "dictation x");
+    wait_for_restore(pasted_at, RESTORE);
+    assert_text(&app.probe(), "orig x2");
+}
+
+#[test]
+fn an_empty_clipboard_keeps_the_dictation() {
+    let sandbox = nested_niri();
+    let paster = Paster::new(&sandbox, RESTORE);
+    let mut app = App::start(&sandbox);
+    clear_clipboard(&sandbox);
+    paster.dictate(1, "dictation into empty", Chord::CtrlV);
+    let pasted_at = Instant::now();
+    assert_text(&app.pasted(), "dictation into empty");
+    wait_for_restore(pasted_at, RESTORE);
+    assert_text(&app.probe(), "dictation into empty");
+}
+
+#[test]
+fn unreadable_snapshots_paste_without_restoring() {
+    let sandbox = nested_niri();
+    let paster = Paster::new(&sandbox, RESTORE);
+    let mut app = App::start(&sandbox);
+    // Over 10 MB: refused.
+    let big = pseudo_random(11 * 1024 * 1024, 11);
+    let owner = ClipboardOwner::new(&sandbox, &[("application/octet-stream", &big)]);
+    paster.send(WaylandCmd::SnapshotClipboard { generation: 1 });
+    thread::sleep(Duration::from_millis(300));
+    paster.paste(1, "dictation big", Chord::CtrlV);
+    let pasted_at = Instant::now();
+    assert_text(&app.pasted(), "dictation big");
+    wait_for_restore(pasted_at, RESTORE);
+    assert_text(&app.probe(), "dictation big");
+    drop(owner);
+    // Answers after 500 ms: the paste waits at most 100 ms for it, then goes without a restore.
+    let _slow =
+        ClipboardOwner::slow(&sandbox, &[("text/plain;charset=utf-8", b"orig slow")], Duration::from_millis(500));
+    let took = paster.dictate(2, "dictation slow", Chord::CtrlV);
+    let pasted_at = Instant::now();
+    assert!(took >= Duration::from_millis(90) && took < Duration::from_millis(400), "the paste took {took:?}");
+    assert_text(&app.pasted(), "dictation slow");
+    wait_for_restore(pasted_at, RESTORE);
+    assert_text(&app.probe(), "dictation slow");
+}
+
+#[test]
+fn a_silent_clipboard_times_out_and_the_paste_goes_ahead() {
+    let sandbox = nested_niri();
+    let paster = Paster::new(&sandbox, RESTORE);
+    let mut app = App::start(&sandbox);
+    let _silent =
+        ClipboardOwner::slow(&sandbox, &[("text/plain;charset=utf-8", b"orig never")], Duration::from_secs(4));
+    paster.send(WaylandCmd::SnapshotClipboard { generation: 1 });
+    // The read gives up after 2 s; a paste after that doesn't wait.
+    thread::sleep(Duration::from_millis(2300));
+    let took = paster.paste(1, "dictation timeout", Chord::CtrlV);
+    let pasted_at = Instant::now();
+    assert!(took < Duration::from_millis(80), "the paste took {took:?}");
+    assert_text(&app.pasted(), "dictation timeout");
+    wait_for_restore(pasted_at, RESTORE);
+    assert_text(&app.probe(), "dictation timeout");
+}
+
+#[test]
+fn copy_only_sets_the_clipboard_without_pasting_or_restoring() {
+    let sandbox = nested_niri();
+    let paster = Paster::new(&sandbox, RESTORE);
+    let mut app = App::start(&sandbox);
+    let _owner = ClipboardOwner::new(&sandbox, &[("text/plain;charset=utf-8", b"orig copy")]);
+    paster.send(WaylandCmd::SnapshotClipboard { generation: 1 });
+    paster.send(WaylandCmd::Copy { generation: 1, text: "copied, not pasted".into() });
+    paster.expect(&WaylandEvent::Copied { generation: 1 }, Duration::from_secs(3));
+    let copied_at = Instant::now();
+    // No key press reached the app.
+    thread::sleep(Duration::from_millis(300));
+    assert!(app.rx.try_iter().all(|v| v["ev"] != "paste" && v["ev"] != "key"));
+    let now = app.probe();
+    assert_text(&now, "copied, not pasted");
+    assert_five_text_types(&now);
+    wait_for_restore(copied_at, RESTORE);
+    assert_text(&app.probe(), "copied, not pasted");
+}
+
+#[test]
+fn ctrl_shift_v_reaches_the_app_as_a_keyboard_would_send_it() {
+    let sandbox = nested_niri();
+    let paster = Paster::new(&sandbox, RESTORE);
+    let app = App::start(&sandbox);
+    paster.dictate(1, "terminal paste", Chord::CtrlShiftV);
+    let got = app.pasted();
+    assert_text(&got, "terminal paste");
+    assert_eq!(got["chord"], "ctrl+shift+v");
+    assert_eq!(got["mods"]["shift"], true);
+}
+
+#[test]
+fn the_wlr_data_control_fallback_pastes_and_restores() {
+    let sandbox = nested_niri();
+    let paster = Paster::with(
+        &sandbox,
+        Options { restore_after: RESTORE, data_control: DataControl::Wlr, ..Options::default() },
+    );
+    let mut app = App::start(&sandbox);
+    let _owner = ClipboardOwner::new(&sandbox, &[("text/plain;charset=utf-8", b"orig wlr")]);
+    paster.dictate(1, DICTATED, Chord::CtrlV);
+    let pasted_at = Instant::now();
+    assert_text(&app.pasted(), DICTATED);
+    wait_for_restore(pasted_at, RESTORE);
+    assert_text(&app.probe(), "orig wlr");
+}
+
+// ---------------------------------------------------------------------- keyboard layouts
+
+/// For us and cz (QWERTY): a physical key gives the layout's character before and after a paste,
+/// and a paste while Super is physically held reaches the app as plain Ctrl+V.
+#[test]
+fn us_and_cz_layouts_survive_the_paste() {
+    let sandbox = nested_niri();
+    let paster = Paster::new(&sandbox, RESTORE);
+    let app = App::start(&sandbox);
+    let mut keyboard = HostKeyboard::new(&sandbox);
+    let mut generation = 0;
+    for (index, name, two) in [(0, "us", "2"), (1, "cz", "ě")] {
+        sandbox.niri_msg(&["action", "switch-layout", &index.to_string()]);
+        thread::sleep(Duration::from_millis(100));
+        app.drain();
+        keyboard.tap(keys::KEY_2);
+        let key = app.wait("key", Duration::from_secs(3));
+        assert_eq!(key["utf8"], two, "{name}: KEY_2 before the paste: {key}");
+
+        generation += 1;
+        app.drain();
+        paster.dictate(generation, &format!("layout {name} ✓"), Chord::CtrlV);
+        let events = app.until("paste", Duration::from_secs(3));
+        assert_text(events.last().unwrap(), &format!("layout {name} ✓"));
+        assert!(events.iter().any(|e| e["ev"] == "keymap" && e["name"] == "psst"), "{name}: psst's keymap: {events:?}");
+
+        // The next physical key gets niri's keymap and layout back.
+        thread::sleep(Duration::from_millis(100));
+        app.drain();
+        keyboard.tap(keys::KEY_2);
+        let events = app.until("key", Duration::from_secs(3));
+        assert_eq!(events.last().unwrap()["utf8"], two, "{name}: KEY_2 after the paste: {events:?}");
+        assert_eq!(events.last().unwrap()["layout"], index, "{name}: the layout didn't change");
+
+        // Super held while pasting: the app sees Ctrl only.
+        app.drain();
+        keyboard.press(keys::KEY_LEFTMETA);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while app.wait("mods", deadline.saturating_duration_since(Instant::now()))["logo"] != true {}
+        generation += 1;
+        paster.dictate(generation, &format!("super held {name}"), Chord::CtrlV);
+        let got = app.pasted();
+        keyboard.release(keys::KEY_LEFTMETA);
+        assert_text(&got, &format!("super held {name}"));
+        assert_eq!((got["mods"]["ctrl"].as_bool(), got["mods"]["logo"].as_bool()), (Some(true), Some(false)), "{got}");
+    }
+    sandbox.niri_msg(&["action", "switch-layout", "0"]);
+}
+
+// ---------------------------------------------------------------------- timing
+
+/// Text ready (the daemon sends `Paste`) → `Pasted` (dispatched), and → the app has the text.
+/// Reported on stderr; `cargo nextest run -E 'test(paste_timing)' --no-capture` shows it.
+#[test]
+fn paste_timing() {
+    let sandbox = nested_niri();
+    let paster = Paster::new(&sandbox, Duration::from_secs(60));
+    let app = App::start(&sandbox);
+    let runs = 60;
+    let (mut dispatch, mut received) = (Vec::new(), Vec::new());
+    for i in 0..runs {
+        let text = format!("timing {i} ✓");
+        app.drain();
+        paster.send(WaylandCmd::SnapshotClipboard { generation: i });
+        let ready = now_us();
+        dispatch.push(paster.paste(i, &text, Chord::CtrlV).as_secs_f64() * 1000.0);
+        let got = app.pasted();
+        assert_text(&got, &text);
+        received.push((got["t_done"].as_u64().unwrap() - ready) as f64 / 1000.0);
+    }
+    let summary = |v: &mut Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        let at = |p: f64| v[((v.len() - 1) as f64 * p).round() as usize];
+        (at(0.5), at(0.95), v[v.len() - 1])
+    };
+    let (d50, d95, dmax) = summary(&mut dispatch);
+    let (r50, r95, rmax) = summary(&mut received);
+    eprintln!(
+        "paste timing over {runs} pastes in nested niri (ms): text ready → Pasted p50 {d50:.2}, p95 {d95:.2}, max {dmax:.2}; text ready → app has the text p50 {r50:.2}, p95 {r95:.2}, max {rmax:.2}"
+    );
+    // Generous bounds, for loaded CI machines; the budget is 300–500 ms for the whole stop → paste.
+    assert!(d95 < 50.0, "text ready → Pasted p95 {d95:.2} ms");
+}
+
+fn now_us() -> u64 {
+    let t = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
+    t.tv_sec as u64 * 1_000_000 + t.tv_nsec as u64 / 1_000
+}
+
+// ---------------------------------------------------------------------- overlay
+
+/// Where the pill is: the bounding box of pixels that differ from the background.
+fn pill_bounds(shot: &psst_testkit::wayland::Screenshot) -> Option<(u32, u32, u32, u32)> {
+    let background = shot.pixel(5, 5);
+    let mut bounds: Option<(u32, u32, u32, u32)> = None;
+    for y in 0..shot.height {
+        for x in 0..shot.width {
+            let p = shot.pixel(x, y);
+            if p[..3].iter().zip(&background[..3]).any(|(a, b)| a.abs_diff(*b) > 24) {
+                let b = bounds.get_or_insert((x, y, x, y));
+                *b = (b.0.min(x), b.1.min(y), b.2.max(x), b.3.max(y));
+            }
+        }
+    }
+    bounds
+}
+
+#[test]
+fn the_overlay_shows_at_the_bottom_centre_and_goes_away() {
+    overlay_at_the_bottom_centre(&nested_niri());
+}
+
+#[test]
+fn the_overlay_shows_at_the_bottom_centre_on_sway() {
+    overlay_at_the_bottom_centre(&headless_sway());
+}
+
+fn overlay_at_the_bottom_centre(sandbox: &Sandbox) {
+    let paster = Paster::new(sandbox, RESTORE);
+    assert!(pill_bounds(&screenshot(sandbox)).is_none(), "the screen starts empty");
+    paster.send(WaylandCmd::Overlay(Some(OverlayState::Starting)));
+    paster.expect(&WaylandEvent::OverlayShown, Duration::from_secs(3));
+    for level in [0.1, 0.4, 0.2, 0.6, 0.3] {
+        paster.send(WaylandCmd::Overlay(Some(OverlayState::Recording { level })));
+    }
+
+    thread::sleep(Duration::from_millis(300));
+    let shot = screenshot(sandbox);
+    let (x0, y0, x1, y1) = pill_bounds(&shot).expect("the overlay is on screen");
+    let (w, h) = (x1 - x0 + 1, y1 - y0 + 1);
+    // 240 × 44 at scale 1, centred, 130 px above the bottom edge.
+    assert!((236..=242).contains(&w) && (40..=46).contains(&h), "pill {w}×{h} at ({x0}, {y0})");
+    let centre = (x0 + x1) / 2;
+    assert!(centre.abs_diff(shot.width / 2) <= 2, "centre {centre} on a {} px wide output", shot.width);
+    let bottom_margin = shot.height - 1 - y1;
+    assert!((126..=134).contains(&bottom_margin), "{bottom_margin} px above the bottom");
+    // The recording dot: the accent colour, left in the pill.
+    let dot = shot.pixel(x0 + h / 2, y0 + h / 2);
+    assert!(dot[0] > 200 && dot[1] < 120 && dot[2] < 120, "the recording dot is {dot:?}");
+
+    paster.send(WaylandCmd::Overlay(None));
+    thread::sleep(Duration::from_millis(300));
+    assert!(pill_bounds(&screenshot(sandbox)).is_none(), "the overlay is gone");
+    // Shown again: a new surface, a new OverlayShown.
+    paster.send(WaylandCmd::Overlay(Some(OverlayState::Done)));
+    paster.expect(&WaylandEvent::OverlayShown, Duration::from_secs(3));
+}
+
+#[test]
+fn every_overlay_state_is_shown() {
+    let sandbox = nested_niri();
+    let paster = Paster::new(&sandbox, RESTORE);
+    let states = [
+        OverlayState::Starting,
+        OverlayState::Recording { level: 0.3 },
+        OverlayState::Offline { level: 0.2, reason: "server unreachable".into() },
+        OverlayState::LoadingModel,
+        OverlayState::Processing,
+        OverlayState::Sending,
+        OverlayState::Retrying,
+        OverlayState::WaitingForServer,
+        OverlayState::NothingHeard,
+        OverlayState::Done,
+        OverlayState::Error { message: "Saved · psst retry".into() },
+        OverlayState::Flash { message: "Recording had a gap".into() },
+        OverlayState::LimitWarning { seconds_left: 28 },
+    ];
+    let mut previous = None;
+    for state in states {
+        paster.send(WaylandCmd::Overlay(None));
+        paster.send(WaylandCmd::Overlay(Some(state.clone())));
+        paster.expect(&WaylandEvent::OverlayShown, Duration::from_secs(3));
+        let shot = screenshot(&sandbox);
+        let bounds = pill_bounds(&shot).unwrap_or_else(|| panic!("{state:?} isn't on screen"));
+        let (x0, y0, x1, y1) = bounds;
+        let pixels: Vec<[u8; 4]> =
+            (y0..=y1).flat_map(|y| (x0..=x1).map(move |x| (x, y))).map(|(x, y)| shot.pixel(x, y)).collect();
+        assert_ne!(previous.as_ref(), Some(&pixels), "{state:?} looks like the state before it");
+        previous = Some(pixels);
+    }
+}
+
+// ---------------------------------------------------------------------- connection
+
+#[test]
+fn losing_the_compositor_fails_the_paste_and_reconnects_to_a_new_one() {
+    // The thread connects through a link, so a second compositor can take the first one's place.
+    let links = tempfile::Builder::new().prefix("psst-link.").tempdir_in("/tmp").unwrap();
+    let link = links.path().join("wayland");
+    let mut first = nested_niri();
+    std::os::unix::fs::symlink(first.wayland_socket(), &link).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let thread = WaylandThread::spawn(
+        Options { display: Some(link.clone()), restore_after: RESTORE, ..Options::default() },
+        move |event| {
+            let _ = tx.send(event);
+        },
+    )
+    .unwrap();
+    let paster = Paster { thread, rx };
+    let app = App::start(&first);
+    paster.dictate(1, "before", Chord::CtrlV);
+    assert_text(&app.pasted(), "before");
+    drop(app);
+
+    // The compositor goes away: Disconnected, and the next paste fails.
+    drop(std::mem::replace(&mut first, nested_niri()));
+    paster.expect(&WaylandEvent::Disconnected, Duration::from_secs(5));
+    std::fs::remove_file(&link).unwrap();
+    paster.send(WaylandCmd::Paste { generation: 2, text: "nowhere".into(), chord: Chord::CtrlV, delay_ms: 0 });
+    let failed = paster.rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    assert!(matches!(&failed, WaylandEvent::Failed { generation: 2, .. }), "{failed:?}");
+
+    // A new compositor: the next command connects to it.
+    std::os::unix::fs::symlink(first.wayland_socket(), &link).unwrap();
+    let app = App::start(&first);
+    paster.dictate(3, "after", Chord::CtrlV);
+    assert_text(&app.pasted(), "after");
+}

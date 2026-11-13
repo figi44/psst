@@ -1873,6 +1873,7 @@ dependencies = [
  "psst-proto",
  "psst-server",
  "psst-testkit",
+ "psst-wayland",
  "rustix",
  "serde_json",
  "smithay-client-toolkit",
