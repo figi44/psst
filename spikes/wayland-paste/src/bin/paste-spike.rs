@@ -443,6 +443,7 @@ fn checks(a: &Args) -> Res<()> {
         ("empty-clipboard", check_empty),
         ("oversize-snapshot", check_oversize),
         ("slow-source", check_slow_source),
+        ("snapshot-timeout", check_snapshot_timeout),
         ("ctrl-shift-v", check_ctrl_shift_v),
     ];
     if compositor == "niri" {
@@ -719,6 +720,42 @@ fn check_slow_source(c: &mut Ctx) -> Res<String> {
     Ok(format!(
         "source answering after 500 ms: paste waited {waited:.0} ms, restore skipped"
     ))
+}
+
+fn check_snapshot_timeout(c: &mut Ctx) -> Res<String> {
+    let _s = spawn_seed(
+        &[
+            "--text",
+            "text/plain;charset=utf-8=orig never",
+            "--delay-ms",
+            "3000",
+        ],
+        c.proto,
+    )?;
+    let g = c.next_gen();
+    c.snapshot(g);
+    std::thread::sleep(Duration::from_millis(2300));
+    let (_, got, at) = c.paste(g, "dictation timeout", Chord::CtrlV)?;
+    expect_text(&got, "dictation timeout", "received")?;
+    c.sleep_until(c.after_restore(at));
+    let after = c.probe()?;
+    expect_text(&after, "dictation timeout", "clipboard after the window")?;
+    c.pump();
+    if !c.noted(|n| {
+        matches!(
+            n,
+            Note::SnapshotFailed {
+                error: ReadError::Timeout,
+                ..
+            }
+        )
+    }) {
+        return Err("expected SnapshotFailed Timeout".into());
+    }
+    Ok(
+        "source silent for 3 s: snapshot read timed out at 2 s, paste went ahead without restore"
+            .into(),
+    )
 }
 
 fn check_ctrl_shift_v(c: &mut Ctx) -> Res<String> {
