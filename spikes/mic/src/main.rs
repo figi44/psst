@@ -23,12 +23,7 @@ static BUFFER: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cmd = args.first().map(String::as_str).unwrap_or("help");
-    let flag = |k: &str| {
-        args.iter()
-            .position(|a| a == k)
-            .and_then(|i| args.get(i + 1))
-            .cloned()
-    };
+    let flag = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
     let host_id = match flag("--host").as_deref() {
         None | Some("pipewire") => HostId::PipeWire,
         Some("alsa") => HostId::Alsa,
@@ -38,21 +33,11 @@ fn main() {
     let host = cpal::host_from_id(host_id).expect("host");
     let host_ms = ms(t.elapsed());
     let device = flag("--device");
-    BUFFER
-        .set(flag("--buffer").map(|s| s.parse().expect("frames")))
-        .unwrap();
+    BUFFER.set(flag("--buffer").map(|s| s.parse().expect("frames"))).unwrap();
     match cmd {
         "list" => list(&host, host_ms),
-        "first-frame" => first_frame(
-            &host,
-            device,
-            flag("--runs").map_or(30, |s| s.parse().unwrap()),
-        ),
-        "capture" => capture(
-            &host,
-            device,
-            flag("--secs").map_or(30, |s| s.parse().unwrap()),
-        ),
+        "first-frame" => first_frame(&host, device, flag("--runs").map_or(30, |s| s.parse().unwrap())),
+        "capture" => capture(&host, device, flag("--secs").map_or(30, |s| s.parse().unwrap())),
         _ => eprintln!("usage: see src/main.rs"),
     }
 }
@@ -66,39 +51,23 @@ fn config() -> StreamConfig {
         Some(n) => BufferSize::Fixed(n),
         None => BufferSize::Default,
     };
-    StreamConfig {
-        channels: 1,
-        sample_rate: RATE,
-        buffer_size,
-    }
+    StreamConfig { channels: 1, sample_rate: RATE, buffer_size }
 }
 
 fn pick(host: &cpal::Host, want: &Option<String>) -> cpal::Device {
     match want {
-        None => host
-            .default_input_device()
-            .expect("no default input device"),
+        None => host.default_input_device().expect("no default input device"),
         Some(w) => host
             .input_devices()
             .expect("input devices")
-            .find(|d| {
-                d.id()
-                    .map(|id| id.to_string().contains(w.as_str()))
-                    .unwrap_or(false)
-            })
+            .find(|d| d.id().map(|id| id.to_string().contains(w.as_str())).unwrap_or(false))
             .unwrap_or_else(|| panic!("no input device matching {w:?}")),
     }
 }
 
 fn describe(d: &cpal::Device) -> String {
-    let id = d
-        .id()
-        .map(|i| i.to_string())
-        .unwrap_or_else(|e| format!("<{e}>"));
-    let name = d
-        .description()
-        .map(|x| x.name().to_string())
-        .unwrap_or_default();
+    let id = d.id().map(|i| i.to_string()).unwrap_or_else(|e| format!("<{e}>"));
+    let name = d.description().map(|x| x.name().to_string()).unwrap_or_default();
     format!("{id} — {name}")
 }
 
@@ -108,18 +77,9 @@ fn list(host: &cpal::Host, host_ms: f64) {
     let t = Instant::now();
     match host.default_input_device() {
         Some(d) => {
-            println!(
-                "default input ({:.1} ms): {}",
-                ms(t.elapsed()),
-                describe(&d)
-            );
+            println!("default input ({:.1} ms): {}", ms(t.elapsed()), describe(&d));
             if let Ok(c) = d.default_input_config() {
-                println!(
-                    "  default config: {} ch, {} Hz, {:?}",
-                    c.channels(),
-                    c.sample_rate(),
-                    c.sample_format()
-                );
+                println!("  default config: {} ch, {} Hz, {:?}", c.channels(), c.sample_rate(), c.sample_format());
             }
         }
         None => println!("no default input device"),
@@ -147,19 +107,12 @@ fn list(host: &cpal::Host, host_ms: f64) {
 fn stats(name: &str, v: &mut [f64]) {
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let q = |p: f64| v[((v.len() - 1) as f64 * p).round() as usize];
-    println!(
-        "{name:<26} {:>8.2} {:>8.2} {:>8.2} {:>8.2}",
-        q(0.5),
-        q(0.95),
-        v[0],
-        v[v.len() - 1]
-    );
+    println!("{name:<26} {:>8.2} {:>8.2} {:>8.2} {:>8.2}", q(0.5), q(0.95), v[0], v[v.len() - 1]);
 }
 
 /// open (device lookup + build + play) → first callback with samples.
 fn first_frame(host: &cpal::Host, want: Option<String>, runs: usize) {
-    let (mut lookup, mut build, mut play, mut first, mut total) =
-        (vec![], vec![], vec![], vec![], vec![]);
+    let (mut lookup, mut build, mut play, mut first, mut total) = (vec![], vec![], vec![], vec![], vec![]);
     let mut first_len = vec![];
     for _ in 0..runs {
         let (tx, rx) = mpsc::sync_channel::<(Instant, usize)>(1);
@@ -183,9 +136,7 @@ fn first_frame(host: &cpal::Host, want: Option<String>, runs: usize) {
         let t2 = Instant::now();
         stream.play().expect("play");
         let t3 = Instant::now();
-        let (t4, n) = rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("no audio within 5 s");
+        let (t4, n) = rx.recv_timeout(Duration::from_secs(5)).expect("no audio within 5 s");
         drop(stream);
         lookup.push(ms(t1 - t0));
         build.push(ms(t2 - t1));
@@ -201,10 +152,7 @@ fn first_frame(host: &cpal::Host, want: Option<String>, runs: usize) {
         config().buffer_size,
         describe(&pick(host, &want))
     );
-    println!(
-        "{:<26} {:>8} {:>8} {:>8} {:>8}",
-        "ms", "median", "p95", "min", "max"
-    );
+    println!("{:<26} {:>8} {:>8} {:>8} {:>8}", "ms", "median", "p95", "min", "max");
     stats("device lookup", &mut lookup);
     stats("build_input_stream", &mut build);
     stats("play()", &mut play);
@@ -232,12 +180,7 @@ fn capture(host: &cpal::Host, want: Option<String>, secs: u64) {
     let errors: Arc<Mutex<Vec<(f64, String)>>> = Arc::default();
     let sumsq = Arc::new(Mutex::new(0f64));
     let start = Instant::now();
-    let (r2, o2, s2, e2) = (
-        recs.clone(),
-        overflow.clone(),
-        sumsq.clone(),
-        errors.clone(),
-    );
+    let (r2, o2, s2, e2) = (recs.clone(), overflow.clone(), sumsq.clone(), errors.clone());
     let mut first: Option<cpal::StreamInstant> = None;
     let stream = dev
         .build_input_stream::<f32, _, _>(
@@ -323,30 +266,16 @@ fn capture(host: &cpal::Host, want: Option<String>, secs: u64) {
     }
     let rms = (*sumsq.lock().unwrap() / total.max(1) as f64).sqrt();
     let errors = errors.lock().unwrap().clone();
-    println!(
-        "# capture: host={:?}, {secs} s, device {}",
-        host.id(),
-        describe(&dev)
-    );
-    println!(
-        "callbacks: {}, buffer sizes (frames: count): {sizes:?}",
-        recs.len()
-    );
+    println!("# capture: host={:?}, {secs} s, device {}", host.id(), describe(&dev));
+    println!("callbacks: {}, buffer sizes (frames: count): {sizes:?}", recs.len());
     println!(
         "frames: {total} received vs {:.0} expected from wall clock ({:+.2}%)",
         elapsed.as_secs_f64() * RATE as f64,
         (total as f64 / (elapsed.as_secs_f64() * RATE as f64) - 1.0) * 100.0
     );
     println!("timestamp gaps (> half a buffer): {gaps} ({gap_ms:.1} ms total)");
-    println!(
-        "max wall interval between callbacks: {:.1} ms",
-        ms(max_cb_interval)
-    );
-    println!(
-        "stream errors: {} {:?}",
-        errors.len(),
-        errors.iter().take(10).collect::<Vec<_>>()
-    );
+    println!("max wall interval between callbacks: {:.1} ms", ms(max_cb_interval));
+    println!("stream errors: {} {:?}", errors.len(), errors.iter().take(10).collect::<Vec<_>>());
     println!(
         "ring (2 s): overflowed samples {}, worst fill {:.1} ms, writer drained {drained}, writer worst lateness {:.1} ms",
         overflow.load(Ordering::Relaxed),

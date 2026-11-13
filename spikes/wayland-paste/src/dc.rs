@@ -54,10 +54,7 @@ pub struct SourceData {
 
 impl SourceData {
     pub fn bytes_for(&self, mime: &str) -> Option<Bytes> {
-        self.items
-            .iter()
-            .find(|(m, _)| m == mime)
-            .map(|(_, b)| b.clone())
+        self.items.iter().find(|(m, _)| m == mime).map(|(_, b)| b.clone())
     }
 }
 
@@ -99,30 +96,16 @@ pub enum DcOffer {
 }
 
 impl DcManager {
-    pub fn bind<D>(
-        globals: &GlobalList,
-        qh: &QueueHandle<D>,
-        want: Option<Proto>,
-    ) -> Result<Self, String>
+    pub fn bind<D>(globals: &GlobalList, qh: &QueueHandle<D>, want: Option<Proto>) -> Result<Self, String>
     where
         D: Dispatch<ExtDataControlManagerV1, ()> + Dispatch<ZwlrDataControlManagerV1, ()> + 'static,
     {
-        let ext = || {
-            globals
-                .bind::<ExtDataControlManagerV1, D, ()>(qh, 1..=1, ())
-                .map(DcManager::Ext)
-        };
-        let wlr = || {
-            globals
-                .bind::<ZwlrDataControlManagerV1, D, ()>(qh, 1..=2, ())
-                .map(DcManager::Wlr)
-        };
+        let ext = || globals.bind::<ExtDataControlManagerV1, D, ()>(qh, 1..=1, ()).map(DcManager::Ext);
+        let wlr = || globals.bind::<ZwlrDataControlManagerV1, D, ()>(qh, 1..=2, ()).map(DcManager::Wlr);
         match want {
             Some(Proto::Ext) => ext().map_err(|e| format!("ext_data_control_manager_v1: {e}")),
             Some(Proto::Wlr) => wlr().map_err(|e| format!("zwlr_data_control_manager_v1: {e}")),
-            None => ext()
-                .or_else(|_| wlr())
-                .map_err(|e| format!("no data-control global: {e}")),
+            None => ext().or_else(|_| wlr()).map_err(|e| format!("no data-control global: {e}")),
         }
     }
 
@@ -146,15 +129,10 @@ impl DcManager {
     /// A source offering every `(mime, bytes)` item.
     pub fn create_source<D>(&self, qh: &QueueHandle<D>, items: Vec<(String, Bytes)>) -> DcSource
     where
-        D: Dispatch<ExtDataControlSourceV1, SourceData>
-            + Dispatch<ZwlrDataControlSourceV1, SourceData>
-            + 'static,
+        D: Dispatch<ExtDataControlSourceV1, SourceData> + Dispatch<ZwlrDataControlSourceV1, SourceData> + 'static,
     {
         let mimes: Vec<String> = items.iter().map(|(m, _)| m.clone()).collect();
-        let data = SourceData {
-            items,
-            live: AtomicBool::new(true),
-        };
+        let data = SourceData { items, live: AtomicBool::new(true) };
         let src = match self {
             DcManager::Ext(m) => DcSource::Ext(m.create_data_source(qh, data)),
             DcManager::Wlr(m) => DcSource::Wlr(m.create_data_source(qh, data)),
@@ -205,8 +183,7 @@ impl DcOffer {
             DcOffer::Ext(o) => o.data::<OfferData>(),
             DcOffer::Wlr(o) => o.data::<OfferData>(),
         };
-        d.map(|d| d.mimes.lock().unwrap().clone())
-            .unwrap_or_default()
+        d.map(|d| d.mimes.lock().unwrap().clone()).unwrap_or_default()
     }
     pub fn receive(&self, mime: String, fd: BorrowedFd<'_>) {
         match self {

@@ -22,13 +22,7 @@ pub type ReadId = u64;
 /// Glue-assigned handle for a data-control offer.
 pub type OfferKey = u64;
 
-pub const TEXT_MIMES: [&str; 5] = [
-    "text/plain;charset=utf-8",
-    "text/plain",
-    "UTF8_STRING",
-    "STRING",
-    "TEXT",
-];
+pub const TEXT_MIMES: [&str; 5] = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING", "TEXT"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OwnKind {
@@ -53,21 +47,14 @@ pub struct Snapshot {
 
 impl Snapshot {
     pub fn text(s: &str) -> Self {
-        Snapshot {
-            mime: TEXT_MIMES[0].to_owned(),
-            data: s.as_bytes().to_vec(),
-        }
+        Snapshot { mime: TEXT_MIMES[0].to_owned(), data: s.as_bytes().to_vec() }
     }
     pub fn is_text(&self) -> bool {
         is_text_mime(&self.mime)
     }
     /// The types a source serving this snapshot offers.
     pub fn offer_mimes(&self) -> Vec<String> {
-        if self.is_text() {
-            TEXT_MIMES.iter().map(|s| s.to_string()).collect()
-        } else {
-            vec![self.mime.clone()]
-        }
+        if self.is_text() { TEXT_MIMES.iter().map(|s| s.to_string()).collect() } else { vec![self.mime.clone()] }
     }
     pub fn describe(&self) -> String {
         if self.is_text() {
@@ -95,10 +82,7 @@ pub fn choose_mime(mimes: &[String]) -> Option<&str> {
 }
 
 pub fn choose_text_mime(mimes: &[String]) -> Option<&str> {
-    TEXT_MIMES
-        .iter()
-        .find(|t| mimes.iter().any(|m| m == *t))
-        .copied()
+    TEXT_MIMES.iter().find(|t| mimes.iter().any(|m| m == *t)).copied()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,65 +94,26 @@ pub enum ReadError {
 
 #[derive(Debug)]
 pub enum Input {
-    SnapshotRequested {
-        generation: Gen,
-    },
+    SnapshotRequested { generation: Gen },
     SelectionChanged(Owner),
-    ReadDone {
-        id: ReadId,
-        result: Result<Vec<u8>, ReadError>,
-    },
-    PasteRequested {
-        generation: Gen,
-        text: String,
-    },
-    PasteWaitExpired {
-        generation: Gen,
-    },
-    CopyRequested {
-        generation: Gen,
-        text: String,
-    },
-    Pasted {
-        generation: Gen,
-    },
-    RestoreDue {
-        generation: Gen,
-    },
+    ReadDone { id: ReadId, result: Result<Vec<u8>, ReadError> },
+    PasteRequested { generation: Gen, text: String },
+    PasteWaitExpired { generation: Gen },
+    CopyRequested { generation: Gen, text: String },
+    Pasted { generation: Gen },
+    RestoreDue { generation: Gen },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Note {
-    SnapshotTaken {
-        generation: Gen,
-        what: Option<String>,
-    },
-    SnapshotInherited {
-        generation: Gen,
-        from: Gen,
-    },
-    SnapshotFailed {
-        generation: Gen,
-        error: ReadError,
-    },
-    Resnapshot {
-        generation: Gen,
-    },
-    Frozen {
-        generation: Gen,
-        has_snapshot: bool,
-    },
-    Restored {
-        generation: Gen,
-        what: String,
-    },
-    RestoreSkipped {
-        generation: Gen,
-        reason: String,
-    },
-    TimerIgnored {
-        generation: Gen,
-    },
+    SnapshotTaken { generation: Gen, what: Option<String> },
+    SnapshotInherited { generation: Gen, from: Gen },
+    SnapshotFailed { generation: Gen, error: ReadError },
+    Resnapshot { generation: Gen },
+    Frozen { generation: Gen, has_snapshot: bool },
+    Restored { generation: Gen, what: String },
+    RestoreSkipped { generation: Gen, reason: String },
+    TimerIgnored { generation: Gen },
 }
 
 #[derive(Debug)]
@@ -215,10 +160,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Config {
-            restore_after: Duration::from_secs(5),
-            snapshot_wait: Duration::from_millis(100),
-        }
+        Config { restore_after: Duration::from_secs(5), snapshot_wait: Duration::from_millis(100) }
     }
 }
 
@@ -276,11 +218,7 @@ impl Machine {
 
     /// Bytes held for restore or for serving psst's own selection.
     pub fn held_bytes(&self) -> usize {
-        let p = self
-            .pending
-            .as_ref()
-            .and_then(|p| p.snapshot.as_ref())
-            .map_or(0, |s| s.data.len());
+        let p = self.pending.as_ref().and_then(|p| p.snapshot.as_ref()).map_or(0, |s| s.data.len());
         let o = self.own_content.as_ref().map_or(0, |(_, s)| s.data.len());
         p + o
     }
@@ -313,10 +251,7 @@ impl Machine {
                 }
             }
             Input::ReadDone { id, result } => {
-                if let Some(SnapReq {
-                    generation,
-                    state: SnapState::Reading { id: rid, mime },
-                }) = &self.snap
+                if let Some(SnapReq { generation, state: SnapState::Reading { id: rid, mime } }) = &self.snap
                     && *rid == id
                 {
                     let (generation, mime) = (*generation, mime.clone());
@@ -325,10 +260,7 @@ impl Machine {
                             let s = Snapshot { mime, data };
                             match &self.pending {
                                 Some(p) if s.is_text() && s.data == p.text.as_bytes() => {
-                                    out.push(Action::Note(Note::SnapshotInherited {
-                                        generation,
-                                        from: p.generation,
-                                    }));
+                                    out.push(Action::Note(Note::SnapshotInherited { generation, from: p.generation }));
                                     p.snapshot.clone()
                                 }
                                 _ => {
@@ -345,10 +277,7 @@ impl Machine {
                             None
                         }
                     };
-                    self.snap = Some(SnapReq {
-                        generation,
-                        state: SnapState::Done(done),
-                    });
+                    self.snap = Some(SnapReq { generation, state: SnapState::Done(done) });
                     if let Some((wgen, _)) = &self.waiting_paste
                         && *wgen == generation
                     {
@@ -359,56 +288,32 @@ impl Machine {
                     && rid == id
                 {
                     self.restore_check = None;
-                    let matches = self
-                        .pending
-                        .as_ref()
-                        .is_some_and(|p| p.generation == generation)
+                    let matches = self.pending.as_ref().is_some_and(|p| p.generation == generation)
                         && matches!(&result, Ok(d) if d == self.pending.as_ref().unwrap().text.as_bytes());
                     if matches {
                         self.restore(generation, &mut out);
-                    } else if self
-                        .pending
-                        .as_ref()
-                        .is_some_and(|p| p.generation == generation)
-                    {
+                    } else if self.pending.as_ref().is_some_and(|p| p.generation == generation) {
                         self.pending = None;
-                        out.push(Action::Note(Note::RestoreSkipped {
-                            generation,
-                            reason: "clipboard changed".into(),
-                        }));
+                        out.push(Action::Note(Note::RestoreSkipped { generation, reason: "clipboard changed".into() }));
                     }
                 }
             }
             Input::PasteRequested { generation, text } => {
-                if self
-                    .snap
-                    .as_ref()
-                    .is_none_or(|s| s.generation != generation)
-                {
+                if self.snap.as_ref().is_none_or(|s| s.generation != generation) {
                     // No SnapshotClipboard for this generation: take one now.
                     self.cancel_snapshot_read(&mut out);
                     let state = self.start_snapshot(generation, &mut out);
                     self.snap = Some(SnapReq { generation, state });
                 }
-                if matches!(
-                    self.snap.as_ref().map(|s| &s.state),
-                    Some(SnapState::Reading { .. })
-                ) {
+                if matches!(self.snap.as_ref().map(|s| &s.state), Some(SnapState::Reading { .. })) {
                     self.waiting_paste = Some((generation, text));
-                    out.push(Action::WaitForSnapshot {
-                        generation,
-                        max: self.cfg.snapshot_wait,
-                    });
+                    out.push(Action::WaitForSnapshot { generation, max: self.cfg.snapshot_wait });
                 } else {
                     self.freeze(generation, text, &mut out);
                 }
             }
             Input::PasteWaitExpired { generation } => {
-                if self
-                    .waiting_paste
-                    .as_ref()
-                    .is_some_and(|(g, _)| *g == generation)
-                {
+                if self.waiting_paste.as_ref().is_some_and(|(g, _)| *g == generation) {
                     let (generation, text) = self.waiting_paste.take().unwrap();
                     self.freeze(generation, text, &mut out);
                 }
@@ -425,40 +330,26 @@ impl Machine {
                         reason: "copy requested".into(),
                     }));
                 }
-                self.own_content =
-                    Some((OwnKind::Copy(generation), Arc::new(Snapshot::text(&text))));
+                self.own_content = Some((OwnKind::Copy(generation), Arc::new(Snapshot::text(&text))));
                 out.push(Action::StartCopy { generation });
             }
             Input::Pasted { generation } => {
                 if let Some(p) = self.pending.as_mut().filter(|p| p.generation == generation) {
                     p.armed = true;
-                    out.push(Action::ScheduleRestore {
-                        generation,
-                        after: self.cfg.restore_after,
-                    });
+                    out.push(Action::ScheduleRestore { generation, after: self.cfg.restore_after });
                 }
             }
             Input::RestoreDue { generation } => {
-                if !self
-                    .pending
-                    .as_ref()
-                    .is_some_and(|p| p.generation == generation && p.armed)
-                {
+                if !self.pending.as_ref().is_some_and(|p| p.generation == generation && p.armed) {
                     out.push(Action::Note(Note::TimerIgnored { generation }));
                     return out;
                 }
                 match self.owner.clone() {
-                    Owner::Ours(OwnKind::Dictation(g)) if g == generation => {
-                        self.restore(generation, &mut out)
-                    }
+                    Owner::Ours(OwnKind::Dictation(g)) if g == generation => self.restore(generation, &mut out),
                     Owner::External { offer, mimes } => match choose_text_mime(&mimes) {
                         Some(m) => {
                             let id = self.alloc_read();
-                            out.push(Action::Read {
-                                id,
-                                offer,
-                                mime: m.to_owned(),
-                            });
+                            out.push(Action::Read { id, offer, mime: m.to_owned() });
                             self.restore_check = Some((id, generation));
                         }
                         None => {
@@ -487,62 +378,37 @@ impl Machine {
     }
 
     fn cancel_snapshot_read(&mut self, out: &mut Vec<Action>) {
-        if let Some(SnapReq {
-            state: SnapState::Reading { id, .. },
-            ..
-        }) = &self.snap
-        {
+        if let Some(SnapReq { state: SnapState::Reading { id, .. }, .. }) = &self.snap {
             out.push(Action::CancelRead { id: *id });
         }
     }
 
     fn start_snapshot(&mut self, generation: Gen, out: &mut Vec<Action>) -> SnapState {
         match self.owner.clone() {
-            Owner::Ours(OwnKind::Dictation(g))
-                if self.pending.as_ref().is_some_and(|p| p.generation == g) =>
-            {
-                out.push(Action::Note(Note::SnapshotInherited {
-                    generation,
-                    from: g,
-                }));
+            Owner::Ours(OwnKind::Dictation(g)) if self.pending.as_ref().is_some_and(|p| p.generation == g) => {
+                out.push(Action::Note(Note::SnapshotInherited { generation, from: g }));
                 SnapState::Done(self.pending.as_ref().unwrap().snapshot.clone())
             }
             Owner::Ours(_) => {
                 // psst serves the clipboard (a copy, a restore, or a dictation
                 // whose restore was dropped): snapshot what it serves.
                 let s = self.own_content.as_ref().map(|(_, s)| s.clone());
-                out.push(Action::Note(Note::SnapshotTaken {
-                    generation,
-                    what: s.as_ref().map(|s| s.describe()),
-                }));
+                out.push(Action::Note(Note::SnapshotTaken { generation, what: s.as_ref().map(|s| s.describe()) }));
                 SnapState::Done(s)
             }
             Owner::External { offer, mimes } => match choose_mime(&mimes) {
                 Some(m) => {
                     let id = self.alloc_read();
-                    out.push(Action::Read {
-                        id,
-                        offer,
-                        mime: m.to_owned(),
-                    });
-                    SnapState::Reading {
-                        id,
-                        mime: m.to_owned(),
-                    }
+                    out.push(Action::Read { id, offer, mime: m.to_owned() });
+                    SnapState::Reading { id, mime: m.to_owned() }
                 }
                 None => {
-                    out.push(Action::Note(Note::SnapshotTaken {
-                        generation,
-                        what: None,
-                    }));
+                    out.push(Action::Note(Note::SnapshotTaken { generation, what: None }));
                     SnapState::Done(None)
                 }
             },
             Owner::Empty | Owner::Unknown => {
-                out.push(Action::Note(Note::SnapshotTaken {
-                    generation,
-                    what: None,
-                }));
+                out.push(Action::Note(Note::SnapshotTaken { generation, what: None }));
                 SnapState::Done(None)
             }
         }
@@ -550,14 +416,8 @@ impl Machine {
 
     fn freeze(&mut self, generation: Gen, text: String, out: &mut Vec<Action>) {
         let snapshot = match self.snap.take() {
-            Some(SnapReq {
-                generation: g,
-                state: SnapState::Done(s),
-            }) if g == generation => s,
-            Some(SnapReq {
-                state: SnapState::Reading { id, .. },
-                ..
-            }) => {
+            Some(SnapReq { generation: g, state: SnapState::Done(s) }) if g == generation => s,
+            Some(SnapReq { state: SnapState::Reading { id, .. }, .. }) => {
                 out.push(Action::CancelRead { id });
                 out.push(Action::Note(Note::RestoreSkipped {
                     generation,
@@ -567,21 +427,10 @@ impl Machine {
             }
             _ => None,
         };
-        out.push(Action::Note(Note::Frozen {
-            generation,
-            has_snapshot: snapshot.is_some(),
-        }));
+        out.push(Action::Note(Note::Frozen { generation, has_snapshot: snapshot.is_some() }));
         // The restore state exists before the selection changes.
-        self.own_content = Some((
-            OwnKind::Dictation(generation),
-            Arc::new(Snapshot::text(&text)),
-        ));
-        self.pending = Some(Pending {
-            generation,
-            text,
-            snapshot,
-            armed: false,
-        });
+        self.own_content = Some((OwnKind::Dictation(generation), Arc::new(Snapshot::text(&text))));
+        self.pending = Some(Pending { generation, text, snapshot, armed: false });
         out.push(Action::StartPaste { generation });
     }
 
@@ -589,15 +438,9 @@ impl Machine {
         let p = self.pending.take().expect("restore without pending");
         match p.snapshot {
             Some(s) => {
-                out.push(Action::Note(Note::Restored {
-                    generation,
-                    what: s.describe(),
-                }));
+                out.push(Action::Note(Note::Restored { generation, what: s.describe() }));
                 self.own_content = Some((OwnKind::Restore(generation), s.clone()));
-                out.push(Action::OfferRestore {
-                    generation,
-                    snapshot: s,
-                });
+                out.push(Action::OfferRestore { generation, snapshot: s });
             }
             None => out.push(Action::Note(Note::RestoreSkipped {
                 generation,
@@ -612,10 +455,7 @@ mod tests {
     use super::*;
 
     fn ext(offer: OfferKey, mimes: &[&str]) -> Owner {
-        Owner::External {
-            offer,
-            mimes: mimes.iter().map(|s| s.to_string()).collect(),
-        }
+        Owner::External { offer, mimes: mimes.iter().map(|s| s.to_string()).collect() }
     }
 
     fn read_of(actions: &[Action]) -> Option<(ReadId, OfferKey, String)> {
@@ -641,22 +481,11 @@ mod tests {
         let a = m.handle(Input::SnapshotRequested { generation });
         if let Some(clip) = clip {
             let (id, _, _) = read_of(&a).expect("read");
-            m.handle(Input::ReadDone {
-                id,
-                result: Ok(clip.as_bytes().to_vec()),
-            });
+            m.handle(Input::ReadDone { id, result: Ok(clip.as_bytes().to_vec()) });
         }
-        let a = m.handle(Input::PasteRequested {
-            generation,
-            text: text.into(),
-        });
-        assert!(has(
-            &a,
-            |a| matches!(a, Action::StartPaste { generation: g } if *g == generation)
-        ));
-        m.handle(Input::SelectionChanged(Owner::Ours(OwnKind::Dictation(
-            generation,
-        ))));
+        let a = m.handle(Input::PasteRequested { generation, text: text.into() });
+        assert!(has(&a, |a| matches!(a, Action::StartPaste { generation: g } if *g == generation)));
+        m.handle(Input::SelectionChanged(Owner::Ours(OwnKind::Dictation(generation))));
         let a = m.handle(Input::Pasted { generation });
         assert!(has(&a, |a| matches!(a, Action::ScheduleRestore { .. })));
     }
@@ -664,14 +493,8 @@ mod tests {
     #[test]
     fn prefers_plain_text_then_first_type() {
         let m = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(
-            choose_mime(&m(&["text/html", "STRING", "text/plain"])),
-            Some("text/plain")
-        );
-        assert_eq!(
-            choose_mime(&m(&["image/png", "image/jpeg"])),
-            Some("image/png")
-        );
+        assert_eq!(choose_mime(&m(&["text/html", "STRING", "text/plain"])), Some("text/plain"));
+        assert_eq!(choose_mime(&m(&["image/png", "image/jpeg"])), Some("image/png"));
         assert_eq!(choose_mime(&m(&[])), None);
     }
 
@@ -691,23 +514,14 @@ mod tests {
         m.handle(Input::SelectionChanged(ext(1, &["text/plain"])));
         let a = m.handle(Input::SnapshotRequested { generation: 1 });
         let (id, _, _) = read_of(&a).unwrap();
-        m.handle(Input::ReadDone {
-            id,
-            result: Ok(b"first".to_vec()),
-        });
+        m.handle(Input::ReadDone { id, result: Ok(b"first".to_vec()) });
         let a = m.handle(Input::SelectionChanged(ext(2, &["text/plain"])));
         let (id2, offer, _) = read_of(&a).expect("re-snapshot");
         assert_eq!(offer, 2);
-        m.handle(Input::ReadDone {
-            id: id2,
-            result: Ok(b"second".to_vec()),
-        });
+        m.handle(Input::ReadDone { id: id2, result: Ok(b"second".to_vec()) });
         let a = m.handle(Input::SelectionChanged(Owner::Ours(OwnKind::Copy(9))));
         assert!(read_of(&a).is_none(), "own change must not re-snapshot");
-        m.handle(Input::PasteRequested {
-            generation: 1,
-            text: "d".into(),
-        });
+        m.handle(Input::PasteRequested { generation: 1, text: "d".into() });
         m.handle(Input::SelectionChanged(Owner::Ours(OwnKind::Dictation(1))));
         m.handle(Input::Pasted { generation: 1 });
         let a = m.handle(Input::RestoreDue { generation: 1 });
@@ -722,32 +536,17 @@ mod tests {
         // Second dictation while psst owns the selection: inherits.
         let a = m.handle(Input::SnapshotRequested { generation: 2 });
         assert!(read_of(&a).is_none());
-        assert!(has(&a, |a| matches!(
-            a,
-            Action::Note(Note::SnapshotInherited {
-                generation: 2,
-                from: 1
-            })
-        )));
-        m.handle(Input::PasteRequested {
-            generation: 2,
-            text: "two".into(),
-        });
+        assert!(has(&a, |a| matches!(a, Action::Note(Note::SnapshotInherited { generation: 2, from: 1 }))));
+        m.handle(Input::PasteRequested { generation: 2, text: "two".into() });
         m.handle(Input::SelectionChanged(Owner::Ours(OwnKind::Dictation(2))));
         m.handle(Input::Pasted { generation: 2 });
         // The first timer fires: superseded, ignored.
         let a = m.handle(Input::RestoreDue { generation: 1 });
         assert!(restored(&a).is_none());
-        assert!(has(&a, |a| matches!(
-            a,
-            Action::Note(Note::TimerIgnored { generation: 1 })
-        )));
+        assert!(has(&a, |a| matches!(a, Action::Note(Note::TimerIgnored { generation: 1 }))));
         let a = m.handle(Input::RestoreDue { generation: 2 });
         let s = restored(&a).unwrap();
-        assert_eq!(
-            (s.mime.as_str(), s.data.as_slice()),
-            ("image/png", &b"PNGDATA"[..])
-        );
+        assert_eq!((s.mime.as_str(), s.data.as_slice()), ("image/png", &b"PNGDATA"[..]));
     }
 
     #[test]
@@ -755,35 +554,15 @@ mod tests {
         let mut m = Machine::new(Config::default());
         m.handle(Input::SelectionChanged(ext(1, &["text/plain"])));
         dictate(&mut m, 1, "one", Some("orig"));
-        m.handle(Input::SelectionChanged(ext(
-            2,
-            &["text/plain;charset=utf-8"],
-        )));
+        m.handle(Input::SelectionChanged(ext(2, &["text/plain;charset=utf-8"])));
         let a = m.handle(Input::SnapshotRequested { generation: 2 });
         let (id, _, _) = read_of(&a).unwrap();
-        let a = m.handle(Input::ReadDone {
-            id,
-            result: Ok(b"one".to_vec()),
-        });
-        assert!(has(&a, |a| matches!(
-            a,
-            Action::Note(Note::SnapshotInherited {
-                generation: 2,
-                from: 1
-            })
-        )));
-        m.handle(Input::PasteRequested {
-            generation: 2,
-            text: "two".into(),
-        });
+        let a = m.handle(Input::ReadDone { id, result: Ok(b"one".to_vec()) });
+        assert!(has(&a, |a| matches!(a, Action::Note(Note::SnapshotInherited { generation: 2, from: 1 }))));
+        m.handle(Input::PasteRequested { generation: 2, text: "two".into() });
         m.handle(Input::SelectionChanged(Owner::Ours(OwnKind::Dictation(2))));
         m.handle(Input::Pasted { generation: 2 });
-        assert_eq!(
-            restored(&m.handle(Input::RestoreDue { generation: 2 }))
-                .unwrap()
-                .data,
-            b"orig"
-        );
+        assert_eq!(restored(&m.handle(Input::RestoreDue { generation: 2 })).unwrap().data, b"orig");
     }
 
     #[test]
@@ -795,10 +574,7 @@ mod tests {
         let a = m.handle(Input::RestoreDue { generation: 1 });
         let (id, offer, _) = read_of(&a).unwrap();
         assert_eq!(offer, 2);
-        let a = m.handle(Input::ReadDone {
-            id,
-            result: Ok(b"one".to_vec()),
-        });
+        let a = m.handle(Input::ReadDone { id, result: Ok(b"one".to_vec()) });
         assert_eq!(restored(&a).unwrap().data, b"orig");
     }
 
@@ -810,10 +586,7 @@ mod tests {
         m.handle(Input::SelectionChanged(ext(2, &["text/plain"])));
         let a = m.handle(Input::RestoreDue { generation: 1 });
         let (id, _, _) = read_of(&a).unwrap();
-        let a = m.handle(Input::ReadDone {
-            id,
-            result: Ok(b"user copy".to_vec()),
-        });
+        let a = m.handle(Input::ReadDone { id, result: Ok(b"user copy".to_vec()) });
         assert!(restored(&a).is_none());
         assert!(!m.has_pending_restore());
         // Non-text owner: skipped without reading.
@@ -830,25 +603,13 @@ mod tests {
         m.handle(Input::SelectionChanged(ext(1, &["text/plain"])));
         let a = m.handle(Input::SnapshotRequested { generation: 1 });
         let (id, _, _) = read_of(&a).unwrap();
-        let a = m.handle(Input::PasteRequested {
-            generation: 1,
-            text: "d".into(),
-        });
+        let a = m.handle(Input::PasteRequested { generation: 1, text: "d".into() });
         assert!(has(&a, |a| matches!(a, Action::WaitForSnapshot { .. })));
         let a = m.handle(Input::PasteWaitExpired { generation: 1 });
-        assert!(has(
-            &a,
-            |a| matches!(a, Action::CancelRead { id: i } if *i == id)
-        ));
-        assert!(has(&a, |a| matches!(
-            a,
-            Action::StartPaste { generation: 1 }
-        )));
+        assert!(has(&a, |a| matches!(a, Action::CancelRead { id: i } if *i == id)));
+        assert!(has(&a, |a| matches!(a, Action::StartPaste { generation: 1 })));
         // A late read result is ignored.
-        m.handle(Input::ReadDone {
-            id,
-            result: Ok(b"late".to_vec()),
-        });
+        m.handle(Input::ReadDone { id, result: Ok(b"late".to_vec()) });
         m.handle(Input::SelectionChanged(Owner::Ours(OwnKind::Dictation(1))));
         m.handle(Input::Pasted { generation: 1 });
         let a = m.handle(Input::RestoreDue { generation: 1 });
@@ -861,25 +622,10 @@ mod tests {
         m.handle(Input::SelectionChanged(ext(1, &["text/plain"])));
         let a = m.handle(Input::SnapshotRequested { generation: 1 });
         let (id, _, _) = read_of(&a).unwrap();
-        m.handle(Input::PasteRequested {
-            generation: 1,
-            text: "d".into(),
-        });
-        let a = m.handle(Input::ReadDone {
-            id,
-            result: Ok(b"orig".to_vec()),
-        });
-        assert!(has(&a, |a| matches!(
-            a,
-            Action::StartPaste { generation: 1 }
-        )));
-        assert!(has(&a, |a| matches!(
-            a,
-            Action::Note(Note::Frozen {
-                generation: 1,
-                has_snapshot: true
-            })
-        )));
+        m.handle(Input::PasteRequested { generation: 1, text: "d".into() });
+        let a = m.handle(Input::ReadDone { id, result: Ok(b"orig".to_vec()) });
+        assert!(has(&a, |a| matches!(a, Action::StartPaste { generation: 1 })));
+        assert!(has(&a, |a| matches!(a, Action::Note(Note::Frozen { generation: 1, has_snapshot: true }))));
     }
 
     #[test]
@@ -909,14 +655,8 @@ mod tests {
         let mut m = Machine::new(Config::default());
         m.handle(Input::SelectionChanged(ext(1, &["text/plain"])));
         dictate(&mut m, 1, "one", Some("orig"));
-        let a = m.handle(Input::CopyRequested {
-            generation: 2,
-            text: "copied".into(),
-        });
-        assert!(has(&a, |a| matches!(
-            a,
-            Action::StartCopy { generation: 2 }
-        )));
+        let a = m.handle(Input::CopyRequested { generation: 2, text: "copied".into() });
+        assert!(has(&a, |a| matches!(a, Action::StartCopy { generation: 2 })));
         m.handle(Input::SelectionChanged(Owner::Ours(OwnKind::Copy(2))));
         let a = m.handle(Input::RestoreDue { generation: 1 });
         assert!(restored(&a).is_none());

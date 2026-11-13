@@ -14,9 +14,7 @@ use std::time::Duration;
 
 use calloop::generic::Generic;
 use calloop::timer::{TimeoutAction, Timer};
-use calloop::{
-    EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction, RegistrationToken, channel,
-};
+use calloop::{EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction, RegistrationToken, channel};
 use calloop_wayland_source::WaylandSource;
 use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
 use rustix::io::Errno;
@@ -25,13 +23,10 @@ use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::{wl_callback::WlCallback, wl_registry::WlRegistry, wl_seat::WlSeat};
 use wayland_client::{Connection, Dispatch, QueueHandle};
 use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
-    zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
-    zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+    zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1, zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
 };
 
-use crate::clipboard::{
-    self, Action, Gen, Input, Machine, Note, OfferKey, OwnKind, Owner, ReadError, ReadId,
-};
+use crate::clipboard::{self, Action, Gen, Input, Machine, Note, OfferKey, OwnKind, Owner, ReadError, ReadId};
 use crate::clock::{now_ms_u32, now_us};
 use crate::dc::{Bytes, DcDevice, DcHandler, DcManager, DcOffer, DcSource, Proto};
 use crate::keymap;
@@ -79,13 +74,8 @@ pub struct PasteTiming {
 
 #[derive(Debug)]
 pub enum Evt {
-    Pasted {
-        generation: Gen,
-        timing: PasteTiming,
-    },
-    Copied {
-        generation: Gen,
-    },
+    Pasted { generation: Gen, timing: PasteTiming },
+    Copied { generation: Gen },
     ChordSent,
     Selection(Owner),
     Note(Note),
@@ -150,15 +140,8 @@ pub fn spawn(opts: Options) -> Result<Handle, String> {
             }
         })
         .map_err(|e| e.to_string())?;
-    let proto = irx
-        .recv()
-        .map_err(|_| "wayland thread died".to_string())??;
-    Ok(Handle {
-        tx,
-        rx: erx,
-        proto,
-        join: Some(join),
-    })
+    let proto = irx.recv().map_err(|_| "wayland thread died".to_string())??;
+    Ok(Handle { tx, rx: erx, proto, join: Some(join) })
 }
 
 #[derive(Debug)]
@@ -205,29 +188,19 @@ fn run(
     init: mpsc::Sender<Result<Proto, String>>,
 ) -> Result<(), String> {
     let conn = Connection::connect_to_env().map_err(|e| format!("connect: {e}"))?;
-    let (globals, queue) =
-        registry_queue_init::<State>(&conn).map_err(|e| format!("registry: {e}"))?;
+    let (globals, queue) = registry_queue_init::<State>(&conn).map_err(|e| format!("registry: {e}"))?;
     let qh = queue.handle();
-    let seat: WlSeat = globals
-        .bind(&qh, 1..=8, ())
-        .map_err(|e| format!("wl_seat: {e}"))?;
+    let seat: WlSeat = globals.bind(&qh, 1..=8, ()).map_err(|e| format!("wl_seat: {e}"))?;
     let dc = DcManager::bind(&globals, &qh, opts.proto)?;
     let device = dc.get_device(&seat, &qh);
-    let vkm: ZwpVirtualKeyboardManagerV1 = globals
-        .bind(&qh, 1..=1, ())
-        .map_err(|e| format!("zwp_virtual_keyboard_manager_v1: {e}"))?;
+    let vkm: ZwpVirtualKeyboardManagerV1 =
+        globals.bind(&qh, 1..=1, ()).map_err(|e| format!("zwp_virtual_keyboard_manager_v1: {e}"))?;
     let vk = vkm.create_virtual_keyboard(&seat, &qh, ());
-    let km = if opts.minimal_keymap {
-        keymap::PASTE_KEYMAP_MINIMAL
-    } else {
-        keymap::PASTE_KEYMAP
-    };
+    let km = if opts.minimal_keymap { keymap::PASTE_KEYMAP_MINIMAL } else { keymap::PASTE_KEYMAP };
     keymap::upload(&vk, km).map_err(|e| format!("keymap: {e}"))?;
 
     let mut el: EventLoop<'static, State> = EventLoop::try_new().map_err(|e| e.to_string())?;
-    WaylandSource::new(conn.clone(), queue)
-        .insert(el.handle())
-        .map_err(|e| e.to_string())?;
+    WaylandSource::new(conn.clone(), queue).insert(el.handle()).map_err(|e| e.to_string())?;
     el.handle()
         .insert_source(chan, |ev, _, st: &mut State| match ev {
             channel::Event::Msg(cmd) => st.on_cmd(cmd),
@@ -258,8 +231,7 @@ fn run(
     conn.display().sync(&qh, SyncTag::Init);
     conn.flush().map_err(|e| e.to_string())?;
     while !st.initialized {
-        el.dispatch(Duration::from_secs(2), &mut st)
-            .map_err(|e| e.to_string())?;
+        el.dispatch(Duration::from_secs(2), &mut st).map_err(|e| e.to_string())?;
     }
     let _ = init.send(Ok(proto));
     el.run(None, &mut st, |_| {}).map_err(|e| e.to_string())
@@ -285,43 +257,14 @@ impl State {
     fn on_cmd(&mut self, cmd: Cmd) {
         match cmd {
             Cmd::Snapshot { generation } => self.feed(Input::SnapshotRequested { generation }),
-            Cmd::Paste {
-                generation,
-                text,
-                chord,
-                delay_ms,
-                t_ready_us,
-            } => {
-                let timing = PasteTiming {
-                    ready: t_ready_us,
-                    cmd: now_us(),
-                    ..Default::default()
-                };
-                self.jobs.insert(
-                    generation,
-                    Job {
-                        text: text.clone(),
-                        chord,
-                        delay_ms,
-                        timing,
-                    },
-                );
+            Cmd::Paste { generation, text, chord, delay_ms, t_ready_us } => {
+                let timing = PasteTiming { ready: t_ready_us, cmd: now_us(), ..Default::default() };
+                self.jobs.insert(generation, Job { text: text.clone(), chord, delay_ms, timing });
                 self.feed(Input::PasteRequested { generation, text });
             }
             Cmd::Copy { generation, text } => {
-                let timing = PasteTiming {
-                    cmd: now_us(),
-                    ..Default::default()
-                };
-                self.jobs.insert(
-                    generation,
-                    Job {
-                        text: text.clone(),
-                        chord: Chord::CtrlV,
-                        delay_ms: 0,
-                        timing,
-                    },
-                );
+                let timing = PasteTiming { cmd: now_us(), ..Default::default() };
+                self.jobs.insert(generation, Job { text: text.clone(), chord: Chord::CtrlV, delay_ms: 0, timing });
                 self.feed(Input::CopyRequested { generation, text });
             }
             Cmd::ChordOnly { chord } => {
@@ -358,50 +301,27 @@ impl State {
                 }
             }
             Action::WaitForSnapshot { generation, max } => {
-                self.after(max, move |st| {
-                    st.feed(Input::PasteWaitExpired { generation })
-                });
+                self.after(max, move |st| st.feed(Input::PasteWaitExpired { generation }));
             }
             Action::StartPaste { generation } => {
-                let text = self
-                    .jobs
-                    .get(&generation)
-                    .map(|j| j.text.clone())
-                    .unwrap_or_default();
-                self.set_own_selection(
-                    Arc::new(clipboard::Snapshot::text(&text)),
-                    OwnKind::Dictation(generation),
-                );
+                let text = self.jobs.get(&generation).map(|j| j.text.clone()).unwrap_or_default();
+                self.set_own_selection(Arc::new(clipboard::Snapshot::text(&text)), OwnKind::Dictation(generation));
                 if let Some(j) = self.jobs.get_mut(&generation) {
                     j.timing.set_selection = now_us();
                 }
-                self.conn
-                    .display()
-                    .sync(&self.qh, SyncTag::PasteSet(generation));
+                self.conn.display().sync(&self.qh, SyncTag::PasteSet(generation));
                 self.flush();
             }
             Action::StartCopy { generation } => {
-                let text = self
-                    .jobs
-                    .get(&generation)
-                    .map(|j| j.text.clone())
-                    .unwrap_or_default();
-                self.set_own_selection(
-                    Arc::new(clipboard::Snapshot::text(&text)),
-                    OwnKind::Copy(generation),
-                );
-                self.conn
-                    .display()
-                    .sync(&self.qh, SyncTag::CopySet(generation));
+                let text = self.jobs.get(&generation).map(|j| j.text.clone()).unwrap_or_default();
+                self.set_own_selection(Arc::new(clipboard::Snapshot::text(&text)), OwnKind::Copy(generation));
+                self.conn.display().sync(&self.qh, SyncTag::CopySet(generation));
                 self.flush();
             }
             Action::ScheduleRestore { generation, after } => {
                 self.after(after, move |st| st.feed(Input::RestoreDue { generation }));
             }
-            Action::OfferRestore {
-                generation,
-                snapshot,
-            } => {
+            Action::OfferRestore { generation, snapshot } => {
                 self.set_own_selection(snapshot, OwnKind::Restore(generation));
                 self.flush();
             }
@@ -410,11 +330,8 @@ impl State {
     }
 
     fn set_own_selection(&mut self, content: Arc<clipboard::Snapshot>, kind: OwnKind) {
-        let items: Vec<(String, Bytes)> = content
-            .offer_mimes()
-            .into_iter()
-            .map(|m| (m, content.clone() as Bytes))
-            .collect();
+        let items: Vec<(String, Bytes)> =
+            content.offer_mimes().into_iter().map(|m| (m, content.clone() as Bytes)).collect();
         let src = self.dc.create_source(&self.qh, items);
         self.device.set_selection(Some(&src));
         self.latest = Some((src, kind));
@@ -443,9 +360,7 @@ impl State {
                 job.timing.sync1 = now_us();
                 let delay = job.delay_ms;
                 if delay > 0 {
-                    self.after(Duration::from_millis(delay as u64), move |st| {
-                        st.chord_for(generation)
-                    });
+                    self.after(Duration::from_millis(delay as u64), move |st| st.chord_for(generation));
                 } else {
                     self.chord_for(generation);
                 }
@@ -453,10 +368,7 @@ impl State {
             SyncTag::PasteChord(generation) => {
                 if let Some(mut job) = self.jobs.remove(&generation) {
                     job.timing.sync2 = now_us();
-                    self.emit(Evt::Pasted {
-                        generation,
-                        timing: job.timing,
-                    });
+                    self.emit(Evt::Pasted { generation, timing: job.timing });
                     self.feed(Input::Pasted { generation });
                 }
             }
@@ -475,27 +387,19 @@ impl State {
         let chord = job.chord;
         job.timing.chord = now_us();
         self.send_chord(chord);
-        self.conn
-            .display()
-            .sync(&self.qh, SyncTag::PasteChord(generation));
+        self.conn.display().sync(&self.qh, SyncTag::PasteChord(generation));
         self.flush();
     }
 
     fn start_read(&mut self, id: ReadId, offer: OfferKey, mime: String) {
         let Some(o) = self.offers.get(&offer).cloned() else {
-            self.feed(Input::ReadDone {
-                id,
-                result: Err(ReadError::Io("offer is gone".into())),
-            });
+            self.feed(Input::ReadDone { id, result: Err(ReadError::Io("offer is gone".into())) });
             return;
         };
         let (r, w) = match pipe_with(PipeFlags::CLOEXEC) {
             Ok(p) => p,
             Err(e) => {
-                self.feed(Input::ReadDone {
-                    id,
-                    result: Err(ReadError::Io(e.to_string())),
-                });
+                self.feed(Input::ReadDone { id, result: Err(ReadError::Io(e.to_string())) });
                 return;
             }
         };
@@ -507,42 +411,36 @@ impl State {
         let mut buf = Vec::new();
         let fd_tok = self
             .lh
-            .insert_source(
-                Generic::new(r, Interest::READ, Mode::Level),
-                move |_, fd, st: &mut State| {
-                    let mut chunk = [0u8; 65536];
-                    loop {
-                        match rustix::io::read(&**fd, &mut chunk) {
-                            Ok(0) => {
-                                let data = std::mem::take(&mut buf);
-                                st.finish_read(id, Ok(data));
-                                return Ok(PostAction::Remove);
-                            }
-                            Ok(n) => {
-                                buf.extend_from_slice(&chunk[..n]);
-                                if buf.len() > cap {
-                                    st.finish_read(id, Err(ReadError::TooLarge));
-                                    return Ok(PostAction::Remove);
-                                }
-                            }
-                            Err(Errno::AGAIN) => return Ok(PostAction::Continue),
-                            Err(Errno::INTR) => continue,
-                            Err(e) => {
-                                st.finish_read(id, Err(ReadError::Io(e.to_string())));
+            .insert_source(Generic::new(r, Interest::READ, Mode::Level), move |_, fd, st: &mut State| {
+                let mut chunk = [0u8; 65536];
+                loop {
+                    match rustix::io::read(&**fd, &mut chunk) {
+                        Ok(0) => {
+                            let data = std::mem::take(&mut buf);
+                            st.finish_read(id, Ok(data));
+                            return Ok(PostAction::Remove);
+                        }
+                        Ok(n) => {
+                            buf.extend_from_slice(&chunk[..n]);
+                            if buf.len() > cap {
+                                st.finish_read(id, Err(ReadError::TooLarge));
                                 return Ok(PostAction::Remove);
                             }
                         }
+                        Err(Errno::AGAIN) => return Ok(PostAction::Continue),
+                        Err(Errno::INTR) => continue,
+                        Err(e) => {
+                            st.finish_read(id, Err(ReadError::Io(e.to_string())));
+                            return Ok(PostAction::Remove);
+                        }
                     }
-                },
-            )
+                }
+            })
             .expect("read source");
         let timer_tok = self.after(self.opts.read_timeout, move |st| {
             if let Some((fd_tok, _)) = st.reads.remove(&id) {
                 st.lh.remove(fd_tok);
-                st.feed(Input::ReadDone {
-                    id,
-                    result: Err(ReadError::Timeout),
-                });
+                st.feed(Input::ReadDone { id, result: Err(ReadError::Timeout) });
             }
         });
         self.reads.insert(id, (fd_tok, timer_tok));
@@ -559,21 +457,18 @@ impl State {
         set_nonblocking(&fd);
         let mut off = 0usize;
         self.lh
-            .insert_source(
-                Generic::new(fd, Interest::WRITE, Mode::Level),
-                move |_, fd, _st: &mut State| {
-                    let bytes = (*data).as_ref();
-                    while off < bytes.len() {
-                        match rustix::io::write(&**fd, &bytes[off..]) {
-                            Ok(n) => off += n,
-                            Err(Errno::AGAIN) => return Ok(PostAction::Continue),
-                            Err(Errno::INTR) => continue,
-                            Err(_) => return Ok(PostAction::Remove),
-                        }
+            .insert_source(Generic::new(fd, Interest::WRITE, Mode::Level), move |_, fd, _st: &mut State| {
+                let bytes = (*data).as_ref();
+                while off < bytes.len() {
+                    match rustix::io::write(&**fd, &bytes[off..]) {
+                        Ok(n) => off += n,
+                        Err(Errno::AGAIN) => return Ok(PostAction::Continue),
+                        Err(Errno::INTR) => continue,
+                        Err(_) => return Ok(PostAction::Remove),
                     }
-                    Ok(PostAction::Remove)
-                },
-            )
+                }
+                Ok(PostAction::Remove)
+            })
             .expect("write source");
     }
 }
@@ -588,11 +483,7 @@ impl DcHandler for State {
     fn dc_selection(&mut self, _: &Connection, offer: Option<DcOffer>) {
         // psst's own selection: our latest source is still alive (an external
         // set_selection cancels it before the new selection is announced).
-        let ours = self
-            .latest
-            .as_ref()
-            .filter(|(s, _)| s.is_live())
-            .map(|(_, k)| k.clone());
+        let ours = self.latest.as_ref().filter(|(s, _)| s.is_live()).map(|(_, k)| k.clone());
         if let Some(old) = self.current_offer.take()
             && let Some(o) = self.offers.remove(&old)
         {

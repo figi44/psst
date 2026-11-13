@@ -22,15 +22,11 @@ use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
-use smithay_client_toolkit::seat::keyboard::{
-    KeyEvent, KeyboardHandler, Keymap, Keysym, Modifiers, RawModifiers,
-};
+use smithay_client_toolkit::seat::keyboard::{KeyEvent, KeyboardHandler, Keymap, Keysym, Modifiers, RawModifiers};
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::xdg::XdgShell;
-use smithay_client_toolkit::shell::xdg::window::{
-    Window, WindowConfigure, WindowDecorations, WindowHandler,
-};
+use smithay_client_toolkit::shell::xdg::window::{Window, WindowConfigure, WindowDecorations, WindowHandler};
 use smithay_client_toolkit::shm::slot::SlotPool;
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{delegate_registry, registry_handlers};
@@ -78,9 +74,7 @@ fn main() {
     let (globals, queue) = registry_queue_init(&conn).expect("registry");
     let qh = queue.handle();
     let mut el: EventLoop<Target> = EventLoop::try_new().expect("event loop");
-    WaylandSource::new(conn.clone(), queue)
-        .insert(el.handle())
-        .expect("wayland source");
+    WaylandSource::new(conn.clone(), queue).insert(el.handle()).expect("wayland source");
 
     let compositor = CompositorState::bind(&globals, &qh).expect("wl_compositor");
     let xdg = XdgShell::bind(&globals, &qh).expect("xdg_wm_base");
@@ -108,18 +102,15 @@ fn main() {
         layout: 0,
     };
     loop {
-        el.dispatch(Duration::from_millis(500), &mut t)
-            .expect("dispatch");
+        el.dispatch(Duration::from_millis(500), &mut t).expect("dispatch");
     }
 }
 
 impl Target {
     fn draw(&mut self, w: u32, h: u32) {
         let stride = w as i32 * 4;
-        let (buffer, canvas) = self
-            .pool
-            .create_buffer(w as i32, h as i32, stride, wl_shm::Format::Argb8888)
-            .expect("buffer");
+        let (buffer, canvas) =
+            self.pool.create_buffer(w as i32, h as i32, stride, wl_shm::Format::Argb8888).expect("buffer");
         for px in canvas.as_chunks_mut::<4>().0 {
             *px = 0xff30_6090u32.to_le_bytes();
         }
@@ -132,10 +123,7 @@ impl Target {
     fn on_paste(&mut self, chord: &'static str, t_key: u64) {
         let m = self.mods;
         let mods = json!({"ctrl":m.ctrl,"shift":m.shift,"logo":m.logo,"alt":m.alt});
-        let offer = self
-            .data_device
-            .as_ref()
-            .and_then(|d| d.data().selection_offer());
+        let offer = self.data_device.as_ref().and_then(|d| d.data().selection_offer());
         let Some(offer) = offer else {
             emit(
                 json!({"ev":"paste","chord":chord,"mods":mods,"mimes":[],"text":null,"blobs":{},"t_key":t_key,"t_done":now_us()}),
@@ -144,10 +132,7 @@ impl Target {
         };
         let mut mimes: Vec<String> = offer.with_mime_types(|m| m.to_vec());
         mimes.dedup();
-        let text_mime = TEXT_MIMES
-            .iter()
-            .find(|t| mimes.iter().any(|m| m == *t))
-            .map(|s| s.to_string());
+        let text_mime = TEXT_MIMES.iter().find(|t| mimes.iter().any(|m| m == *t)).map(|s| s.to_string());
         let mut pipes = Vec::new();
         for m in &mimes {
             if TEXT_MIMES.contains(&m.as_str()) && Some(m) != text_mime.as_ref() {
@@ -181,10 +166,8 @@ impl Target {
                     blobs.insert(m, json!({"len": buf.len(), "fnv": fnv1a(&buf)}));
                 }
             }
-            emit(
-                json!({"ev":"paste","chord":chord,"mods":mods,"mimes":mimes,"text":text,"blobs":blobs,
-                        "layout":layout,"t_key":t_key,"t_done":now_us()}),
-            );
+            emit(json!({"ev":"paste","chord":chord,"mods":mods,"mimes":mimes,"text":text,"blobs":blobs,
+                        "layout":layout,"t_key":t_key,"t_done":now_us()}));
         });
     }
 }
@@ -214,43 +197,19 @@ impl KeyboardHandler for Target {
         emit(json!({"ev":"leave"}));
     }
 
-    fn press_key(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
-        _: u32,
-        e: KeyEvent,
-    ) {
+    fn press_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, e: KeyEvent) {
         let t_key = now_us();
         let m = self.mods;
-        emit(
-            json!({"ev":"key","sym":format!("{:?}", e.keysym),"utf8":e.utf8,"raw":e.raw_code,
-                    "ctrl":m.ctrl,"shift":m.shift,"logo":m.logo,"alt":m.alt,"layout":self.layout,"t":t_key}),
-        );
+        emit(json!({"ev":"key","sym":format!("{:?}", e.keysym),"utf8":e.utf8,"raw":e.raw_code,
+                    "ctrl":m.ctrl,"shift":m.shift,"logo":m.logo,"alt":m.alt,"layout":self.layout,"t":t_key}));
         if m.ctrl && (e.keysym == Keysym::v || e.keysym == Keysym::V) {
             self.on_paste(if m.shift { "ctrl+shift+v" } else { "ctrl+v" }, t_key);
         }
     }
 
-    fn repeat_key(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
-        _: u32,
-        _: KeyEvent,
-    ) {
-    }
+    fn repeat_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, _: KeyEvent) {}
 
-    fn release_key(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
-        _: u32,
-        _: KeyEvent,
-    ) {
+    fn release_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, _: KeyEvent) {
     }
 
     fn update_modifiers(
@@ -265,9 +224,7 @@ impl KeyboardHandler for Target {
     ) {
         self.mods = m;
         self.layout = layout;
-        emit(
-            json!({"ev":"mods","ctrl":m.ctrl,"shift":m.shift,"logo":m.logo,"alt":m.alt,"layout":layout}),
-        );
+        emit(json!({"ev":"mods","ctrl":m.ctrl,"shift":m.shift,"logo":m.logo,"alt":m.alt,"layout":layout}));
     }
 
     fn update_keymap(
@@ -292,32 +249,15 @@ impl SeatHandler for Target {
         &mut self.seat_state
     }
     fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
-    fn new_capability(
-        &mut self,
-        _: &Connection,
-        qh: &QueueHandle<Self>,
-        seat: wl_seat::WlSeat,
-        cap: Capability,
-    ) {
+    fn new_capability(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat, cap: Capability) {
         if self.data_device.is_none() {
             self.data_device = Some(self.ddm.get_data_device(qh, &seat));
         }
         if cap == Capability::Keyboard && self.keyboard.is_none() {
-            self.keyboard = Some(
-                self.seat_state
-                    .get_keyboard(qh, &seat, None)
-                    .expect("keyboard"),
-            );
+            self.keyboard = Some(self.seat_state.get_keyboard(qh, &seat, None).expect("keyboard"));
         }
     }
-    fn remove_capability(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: wl_seat::WlSeat,
-        _: Capability,
-    ) {
-    }
+    fn remove_capability(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat, _: Capability) {}
     fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
 }
 
@@ -325,14 +265,7 @@ impl WindowHandler for Target {
     fn request_close(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &Window) {
         std::process::exit(0);
     }
-    fn configure(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &Window,
-        c: WindowConfigure,
-        _: u32,
-    ) {
+    fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &Window, c: WindowConfigure, _: u32) {
         let w = c.new_size.0.map_or(320, |v| v.get());
         let h = c.new_size.1.map_or(200, |v| v.get());
         self.draw(w, h);
@@ -361,42 +294,13 @@ impl DataDeviceHandler for Target {
 }
 
 impl DataOfferHandler for Target {
-    fn source_actions(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &mut DragOffer,
-        _: DndAction,
-    ) {
-    }
-    fn selected_action(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &mut DragOffer,
-        _: DndAction,
-    ) {
-    }
+    fn source_actions(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &mut DragOffer, _: DndAction) {}
+    fn selected_action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &mut DragOffer, _: DndAction) {}
 }
 
 impl DataSourceHandler for Target {
-    fn accept_mime(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &WlDataSource,
-        _: Option<String>,
-    ) {
-    }
-    fn send_request(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &WlDataSource,
-        _: String,
-        _: WritePipe,
-    ) {
-    }
+    fn accept_mime(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: Option<String>) {}
+    fn send_request(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: String, _: WritePipe) {}
     fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
     fn dnd_dropped(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
     fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
@@ -404,14 +308,7 @@ impl DataSourceHandler for Target {
 }
 
 impl CompositorHandler for Target {
-    fn scale_factor_changed(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &wl_surface::WlSurface,
-        _: i32,
-    ) {
-    }
+    fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: i32) {}
     fn transform_changed(
         &mut self,
         _: &Connection,

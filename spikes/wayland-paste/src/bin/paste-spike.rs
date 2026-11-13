@@ -27,8 +27,7 @@ use wayland_paste::dc::{Bytes, DcDevice, DcHandler, DcManager, DcOffer, DcSource
 use wayland_paste::keymap;
 use wayland_paste::paster::{self, Chord, Cmd, Evt, Options, PasteTiming};
 use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
-    zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
-    zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+    zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1, zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
 };
 
 type Res<T> = Result<T, String>;
@@ -36,10 +35,7 @@ type Res<T> = Result<T, String>;
 fn main() {
     wayland_paste::guard::assert_sandbox();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (cmd, rest) = args
-        .split_first()
-        .map(|(c, r)| (c.as_str(), r.to_vec()))
-        .unwrap_or(("help", vec![]));
+    let (cmd, rest) = args.split_first().map(|(c, r)| (c.as_str(), r.to_vec())).unwrap_or(("help", vec![]));
     let a = Args::parse(&rest);
     let r = match cmd {
         "checks" => checks(&a),
@@ -196,11 +192,7 @@ impl Drop for Seeder {
 /// waits until its selection is set.
 fn spawn_seed(args: &[&str], proto: Proto) -> Res<Seeder> {
     let mut c = Command::new(exe("paste-spike"));
-    c.arg("seed")
-        .args(args)
-        .arg("--proto")
-        .arg(proto_name(proto))
-        .stdout(Stdio::piped());
+    c.arg("seed").args(args).arg("--proto").arg(proto_name(proto)).stdout(Stdio::piped());
     let mut child = c.spawn().map_err(|e| format!("spawn seed: {e}"))?;
     let mut out = BufReader::new(child.stdout.take().unwrap());
     let mut line = String::new();
@@ -251,15 +243,9 @@ fn fnv1a(data: &[u8]) -> String {
 }
 
 fn run_cmd(cmd: &str, args: &[&str]) -> Res<String> {
-    let o = Command::new(cmd)
-        .args(args)
-        .output()
-        .map_err(|e| format!("{cmd}: {e}"))?;
+    let o = Command::new(cmd).args(args).output().map_err(|e| format!("{cmd}: {e}"))?;
     if !o.status.success() {
-        return Err(format!(
-            "{cmd} {args:?}: {}",
-            String::from_utf8_lossy(&o.stderr)
-        ));
+        return Err(format!("{cmd} {args:?}: {}", String::from_utf8_lossy(&o.stderr)));
     }
     Ok(String::from_utf8_lossy(&o.stdout).into_owned())
 }
@@ -286,11 +272,7 @@ impl Ctx {
         let deadline = Instant::now() + timeout;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
-            let e = self
-                .p
-                .rx
-                .recv_timeout(left)
-                .map_err(|_| "paster: timed out".to_string())?;
+            let e = self.p.rx.recv_timeout(left).map_err(|_| "paster: timed out".to_string())?;
             if let Evt::Note(n) = &e {
                 self.notes.push(n.clone());
             }
@@ -313,26 +295,12 @@ impl Ctx {
     }
 
     /// Paste and wait for both `Pasted` and the target's paste event.
-    fn paste(
-        &mut self,
-        generation: u64,
-        text: &str,
-        chord: Chord,
-    ) -> Res<(PasteTiming, Value, Instant)> {
+    fn paste(&mut self, generation: u64, text: &str, chord: Chord) -> Res<(PasteTiming, Value, Instant)> {
         self.t.drain();
         let ready = now_us();
-        self.p.send(Cmd::Paste {
-            generation,
-            text: text.into(),
-            chord,
-            delay_ms: 0,
-            t_ready_us: ready,
-        });
+        self.p.send(Cmd::Paste { generation, text: text.into(), chord, delay_ms: 0, t_ready_us: ready });
         let timing = self.wait_evt(Duration::from_secs(3), |e| match e {
-            Evt::Pasted {
-                generation: g,
-                timing,
-            } if *g == generation => Some(timing.clone()),
+            Evt::Pasted { generation: g, timing } if *g == generation => Some(timing.clone()),
             _ => None,
         })?;
         let at = Instant::now();
@@ -343,9 +311,7 @@ impl Ctx {
     /// Ctrl+V without touching the clipboard: what does an app see now?
     fn probe(&mut self) -> Res<Value> {
         self.t.drain();
-        self.p.send(Cmd::ChordOnly {
-            chord: Chord::CtrlV,
-        });
+        self.p.send(Cmd::ChordOnly { chord: Chord::CtrlV });
         self.t.wait("paste", Duration::from_secs(3))
     }
 
@@ -370,23 +336,13 @@ fn text_of(v: &Value) -> Option<&str> {
 }
 
 fn mimes_of(v: &Value) -> Vec<String> {
-    v["mimes"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|m| m.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default()
+    v["mimes"].as_array().map(|a| a.iter().filter_map(|m| m.as_str().map(String::from)).collect()).unwrap_or_default()
 }
 
 fn expect_text(v: &Value, want: &str, what: &str) -> Res<()> {
     match text_of(v) {
         Some(t) if t == want => Ok(()),
-        other => Err(format!(
-            "{what}: expected {want:?}, got {other:?} (mimes {:?})",
-            mimes_of(v)
-        )),
+        other => Err(format!("{what}: expected {want:?}, got {other:?} (mimes {:?})", mimes_of(v))),
     }
 }
 
@@ -395,9 +351,7 @@ fn expect_text_mimes(v: &Value, what: &str) -> Res<()> {
     if m.len() == TEXT_MIMES.len() && TEXT_MIMES.iter().all(|t| m.iter().any(|x| x == t)) {
         Ok(())
     } else {
-        Err(format!(
-            "{what}: expected the five plain-text types, got {m:?}"
-        ))
+        Err(format!("{what}: expected the five plain-text types, got {m:?}"))
     }
 }
 
@@ -408,10 +362,7 @@ type Check = fn(&mut Ctx) -> Res<String>;
 fn checks(a: &Args) -> Res<()> {
     let proto = a.proto();
     let restore = Duration::from_millis(a.num("restore-ms", 5000));
-    let mut opts = Options {
-        proto,
-        ..Default::default()
-    };
+    let mut opts = Options { proto, ..Default::default() };
     opts.machine.restore_after = restore;
     // The paster first: on headless sway its virtual keyboard is the seat's
     // only keyboard, and the target needs one to get focus.
@@ -419,18 +370,8 @@ fn checks(a: &Args) -> Res<()> {
     let t = Target::spawn()?;
     let proto = p.proto;
     let compositor = std::env::var("PSST_SANDBOX_COMPOSITOR").unwrap_or_default();
-    println!(
-        "# checks: compositor={compositor} data-control={} restore_after={restore:?}",
-        proto_name(proto)
-    );
-    let mut ctx = Ctx {
-        p,
-        t,
-        proto,
-        generation: 0,
-        restore,
-        notes: vec![],
-    };
+    println!("# checks: compositor={compositor} data-control={} restore_after={restore:?}", proto_name(proto));
+    let mut ctx = Ctx { p, t, proto, generation: 0, restore, notes: vec![] };
 
     let mut all: Vec<(&str, Check)> = vec![
         ("plain-text", check_plain),
@@ -449,10 +390,7 @@ fn checks(a: &Args) -> Res<()> {
     if compositor == "niri" {
         all.push(("layouts-us-cz", check_layouts));
     }
-    let only: Vec<String> = a
-        .get("only")
-        .map(|s| s.split(',').map(String::from).collect())
-        .unwrap_or_default();
+    let only: Vec<String> = a.get("only").map(|s| s.split(',').map(String::from).collect()).unwrap_or_default();
     let mut failed = 0;
     for (name, f) in all {
         if !only.is_empty() && !only.iter().any(|o| o == name) {
@@ -463,10 +401,7 @@ fn checks(a: &Args) -> Res<()> {
         let r = f(&mut ctx);
         ctx.pump();
         match r {
-            Ok(detail) => println!(
-                "PASS {name} ({:.1}s): {detail}",
-                start.elapsed().as_secs_f32()
-            ),
+            Ok(detail) => println!("PASS {name} ({:.1}s): {detail}", start.elapsed().as_secs_f32()),
             Err(e) => {
                 failed += 1;
                 println!("FAIL {name}: {e}");
@@ -477,23 +412,12 @@ fn checks(a: &Args) -> Res<()> {
         }
     }
     println!("# {} failed", failed);
-    if failed > 0 {
-        Err(format!("{failed} checks failed"))
-    } else {
-        Ok(())
-    }
+    if failed > 0 { Err(format!("{failed} checks failed")) } else { Ok(()) }
 }
 
 fn check_plain(c: &mut Ctx) -> Res<String> {
-    let _s = spawn_seed(
-        &[
-            "--text",
-            "text/plain;charset=utf-8=orig plain ✓",
-            "--text",
-            "text/plain=orig plain ✓",
-        ],
-        c.proto,
-    )?;
+    let _s =
+        spawn_seed(&["--text", "text/plain;charset=utf-8=orig plain ✓", "--text", "text/plain=orig plain ✓"], c.proto)?;
     let g = c.next_gen();
     c.snapshot(g);
     let (timing, got, at) = c.paste(g, DICTATED, Chord::CtrlV)?;
@@ -554,10 +478,7 @@ fn check_image(c: &mut Ctx) -> Res<String> {
     if b["len"] != png.len() || b["fnv"] != fnv1a(&png) {
         return Err(format!("restored image differs: {b}"));
     }
-    Ok(format!(
-        "300 KiB image/png restored byte-identical ({} bytes)",
-        png.len()
-    ))
+    Ok(format!("300 KiB image/png restored byte-identical ({} bytes)", png.len()))
 }
 
 fn check_two_quick(c: &mut Ctx) -> Res<String> {
@@ -573,11 +494,7 @@ fn check_two_quick(c: &mut Ctx) -> Res<String> {
     expect_text(&got2, "second dictation", "second received")?;
     c.sleep_until(c.after_restore(at1));
     let mid = c.probe()?;
-    expect_text(
-        &mid,
-        "second dictation",
-        "after the first timer (must be ignored)",
-    )?;
+    expect_text(&mid, "second dictation", "after the first timer (must be ignored)")?;
     c.sleep_until(c.after_restore(at2));
     let after = c.probe()?;
     expect_text(&after, "orig two", "restored after the second")?;
@@ -596,12 +513,7 @@ fn check_manager(c: &mut Ctx) -> Res<String> {
     expect_text(&got1, "first via manager", "first received")?;
     // A clipboard manager takes ownership of the dictated text.
     let _m = spawn_seed(
-        &[
-            "--text",
-            "text/plain;charset=utf-8=first via manager",
-            "--text",
-            "text/plain=first via manager",
-        ],
+        &["--text", "text/plain;charset=utf-8=first via manager", "--text", "text/plain=first via manager"],
         c.proto,
     )?;
     std::thread::sleep(Duration::from_millis(200));
@@ -622,10 +534,7 @@ fn check_user_copy(c: &mut Ctx) -> Res<String> {
     let (_, got, at) = c.paste(g, "dictation uc", Chord::CtrlV)?;
     expect_text(&got, "dictation uc", "received")?;
     std::thread::sleep(Duration::from_millis(1000));
-    let _u = spawn_seed(
-        &["--text", "text/plain;charset=utf-8=user copied this"],
-        c.proto,
-    )?;
+    let _u = spawn_seed(&["--text", "text/plain;charset=utf-8=user copied this"], c.proto)?;
     c.sleep_until(c.after_restore(at));
     let after = c.probe()?;
     expect_text(&after, "user copied this", "clipboard after the window")?;
@@ -648,10 +557,7 @@ fn check_external_before_paste(c: &mut Ctx) -> Res<String> {
 }
 
 fn check_empty(c: &mut Ctx) -> Res<String> {
-    run_cmd(
-        exe("paste-spike").to_str().unwrap(),
-        &["clear", "--proto", proto_name(c.proto)],
-    )?;
+    run_cmd(exe("paste-spike").to_str().unwrap(), &["clear", "--proto", proto_name(c.proto)])?;
     std::thread::sleep(Duration::from_millis(100));
     let g = c.next_gen();
     c.snapshot(g);
@@ -666,10 +572,7 @@ fn check_empty(c: &mut Ctx) -> Res<String> {
 fn check_oversize(c: &mut Ctx) -> Res<String> {
     let big = pseudo_random(11 * 1024 * 1024, 11);
     let path = sandbox_file("seed.bin", &big);
-    let _s = spawn_seed(
-        &["--file", &format!("application/octet-stream={path}")],
-        c.proto,
-    )?;
+    let _s = spawn_seed(&["--file", &format!("application/octet-stream={path}")], c.proto)?;
     let g = c.next_gen();
     c.snapshot(g);
     std::thread::sleep(Duration::from_millis(300));
@@ -679,30 +582,14 @@ fn check_oversize(c: &mut Ctx) -> Res<String> {
     let after = c.probe()?;
     expect_text(&after, "dictation big", "clipboard after the window")?;
     c.pump();
-    if !c.noted(|n| {
-        matches!(
-            n,
-            Note::SnapshotFailed {
-                error: ReadError::TooLarge,
-                ..
-            }
-        )
-    }) {
+    if !c.noted(|n| matches!(n, Note::SnapshotFailed { error: ReadError::TooLarge, .. })) {
         return Err("expected SnapshotFailed TooLarge".into());
     }
     Ok("11 MiB selection: snapshot refused (>10 MB), no restore".into())
 }
 
 fn check_slow_source(c: &mut Ctx) -> Res<String> {
-    let _s = spawn_seed(
-        &[
-            "--text",
-            "text/plain;charset=utf-8=orig slow",
-            "--delay-ms",
-            "500",
-        ],
-        c.proto,
-    )?;
+    let _s = spawn_seed(&["--text", "text/plain;charset=utf-8=orig slow", "--delay-ms", "500"], c.proto)?;
     let g = c.next_gen();
     c.snapshot(g);
     let (timing, got, at) = c.paste(g, "dictation slow", Chord::CtrlV)?;
@@ -712,26 +599,14 @@ fn check_slow_source(c: &mut Ctx) -> Res<String> {
     let after = c.probe()?;
     expect_text(&after, "dictation slow", "clipboard after the window")?;
     c.pump();
-    if !c
-        .noted(|n| matches!(n, Note::RestoreSkipped { reason, .. } if reason.contains("not ready")))
-    {
+    if !c.noted(|n| matches!(n, Note::RestoreSkipped { reason, .. } if reason.contains("not ready"))) {
         return Err("expected restore to be skipped after the 100 ms wait".into());
     }
-    Ok(format!(
-        "source answering after 500 ms: paste waited {waited:.0} ms, restore skipped"
-    ))
+    Ok(format!("source answering after 500 ms: paste waited {waited:.0} ms, restore skipped"))
 }
 
 fn check_snapshot_timeout(c: &mut Ctx) -> Res<String> {
-    let _s = spawn_seed(
-        &[
-            "--text",
-            "text/plain;charset=utf-8=orig never",
-            "--delay-ms",
-            "3000",
-        ],
-        c.proto,
-    )?;
+    let _s = spawn_seed(&["--text", "text/plain;charset=utf-8=orig never", "--delay-ms", "3000"], c.proto)?;
     let g = c.next_gen();
     c.snapshot(g);
     std::thread::sleep(Duration::from_millis(2300));
@@ -741,21 +616,10 @@ fn check_snapshot_timeout(c: &mut Ctx) -> Res<String> {
     let after = c.probe()?;
     expect_text(&after, "dictation timeout", "clipboard after the window")?;
     c.pump();
-    if !c.noted(|n| {
-        matches!(
-            n,
-            Note::SnapshotFailed {
-                error: ReadError::Timeout,
-                ..
-            }
-        )
-    }) {
+    if !c.noted(|n| matches!(n, Note::SnapshotFailed { error: ReadError::Timeout, .. })) {
         return Err("expected SnapshotFailed Timeout".into());
     }
-    Ok(
-        "source silent for 3 s: snapshot read timed out at 2 s, paste went ahead without restore"
-            .into(),
-    )
+    Ok("source silent for 3 s: snapshot read timed out at 2 s, paste went ahead without restore".into())
 }
 
 fn check_ctrl_shift_v(c: &mut Ctx) -> Res<String> {
@@ -772,8 +636,7 @@ fn check_ctrl_shift_v(c: &mut Ctx) -> Res<String> {
 /// Simulated physical keys on the headless host reach the nested niri as
 /// real keyboard input, interpreted with niri's layout.
 fn host_keys_run(seq: &str) -> Res<()> {
-    let host =
-        std::env::var("PSST_SANDBOX_HOST_SOCKET").map_err(|_| "PSST_SANDBOX_HOST_SOCKET unset")?;
+    let host = std::env::var("PSST_SANDBOX_HOST_SOCKET").map_err(|_| "PSST_SANDBOX_HOST_SOCKET unset")?;
     let o = Command::new(exe("paste-spike"))
         .args(["host-keys", seq])
         .env("WAYLAND_DISPLAY", &host)
@@ -787,8 +650,7 @@ fn host_keys_run(seq: &str) -> Res<()> {
 }
 
 fn host_keys_spawn(seq: &str) -> Res<Child> {
-    let host =
-        std::env::var("PSST_SANDBOX_HOST_SOCKET").map_err(|_| "PSST_SANDBOX_HOST_SOCKET unset")?;
+    let host = std::env::var("PSST_SANDBOX_HOST_SOCKET").map_err(|_| "PSST_SANDBOX_HOST_SOCKET unset")?;
     Command::new(exe("paste-spike"))
         .args(["host-keys", seq])
         .env("WAYLAND_DISPLAY", &host)
@@ -800,20 +662,14 @@ fn host_keys_spawn(seq: &str) -> Res<Child> {
 fn check_layouts(c: &mut Ctx) -> Res<String> {
     let mut report = Vec::new();
     for (idx, name, two) in [(0, "us", "2"), (1, "cz-qwerty", "ě")] {
-        run_cmd(
-            "niri",
-            &["msg", "action", "switch-layout", &idx.to_string()],
-        )?;
+        run_cmd("niri", &["msg", "action", "switch-layout", &idx.to_string()])?;
         std::thread::sleep(Duration::from_millis(100));
         // A physical key before: niri's keymap and layout.
         c.t.drain();
         host_keys_run("tap:3")?;
         let k = c.t.wait("key", Duration::from_secs(3))?;
         if k["utf8"] != two {
-            return Err(format!(
-                "{name}: physical KEY_2 before paste gave {} (want {two})",
-                k["utf8"]
-            ));
+            return Err(format!("{name}: physical KEY_2 before paste gave {} (want {two})", k["utf8"]));
         }
         let g = c.next_gen();
         c.snapshot(g);
@@ -829,9 +685,7 @@ fn check_layouts(c: &mut Ctx) -> Res<String> {
         let evs = c.t.collect_until("paste", Duration::from_secs(3))?;
         let got = evs.last().unwrap().clone();
         expect_text(&got, &format!("layout {name} ✓"), "received")?;
-        let vk_keymap = evs
-            .iter()
-            .any(|e| e["ev"] == "keymap" && e["name"] == "psst");
+        let vk_keymap = evs.iter().any(|e| e["ev"] == "keymap" && e["name"] == "psst");
         // A physical key after: the real keymap must come back.
         std::thread::sleep(Duration::from_millis(100));
         c.t.drain();
@@ -839,16 +693,9 @@ fn check_layouts(c: &mut Ctx) -> Res<String> {
         let evs = c.t.collect_until("key", Duration::from_secs(3))?;
         let k = evs.last().unwrap();
         if k["utf8"] != two {
-            return Err(format!(
-                "{name}: physical KEY_2 after paste gave {} (want {two})",
-                k["utf8"]
-            ));
+            return Err(format!("{name}: physical KEY_2 after paste gave {} (want {two})", k["utf8"]));
         }
-        let back = evs
-            .iter()
-            .find(|e| e["ev"] == "keymap")
-            .map(|e| e["name"].clone())
-            .unwrap_or(Value::Null);
+        let back = evs.iter().find(|e| e["ev"] == "keymap").map(|e| e["name"].clone()).unwrap_or(Value::Null);
         // Super held (physically) while pasting.
         let mut hold = host_keys_spawn("press:125 sleep:600 release:125")?;
         std::thread::sleep(Duration::from_millis(250));
@@ -884,22 +731,11 @@ fn bench(a: &Args) -> Res<()> {
     let runs = a.num("runs", 300) as usize;
     let delay_ms = a.num("delay-ms", 0) as u32;
     let chord = a.chord();
-    let opts = Options {
-        proto: a.proto(),
-        minimal_keymap: a.get("keymap") == Some("minimal"),
-        ..Default::default()
-    };
+    let opts = Options { proto: a.proto(), minimal_keymap: a.get("keymap") == Some("minimal"), ..Default::default() };
     let p = paster::spawn(opts)?;
     let t = Target::spawn()?;
     let proto = p.proto;
-    let mut c = Ctx {
-        p,
-        t,
-        proto,
-        generation: 0,
-        restore: Duration::from_secs(5),
-        notes: vec![],
-    };
+    let mut c = Ctx { p, t, proto, generation: 0, restore: Duration::from_secs(5), notes: vec![] };
     let mut cols: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
     // With --physical, a simulated physical key precedes every paste (niri
     // only), so each paste switches the app to psst's keymap, as in real use.
@@ -914,13 +750,7 @@ fn bench(a: &Args) -> Res<()> {
         let text = format!("bench {i} ✓");
         c.t.drain();
         let ready = now_us();
-        c.p.send(Cmd::Paste {
-            generation: g,
-            text: text.clone(),
-            chord,
-            delay_ms,
-            t_ready_us: ready,
-        });
+        c.p.send(Cmd::Paste { generation: g, text: text.clone(), chord, delay_ms, t_ready_us: ready });
         let tm = c.wait_evt(Duration::from_secs(3), |e| match e {
             Evt::Pasted { generation, timing } if *generation == g => Some(timing.clone()),
             _ => None,
@@ -936,24 +766,12 @@ fn bench(a: &Args) -> Res<()> {
                 ms(tm.ready, got["t_done"].as_u64().unwrap())
             );
         }
-        cols.entry("ready→Pasted (dispatch)")
-            .or_default()
-            .push(ms(tm.ready, tm.sync2));
-        cols.entry("ready→thread got cmd")
-            .or_default()
-            .push(ms(tm.ready, tm.cmd));
-        cols.entry("set_selection→sync")
-            .or_default()
-            .push(ms(tm.set_selection, tm.sync1));
-        cols.entry("chord→sync")
-            .or_default()
-            .push(ms(tm.chord, tm.sync2));
-        cols.entry("ready→key at app")
-            .or_default()
-            .push(ms(tm.ready, got["t_key"].as_u64().unwrap()));
-        cols.entry("ready→text read by app")
-            .or_default()
-            .push(ms(tm.ready, got["t_done"].as_u64().unwrap()));
+        cols.entry("ready→Pasted (dispatch)").or_default().push(ms(tm.ready, tm.sync2));
+        cols.entry("ready→thread got cmd").or_default().push(ms(tm.ready, tm.cmd));
+        cols.entry("set_selection→sync").or_default().push(ms(tm.set_selection, tm.sync1));
+        cols.entry("chord→sync").or_default().push(ms(tm.chord, tm.sync2));
+        cols.entry("ready→key at app").or_default().push(ms(tm.ready, got["t_key"].as_u64().unwrap()));
+        cols.entry("ready→text read by app").or_default().push(ms(tm.ready, got["t_done"].as_u64().unwrap()));
     }
     let compositor = std::env::var("PSST_SANDBOX_COMPOSITOR").unwrap_or_default();
     println!(
@@ -962,10 +780,7 @@ fn bench(a: &Args) -> Res<()> {
         proto_name(proto),
         a.get("keymap").unwrap_or("complete"),
     );
-    println!(
-        "{:<28} {:>8} {:>8} {:>8} {:>8}",
-        "ms", "median", "p90", "p99", "max"
-    );
+    println!("{:<28} {:>8} {:>8} {:>8} {:>8}", "ms", "median", "p90", "p99", "max");
     for (k, mut v) in cols {
         let (m, p90, p99) = (pct(&mut v, 0.5), pct(&mut v, 0.9), pct(&mut v, 0.99));
         let max = v.iter().cloned().fold(0.0, f64::max);
@@ -976,10 +791,7 @@ fn bench(a: &Args) -> Res<()> {
 
 fn one_paste(a: &Args) -> Res<()> {
     let text = a.get("text").ok_or("--text is required")?.to_string();
-    let p = paster::spawn(Options {
-        proto: a.proto(),
-        ..Default::default()
-    })?;
+    let p = paster::spawn(Options { proto: a.proto(), ..Default::default() })?;
     p.send(Cmd::Snapshot { generation: 1 });
     p.send(Cmd::Paste {
         generation: 1,
@@ -989,14 +801,9 @@ fn one_paste(a: &Args) -> Res<()> {
         t_ready_us: now_us(),
     });
     let deadline = Instant::now() + Duration::from_secs(8);
-    while let Ok(e) =
-        p.rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
-    {
+    while let Ok(e) = p.rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
         println!("{e:?}");
-        if matches!(
-            e,
-            Evt::Note(Note::Restored { .. } | Note::RestoreSkipped { .. })
-        ) {
+        if matches!(e, Evt::Note(Note::Restored { .. } | Note::RestoreSkipped { .. })) {
             break;
         }
     }
@@ -1097,14 +904,7 @@ fn client() -> Res<Client> {
     let (globals, queue) = registry_queue_init::<Simple>(&conn).map_err(|e| e.to_string())?;
     let qh = queue.handle();
     let seat: WlSeat = globals.bind(&qh, 1..=8, ()).map_err(|e| e.to_string())?;
-    Ok(Client {
-        conn,
-        queue,
-        qh,
-        globals,
-        seat,
-        st: Simple::default(),
-    })
+    Ok(Client { conn, queue, qh, globals, seat, st: Simple::default() })
 }
 
 fn dc_client(a: &Args) -> Res<(Client, DcManager, DcDevice)> {
@@ -1136,19 +936,14 @@ fn seed(a: &Args) -> Res<()> {
     }
     for f in a.all("file") {
         let (m, p) = split_item(&f).ok_or("--file MIME=PATH")?;
-        items.push((
-            m.to_string(),
-            std::sync::Arc::new(std::fs::read(p).map_err(|e| e.to_string())?),
-        ));
+        items.push((m.to_string(), std::sync::Arc::new(std::fs::read(p).map_err(|e| e.to_string())?)));
     }
     let src = dc.create_source(&c.qh, items);
     dev.set_selection(Some(&src));
     c.queue.roundtrip(&mut c.st).map_err(|e| e.to_string())?;
     println!("ready");
     while !c.st.cancelled {
-        c.queue
-            .blocking_dispatch(&mut c.st)
-            .map_err(|e| e.to_string())?;
+        c.queue.blocking_dispatch(&mut c.st).map_err(|e| e.to_string())?;
     }
     // Let in-flight writes finish.
     std::thread::sleep(Duration::from_millis(c.st.delay_ms + 50));
@@ -1171,15 +966,12 @@ fn dump(a: &Args) -> Res<()> {
     let mimes = offer.mimes();
     println!("mimes: {mimes:?}");
     if let Some(m) = choose_mime(&mimes) {
-        let (r, w) =
-            rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).map_err(|e| e.to_string())?;
+        let (r, w) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).map_err(|e| e.to_string())?;
         offer.receive(m.to_string(), std::os::fd::AsFd::as_fd(&w));
         drop(w);
         c.conn.flush().map_err(|e| e.to_string())?;
         let mut buf = Vec::new();
-        std::fs::File::from(r)
-            .read_to_end(&mut buf)
-            .map_err(|e| e.to_string())?;
+        std::fs::File::from(r).read_to_end(&mut buf).map_err(|e| e.to_string())?;
         if TEXT_MIMES.contains(&m) {
             println!("{m}: {:?}", String::from_utf8_lossy(&buf));
         } else {
@@ -1193,10 +985,7 @@ fn dump(a: &Args) -> Res<()> {
 fn host_keys(a: &Args) -> Res<()> {
     let seq = a.positional.first().ok_or("host-keys SEQ")?;
     let mut c = client()?;
-    let vkm: ZwpVirtualKeyboardManagerV1 = c
-        .globals
-        .bind(&c.qh, 1..=1, ())
-        .map_err(|e| e.to_string())?;
+    let vkm: ZwpVirtualKeyboardManagerV1 = c.globals.bind(&c.qh, 1..=1, ()).map_err(|e| e.to_string())?;
     let vk = vkm.create_virtual_keyboard(&c.seat, &c.qh, ());
     keymap::upload(&vk, keymap::HOST_KEYMAP).map_err(|e| e.to_string())?;
     c.queue.roundtrip(&mut c.st).map_err(|e| e.to_string())?;
