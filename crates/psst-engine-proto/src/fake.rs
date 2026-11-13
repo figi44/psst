@@ -3,9 +3,9 @@
 //! `psst-server __fake-engine <script.json>` runs [`main`]. The script ([`Script`]) decides what
 //! `hello` announces, how `load` goes, and how each `transcribe` is answered. Every request the
 //! engine receives is appended to `<script>.requests.jsonl` ([`request_log_path`]) as a
-//! [`LoggedRequest`]. Scripted `transcribe` steps are consumed in order and counted through that
-//! log, so they carry on across engine restarts: a script of `[exit, result]` crashes once and
-//! then succeeds.
+//! [`LoggedRequest`]. Every `transcribe` request received consumes the next scripted step, even
+//! one that is then rejected; steps are counted through that log, so they carry on across engine
+//! restarts: a script of `[exit, result]` crashes once and then succeeds.
 
 use std::{
     fs::{self, OpenOptions},
