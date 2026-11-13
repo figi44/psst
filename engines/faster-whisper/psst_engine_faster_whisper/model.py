@@ -186,8 +186,11 @@ class FasterWhisperModel:
             try:
                 return self._open(backend, snapshot, request)
             except Exception as err:
-                # A bad device or compute type, or a GPU failure: downloading again won't help.
-                if isinstance(err, ValueError) or gpu_error(err):
+                kind = gpu_error(err)
+                if kind == "gpu":
+                    raise Fatal(f"CUDA error while loading {repo}: {err}") from None
+                # A bad device or compute type, or no GPU memory left: downloading again won't help.
+                if kind == "oom" or isinstance(err, ValueError):
                     raise LoadFailed(f"loading {repo} failed: {err}") from None
                 log(f"the cached {repo} failed to load ({type(err).__name__}: {err}); downloading it again")
                 force = True
@@ -204,6 +207,8 @@ class FasterWhisperModel:
         try:
             return self._open(backend, snapshot, request)
         except Exception as err:
+            if gpu_error(err) == "gpu":
+                raise Fatal(f"CUDA error while loading {repo}: {err}") from None
             raise LoadFailed(f"loading {repo} failed: {type(err).__name__}: {err}") from None
 
     def transcribe(self, request: TranscribeRequest, samples: array) -> Transcription:

@@ -127,17 +127,36 @@ def test_a_cached_model_that_fails_to_load_is_downloaded_again():
     "error",
     [
         ValueError("Requested int8_float16 compute type, but the target device or backend do not support efficient int8_float16 computation."),
-        RuntimeError("CUDA failed with error no CUDA-capable device is detected"),
         RuntimeError("CUDA failed with error out of memory"),
     ],
 )
-def test_a_bad_device_or_a_gpu_failure_fails_the_load_without_downloading(error):
+def test_a_bad_device_or_no_gpu_memory_fails_the_load_without_downloading(error):
     fake = FakeWhisper(cached={TURBO}, broken={TURBO_DIR: error})
     replies = serve(fake, LOAD, transcribe())
     assert replies[-2]["type"] == "error" and replies[-2]["code"] == "load_failed"
     assert str(error) in replies[-2]["message"]
     assert replies[-1]["code"] == "not_loaded"
     assert fake.downloads == []
+
+
+CUDA_ERROR = RuntimeError("CUDA failed with error an illegal memory access was encountered")
+
+
+@pytest.mark.parametrize(
+    "fake",
+    [
+        FakeWhisper(cached={TURBO}, broken={TURBO_DIR: CUDA_ERROR}),
+        FakeWhisper(cached={TURBO}, warm_up_error=CUDA_ERROR),
+        FakeWhisper(warm_up_error=CUDA_ERROR),
+    ],
+    ids=["loading-cached", "warming-up-cached", "warming-up-downloaded"],
+)
+def test_other_cuda_errors_while_loading_end_the_engine_without_a_reply(fake):
+    replies, fatal = run(fake, LOAD, transcribe())
+    assert "illegal memory access" in str(fatal)
+    assert replies[-1] == {"type": "progress", "phase": "load"}
+    assert all(r["type"] != "error" for r in replies)
+    assert all(d["force_download"] is False for d in fake.downloads)
 
 
 def test_a_failed_download_fails_the_load():
