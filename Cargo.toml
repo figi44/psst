@@ -9,3 +9,12 @@ rust-version = "1.99"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/figi44/psst"
 publish = false
+
+# Debug info is most of a test binary's size (254 MB → 41 MB without it), and every
+# integration-test file is its own binary. Line tables keep file:line in backtraces for
+# our crates; dependencies get none. For a debugging session: CARGO_PROFILE_DEV_DEBUG=true.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
