@@ -5,7 +5,8 @@
 //! follows every [`FakeServerConfig::progress_interval`], `stop` is checked against the audio
 //! received and answered after [`FakeServerConfig::final_delay`] with the next scripted
 //! [`Outcome`]. Finished sessions answer `resume` with their `final`; running ones are attached.
-//! A disconnect drops sessions still recording and keeps stopped ones running.
+//! A disconnect drops sessions still recording and keeps stopped ones running. A device that
+//! connects again replaces its older connection, as with the real server.
 //!
 //! It runs on its own thread with its own runtime, so sync and async tests use it the same way.
 
@@ -140,6 +141,8 @@ struct Inner {
     cfg: FakeServerConfig,
     state: Mutex<State>,
     disconnect: broadcast::Sender<()>,
+    /// (device, connection) of each new connection, so the device's older ones close.
+    replaced: broadcast::Sender<(String, u64)>,
     listening: tokio::sync::watch::Sender<bool>,
     shutdown: Notify,
 }
@@ -174,8 +177,16 @@ impl FakeServer {
         let tcp_addr = tcp.as_ref().map(|l| l.local_addr().expect("tcp addr"));
         let unix = std::os::unix::net::UnixListener::bind(socket).expect("bind fake server socket");
         let (disconnect, _) = broadcast::channel(4);
+        let (replaced, _) = broadcast::channel(16);
         let (listening, _) = tokio::sync::watch::channel(true);
-        let inner = Arc::new(Inner { cfg, state: Mutex::default(), disconnect, listening, shutdown: Notify::new() });
+        let inner = Arc::new(Inner {
+            cfg,
+            state: Mutex::default(),
+            disconnect,
+            replaced,
+            listening,
+            shutdown: Notify::new(),
+        });
         let thread_inner = inner.clone();
         let thread = thread::Builder::new()
             .name("fake-server".into())
@@ -374,14 +385,18 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(inner: Arc<Inner>, mut st
             _ => return,
         }
     }
+    let device: String = if tcp { "fake-device".into() } else { "local:test".into() };
     let welcome = WelcomeMsg {
         server_version: "fake".into(),
-        device: if tcp { "fake-device".into() } else { "local:test".into() },
+        device: device.clone(),
         limits: ServerLimits { max_recording_s: inner.cfg.max_recording_s },
     };
     if ws.send(send(&ServerMsg::Welcome(welcome))).await.is_err() {
         return;
     }
+    let mut replaced = inner.replaced.subscribe();
+    let _ = inner.replaced.send((device.clone(), conn_id));
+    let replaced_by_newer = |msg: Result<(String, u64), _>| matches!(msg, Ok((d, id)) if d == device && id > conn_id);
 
     let mut disconnect = inner.disconnect.subscribe();
     let mut active: Option<(SessionId, bool)> = None; // (id, need_audio)
@@ -390,8 +405,15 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(inner: Arc<Inner>, mut st
         if inner.state().stalled {
             tokio::select! {
                 _ = disconnect.recv() => break,
+                msg = replaced.recv() => if replaced_by_newer(msg) { break } else { continue },
                 _ = tokio::time::sleep(Duration::from_millis(10)) => continue,
             }
+        }
+        // A session another connection took over (a resume) is no longer this one's.
+        if let Some((id, _)) = active
+            && !attached(&inner.state(), id, conn_id)
+        {
+            active = None;
         }
         let done_at = active.and_then(|(id, _)| match inner.state().registry.get(&id).map(|r| &r.state) {
             Some(RegState::Running { done_at, outcome }) if *outcome != Outcome::Hang => Some(*done_at),
@@ -400,6 +422,7 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(inner: Arc<Inner>, mut st
         let mut out = Vec::new();
         tokio::select! {
             _ = disconnect.recv() => break,
+            msg = replaced.recv() => if replaced_by_newer(msg) { break },
             _ = tokio::time::sleep(Duration::from_millis(10)) => {} // re-check `stalled`
             _ = tokio::time::sleep_until(next_progress), if active.is_some() => {
                 next_progress += inner.cfg.progress_interval;
@@ -425,7 +448,9 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(inner: Arc<Inner>, mut st
                     Message::Binary(bytes) => {
                         if let Some((id, true)) = active {
                             let mut state = inner.state();
-                            if matches!(state.registry.get(&id).map(|r| &r.state), Some(RegState::Recording)) {
+                            if attached(&state, id, conn_id)
+                                && matches!(state.registry.get(&id).map(|r| &r.state), Some(RegState::Recording))
+                            {
                                 let samples = bytes.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes(*b));
                                 state.seen(id).audio.extend(samples);
                             }
@@ -450,7 +475,9 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(inner: Arc<Inner>, mut st
         }
     }
     // Disconnected: a session still recording is dropped; a stopped one keeps running.
-    if let Some((id, _)) = active {
+    if let Some((id, _)) = active
+        && attached(&inner.state(), id, conn_id)
+    {
         let mut state = inner.state();
         match state.registry.get_mut(&id) {
             Some(reg) if matches!(reg.state, RegState::Recording) => {
@@ -461,6 +488,10 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(inner: Arc<Inner>, mut st
         }
     }
     let _ = ws.close(None).await;
+}
+
+fn attached(state: &State, id: SessionId, conn_id: u64) -> bool {
+    state.registry.get(&id).is_some_and(|reg| reg.conn == Some(conn_id))
 }
 
 fn on_client_msg(
