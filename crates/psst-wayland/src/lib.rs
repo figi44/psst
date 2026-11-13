@@ -58,7 +58,8 @@ pub enum Chord {
 /// Daemon → Wayland thread.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WaylandCmd {
-    /// Shows or updates the overlay; `None` hides it.
+    /// Shows or updates the overlay; `None` hides it. Every `Recording` or `Offline` update adds
+    /// its level to the waveform as one bar, so send them at a steady pace (every 40–60 ms).
     Overlay(Option<OverlayState>),
     /// Takes a clipboard snapshot for the dictation with this generation (sent at `stop`).
     SnapshotClipboard { generation: u64 },
