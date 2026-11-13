@@ -114,10 +114,14 @@ fn capitalize_skips_a_protected_first_token() {
 
 #[test]
 fn rules_run_in_the_profiles_order() {
-    // Capitalised first, the filler then goes; without `whitespace` its spacing stays.
+    // Capitalised first, the filler then goes, as one edit; without `whitespace` its spacing stays.
     let profile = profile_with("en", &[Rule::Capitalize, Rule::Fillers, Rule::TrailingSpace], &["um"]);
     assert_eq!(with(&profile, "um so"), " so ");
-    // `trailing_space` before `whitespace`: the appended space isn't spacing between tokens.
+    let out = run(&said("um so"), &profile, &Dictionary::default(), &PipelineOptions::default());
+    assert_eq!(out.edits, [rule("fillers", 0..2, "um", ""), rule("trailing_space", 5..5, "", " ")]);
+    // `whitespace` after `trailing_space` removes the appended space too.
     let profile = profile_with("en", &[Rule::TrailingSpace, Rule::Whitespace], &[]);
-    assert_eq!(with(&profile, "so  be it"), "so be it ");
+    assert_eq!(with(&profile, "so  be it"), "so be it");
+    let profile = profile_with("en", &[Rule::TrailingSpace, Rule::Fillers, Rule::Whitespace], &["um"]);
+    assert_eq!(with(&profile, "um"), "");
 }

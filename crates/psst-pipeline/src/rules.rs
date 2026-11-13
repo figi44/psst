@@ -36,7 +36,12 @@ fn remove_fillers(draft: &mut Draft, fillers: &[String]) {
     for token in draft.tokens.iter_mut().filter(|t| !t.removed && !t.protected) {
         let lower = token.text.to_lowercase();
         if fillers.iter().any(|f| *f == lower.strip_suffix(',').unwrap_or(&lower)) {
-            draft.edits.push(edit("fillers", token.raw.clone(), &token.text, ""));
+            // One edit for a token an earlier rule changed (`capitalize` before `fillers`).
+            let before = match draft.edits.iter().position(|e| e.stage == Stage::Rules && e.raw_span == token.raw) {
+                Some(earlier) => draft.edits.remove(earlier).before,
+                None => token.text.clone(),
+            };
+            draft.edits.push(edit("fillers", token.raw.clone(), &before, ""));
             token.text.clear();
             token.removed = true;
         }
@@ -44,8 +49,8 @@ fn remove_fillers(draft: &mut Draft, fillers: &[String]) {
 }
 
 /// `whitespace`: collapses each run of spaces between two tokens to one, and removes spaces before
-/// the first token and after the last. Spacing with any other whitespace in it, and punctuation,
-/// are left alone.
+/// the first token and after the last, including one an earlier rule appended. Spacing with any
+/// other whitespace in it, and punctuation, are left alone.
 fn collapse_spaces(draft: &mut Draft) {
     let mut edits = Vec::new();
     let mut gap: Vec<usize> = Vec::new();
@@ -53,22 +58,28 @@ fn collapse_spaces(draft: &mut Draft) {
     for i in 0..draft.tokens.len() {
         gap.push(i);
         if !draft.tokens[i].removed {
-            collapse_gap(draft, &gap, usize::from(seen_text), &mut edits);
+            collapse_gap(draft, &gap, usize::from(seen_text), false, &mut edits);
             seen_text = true;
             gap.clear();
         }
     }
-    collapse_gap(draft, &gap, 0, &mut edits);
+    collapse_gap(draft, &gap, 0, true, &mut edits);
     edits.sort_by_key(|e: &Edit| e.raw_span.start);
     draft.edits.extend(edits);
 }
 
-/// Shortens the spacing of the tokens in `gap` to `keep` spaces, kept at the start of the last
-/// token's spacing.
-fn collapse_gap(draft: &mut Draft, gap: &[usize], keep: usize, edits: &mut Vec<Edit>) {
+/// Shortens the spacing of the tokens in `gap`, and at the end the appended tail, to `keep` spaces,
+/// kept at the start of the last token's spacing.
+fn collapse_gap(draft: &mut Draft, gap: &[usize], keep: usize, at_end: bool, edits: &mut Vec<Edit>) {
+    let only_spaces = |s: &str| s.bytes().all(|b| b == b' ');
     let spaced: Vec<usize> = gap.iter().copied().filter(|&i| !draft.tokens[i].space.is_empty()).collect();
-    if spaced.iter().any(|&i| draft.tokens[i].space.bytes().any(|b| b != b' ')) {
+    if !spaced.iter().all(|&i| only_spaces(&draft.tokens[i].space)) || (at_end && !only_spaces(&draft.tail)) {
         return;
+    }
+    if at_end && !draft.tail.is_empty() {
+        let end = draft.raw.len();
+        edits.push(edit("whitespace", end..end, &draft.tail, ""));
+        draft.tail.clear();
     }
     let mut keep = keep;
     for &i in spaced.iter().rev() {
