@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The web UI's strong accent (web/static/psst.css): the blue that carries white text and icons. -->
+<resources>
+    <color name="ime_accent_strong">#1f5eff</color>
+</resources>

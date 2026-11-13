@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A voice subtype is how keyboards with a voice key (HeliBoard, AOSP) find a voice input method.
+     overridesImplicitlyEnabledSubtype enables it without the user picking it in the settings. -->
+<input-method xmlns:android="http://schemas.android.com/apk/res/android"
+    android:settingsActivity="io.github.figi44.psst.SetupActivity">
+    <subtype
+        android:imeSubtypeMode="voice"
+        android:label="@string/voice"
+        android:overridesImplicitlyEnabledSubtype="true" />
+</input-method>

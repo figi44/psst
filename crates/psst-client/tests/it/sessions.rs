@@ -295,6 +295,24 @@ async fn the_frame_buffer_holds_thirty_seconds_before_ready() {
 }
 
 #[tokio::test]
+async fn send_waits_for_room_so_a_recording_longer_than_the_buffer_goes_out_whole() {
+    let server = FakeServer::start(FakeServerConfig::default());
+    let mut client = Client::connect(&server.endpoint(), None).await.unwrap();
+    let opts = StartOpts { resume: true, ..opts(Mode::Upload) };
+    let id = opts.session_id;
+    let mut session = client.start(opts);
+    let audio = test_audio(40_000);
+    assert!(frames(&audio).len() > FRAME_BUFFER);
+    let sender = session.frames();
+    for frame in frames(&audio) {
+        timeout(WAIT, sender.send(frame)).await.unwrap().unwrap();
+    }
+    session.stop(audio.len() as u64).await.unwrap();
+    assert!(matches!(until_terminal(&mut session).await.last(), Some(SessionEvent::Final(_))));
+    assert_eq!(server.session(id).unwrap().audio, audio);
+}
+
+#[tokio::test]
 async fn progress_silence_loses_the_session_and_ends_the_connection() {
     let server = FakeServer::start(FakeServerConfig::default());
     let mut client = Client::connect(&server.endpoint(), None).await.unwrap();

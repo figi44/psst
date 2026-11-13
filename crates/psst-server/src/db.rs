@@ -371,10 +371,14 @@ impl Db {
         Ok(updated > 0)
     }
 
-    pub fn history(&self, limit: u32) -> Result<Vec<HistoryRow>> {
+    pub fn history(&self, limit: u32, device: Option<&str>) -> Result<Vec<HistoryRow>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(&format!("{HISTORY_COLUMNS} FROM history ORDER BY id DESC LIMIT ?1"))?;
-        let rows = stmt.query_map(params![limit], history_row)?;
+        let filter = if device.is_some() { "WHERE device = ?2 " } else { "" };
+        let mut stmt = conn.prepare(&format!("{HISTORY_COLUMNS} FROM history {filter}ORDER BY id DESC LIMIT ?1"))?;
+        let rows = match device {
+            Some(device) => stmt.query_map(params![limit, device], history_row)?,
+            None => stmt.query_map(params![limit], history_row)?,
+        };
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The web UI's palette (web/static/psst.css). -->
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <color name="bg">#000000</color>
+    <color name="surface">#0d0e11</color>
+    <color name="fg">#ffffff</color>
+    <color name="muted">#b9bfca</color>
+    <color name="line" tools:ignore="UnusedResources">#262931</color>
+    <color name="accent">#4d8eff</color>
+    <color name="ok" tools:ignore="UnusedResources">#2fd46f</color>
+    <color name="warn" tools:ignore="UnusedResources">#ffb21e</color>
+    <color name="danger">#ff5b47</color>
+</resources>

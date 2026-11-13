@@ -248,7 +248,7 @@ struct Refusal {
 
 fn page(state: &AppState, viewer: &Viewer, query: &PageQuery, refusal: Option<Refusal>) -> Response {
     let all = query.all.is_some();
-    let rows = match state.db.history(if all { ALL } else { SHOWN + 1 }) {
+    let rows = match state.db.history(if all { ALL } else { SHOWN + 1 }, None) {
         Ok(rows) => rows,
         Err(err) => {
             tracing::error!("cannot read history: {err:#}");

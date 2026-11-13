@@ -1,0 +1,177 @@
+<?xml version="1.0" encoding="utf-8"?>
+<merge xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <ScrollView
+        android:id="@+id/setup_scroll"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:isScrollContainer="true">
+
+        <io.github.figi44.psst.SetupColumn
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:orientation="vertical"
+            android:paddingHorizontal="16dp"
+            android:paddingTop="32dp"
+            android:paddingBottom="32dp">
+
+            <TextView
+                style="@style/Setup.Display"
+                android:text="@string/app_name" />
+
+            <TextView
+                style="@style/Setup.Lead"
+                android:layout_marginBottom="8dp"
+                android:text="@string/setup_lead" />
+
+            <LinearLayout style="@style/Setup.Card">
+
+                <LinearLayout style="@style/Setup.Header">
+
+                    <TextView
+                        android:id="@+id/setup_server_mark"
+                        style="@style/Setup.Mark" />
+
+                    <TextView
+                        android:id="@+id/setup_server_title"
+                        style="@style/Setup.Title"
+                        android:text="@string/setup_server" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/setup_server_status"
+                    style="@style/Setup.Body"
+                    android:accessibilityLiveRegion="polite" />
+
+                <EditText
+                    android:id="@+id/setup_server"
+                    style="@style/Setup.Field"
+                    android:importantForAutofill="no"
+                    android:layout_marginTop="16dp"
+                    android:hint="@string/setup_server_hint"
+                    android:imeOptions="actionGo"
+                    android:inputType="textUri"
+                    android:maxLines="1" />
+
+                <Button
+                    android:id="@+id/setup_connect"
+                    style="@style/Setup.Button.Step"
+                    android:text="@string/setup_connect" />
+
+                <LinearLayout
+                    android:id="@+id/setup_pair_group"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:orientation="vertical"
+                    android:visibility="gone">
+
+                    <TextView
+                        style="@style/Setup.Label"
+                        android:labelFor="@id/setup_code"
+                        android:text="@string/setup_pair_label" />
+
+                    <TextView
+                        style="@style/Setup.Body"
+                        android:text="@string/setup_pair_where" />
+
+                    <EditText
+                        android:id="@+id/setup_code"
+                        style="@style/Setup.Field"
+                        android:importantForAutofill="no"
+                        android:imeOptions="actionGo"
+                        android:inputType="textCapCharacters|textNoSuggestions"
+                        android:maxLines="1" />
+
+                    <Button
+                        android:id="@+id/setup_pair"
+                        style="@style/Setup.Button.Primary"
+                        android:text="@string/setup_pair" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <LinearLayout style="@style/Setup.Card">
+
+                <LinearLayout style="@style/Setup.Header">
+
+                    <TextView
+                        android:id="@+id/setup_mic_mark"
+                        style="@style/Setup.Mark" />
+
+                    <TextView
+                        android:id="@+id/setup_mic_title"
+                        style="@style/Setup.Title"
+                        android:text="@string/setup_mic" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/setup_mic_status"
+                    style="@style/Setup.Body" />
+
+                <Button
+                    android:id="@+id/setup_mic_allow"
+                    style="@style/Setup.Button.Primary" />
+            </LinearLayout>
+
+            <LinearLayout style="@style/Setup.Card">
+
+                <LinearLayout style="@style/Setup.Header">
+
+                    <TextView
+                        android:id="@+id/setup_keyboard_mark"
+                        style="@style/Setup.Mark" />
+
+                    <TextView
+                        android:id="@+id/setup_keyboard_title"
+                        style="@style/Setup.Title"
+                        android:text="@string/setup_keyboard" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/setup_keyboard_status"
+                    style="@style/Setup.Body" />
+
+                <Button
+                    android:id="@+id/setup_keyboard_enable"
+                    style="@style/Setup.Button.Primary"
+                    android:text="@string/setup_keyboard_enable" />
+
+                <Button
+                    android:id="@+id/setup_keyboard_switch"
+                    style="@style/Setup.Button"
+                    android:text="@string/setup_keyboard_switch" />
+            </LinearLayout>
+
+            <LinearLayout style="@style/Setup.Card">
+
+                <LinearLayout style="@style/Setup.Header">
+
+                    <TextView
+                        android:id="@+id/setup_try_mark"
+                        style="@style/Setup.Mark" />
+
+                    <TextView
+                        android:id="@+id/setup_try_title"
+                        style="@style/Setup.Title"
+                        android:labelFor="@id/setup_try"
+                        android:text="@string/setup_try" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/setup_try_status"
+                    style="@style/Setup.Body" />
+
+                <EditText
+                    android:id="@+id/setup_try"
+                    style="@style/Setup.Field"
+                    android:importantForAutofill="no"
+                    android:layout_marginTop="16dp"
+                    android:gravity="top|start"
+                    android:hint="@string/setup_try_hint"
+                    android:inputType="textMultiLine|textCapSentences"
+                    android:minLines="4" />
+            </LinearLayout>
+        </io.github.figi44.psst.SetupColumn>
+    </ScrollView>
+</merge>

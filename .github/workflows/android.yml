@@ -1,0 +1,110 @@
+name: Android
+
+on:
+  pull_request:
+    paths:
+      - android/**
+      - crates/psst-android/**
+      - crates/psst-client/**
+      - crates/psst-proto/**
+      - Cargo.toml
+      - Cargo.lock
+      - flake.nix
+      - flake.lock
+      - justfile
+      - .github/workflows/android.yml
+  push:
+    branches: [main]
+    paths:
+      - android/**
+      - crates/psst-android/**
+      - crates/psst-client/**
+      - crates/psst-proto/**
+      - Cargo.toml
+      - Cargo.lock
+      - flake.nix
+      - flake.lock
+      - justfile
+      - .github/workflows/android.yml
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    name: APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+      # The SDK and NDK are unfree, so cache.nixos.org has neither and the shell would build them on
+      # every run: 690 MB from Google, then 2 min 14 s (on a fast machine) to unpack and patch the
+      # 2.2 GB NDK. Importing main's export of them took 53 s, from 0.9 GB of cache whose key only
+      # changes with them. A failed import costs nothing but time: the shell then builds them.
+      - name: Find the Android SDK
+        id: sdk
+        run: |
+          sdk=$(nix eval --raw .#devShells.x86_64-linux.android.ANDROID_HOME)
+          sdk=${sdk%/libexec/android-sdk}
+          echo "path=$sdk" >> "$GITHUB_OUTPUT"
+          echo "key=v1-${sdk#/nix/store/}" >> "$GITHUB_OUTPUT"
+      - name: Restore the Android SDK
+        id: sdk-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/sdk
+          key: ${{ steps.sdk.outputs.key }}
+      # Their dependencies come from cache.nixos.org, as they would for the shell.
+      - name: Import the Android SDK
+        if: steps.sdk-cache.outputs.cache-hit == 'true'
+        continue-on-error: true
+        working-directory: ${{ runner.temp }}/sdk
+        run: |
+          xargs nix-store --realise < deps > /dev/null
+          nix-store --import < closure > /dev/null
+      - name: Enter the android shell
+        uses: nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a # v1.2.1
+        with:
+          arguments: .#android
+      # Only main saves the caches, as in ci.yml.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          prefix-key: v1-android
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Gradle's downloads and transforms: 330 MB, and a build that took 20 s instead of 77.
+      - name: Restore Gradle's caches
+        id: gradle
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.gradle/caches
+          key: v1-gradle-${{ hashFiles('flake.lock', 'android/**/*.gradle.kts', 'android/gradle.properties') }}
+          restore-keys: v1-gradle-
+      # Phones run arm64-v8a. The emulator's x86_64 would only build the Rust core a second time.
+      - name: Build and lint the APK
+        run: just android -Ppsst.abis=arm64-v8a
+      - name: Export the Android SDK
+        if: github.ref == 'refs/heads/main' && steps.sdk-cache.outputs.cache-hit != 'true'
+        working-directory: ${{ runner.temp }}
+        env:
+          SDK: ${{ steps.sdk.outputs.path }}
+        run: |
+          mkdir sdk
+          nix-store --query --requisites "$SDK" | grep -v -- -android > sdk/deps
+          nix-store --query --requisites "$SDK" | grep -- -android | xargs nix-store --export > sdk/closure
+      - name: Save the Android SDK
+        if: github.ref == 'refs/heads/main' && steps.sdk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/sdk
+          key: ${{ steps.sdk.outputs.key }}
+      - name: Save Gradle's caches
+        if: github.ref == 'refs/heads/main' && steps.gradle.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.gradle/caches
+          key: ${{ steps.gradle.outputs.cache-primary-key }}

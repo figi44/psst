@@ -7,8 +7,8 @@ use nix::{
 use psst_client::api::{ApiClient, Method};
 use psst_config::{ConfigFile, DictionaryFile};
 use psst_proto::{
-    SessionId,
-    api::{DictionaryView, HistoryRow, TermLayer, routes},
+    Endpoint, SessionId,
+    api::{DictionaryView, HistoryRow, TermLayer, encode_segment, routes},
 };
 use psst_testkit::TestServer;
 
@@ -45,12 +45,46 @@ async fn newest(server: &TestServer) -> HistoryRow {
     rows.into_iter().next().expect("a history row")
 }
 
+/// Returns the device it dictated as, and the dictation's session.
+async fn dictate_over(mut client: Client) -> (String, SessionId) {
+    let (device, id) = (client.welcome().device.clone(), SessionId::new_v4());
+    client.upload(id, SECOND / 4).await;
+    client.final_msg().await;
+    (device, id)
+}
+
+async fn sessions(api: &ApiClient, query: &str) -> Vec<SessionId> {
+    let rows: Vec<HistoryRow> =
+        api.call(Method::Get, &format!("{}{query}", routes::HISTORY), None::<&()>).await.unwrap();
+    rows.into_iter().map(|row| row.session_id).collect()
+}
+
 async fn view(server: &TestServer) -> DictionaryView {
     api(server).call(Method::Get, routes::DICTIONARY, None::<&()>).await.unwrap()
 }
 
 async fn word(server: &TestServer, id: &str) -> Option<(TermLayer, Vec<String>)> {
     view(server).await.terms.into_iter().find(|t| t.id == id).map(|t| (t.layer, t.term.unwrap().sounds_like))
+}
+
+#[tokio::test]
+async fn history_asked_for_one_device_has_only_that_devices_dictations() {
+    let server = history_server(&["first here", "on the phone", "again here"]);
+    let addr = server.tcp_addr().unwrap();
+    let paired = super::access::pair(&server).await;
+    let (here, first) = dictate_over(Client::connect(&server).await).await;
+    let phone_client = Socket::tcp(addr, Some(paired.token.as_str())).await.hello().await.expect("welcome");
+    let (phone, on_phone) = dictate_over(phone_client).await;
+    let (_, again) = dictate_over(Client::connect(&server).await).await;
+    let tcp = Endpoint::Tcp { host: addr.ip().to_string(), port: addr.port() };
+    let phone_api = ApiClient::new(tcp, Some(paired.token));
+    let device = |id: &str| format!("device={}", encode_segment(id));
+
+    assert_eq!(phone, paired.device_id);
+    assert_eq!(sessions(&api(&server), "").await, [again, on_phone, first]);
+    assert_eq!(sessions(&phone_api, &format!("?{}", device(&phone))).await, [on_phone]);
+    assert_eq!(sessions(&phone_api, &format!("?limit=1&{}", device(&phone))).await, [on_phone]);
+    assert_eq!(sessions(&api(&server), &format!("?{}", device(&here))).await, [again, first]);
 }
 
 #[tokio::test]

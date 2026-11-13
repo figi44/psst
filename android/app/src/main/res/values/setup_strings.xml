@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="setup_lead">Speak into any text field, and your psst server writes it down.</string>
+    <string name="setup_done">Done</string>
+    <string name="setup_not_done">Not done</string>
+
+    <string name="setup_server">Server</string>
+    <string name="setup_server_hint" translatable="false">http://server:7341</string>
+    <string name="setup_connect">Connect</string>
+    <string name="setup_server_unconfigured">Enter the name or address of the machine that runs psst-server.</string>
+    <string name="setup_server_connecting">Connecting…</string>
+    <string name="setup_server_online">Connected to psst</string>
+    <string name="setup_server_online_version">Connected to psst %1$s</string>
+    <string name="setup_server_offline">Not connected to the server.</string>
+    <string name="setup_pair_label">Pairing code</string>
+    <string name="setup_pair_where">Run <tt>psst-server pair --name phone</tt> on the server machine, then enter the code it prints within 5 minutes.</string>
+    <string name="setup_pair">Pair</string>
+    <string name="setup_pair_checking">Checking the code…</string>
+
+    <string name="setup_mic">Microphone</string>
+    <string name="setup_mic_why">psst records only while you dictate.</string>
+    <string name="setup_mic_granted">Allowed. psst records only while you dictate.</string>
+    <string name="setup_mic_blocked">Android no longer asks for it here: open psst\'s settings, then Permissions, and allow the microphone.</string>
+    <string name="setup_mic_allow">Allow the microphone</string>
+    <string name="setup_mic_settings">Open settings</string>
+
+    <string name="setup_keyboard">Keyboard</string>
+    <string name="setup_keyboard_off">Turn psst on in the keyboard settings. Android warns that a keyboard can see what you type; psst only inserts what you dictate.</string>
+    <string name="setup_keyboard_on">On. Switch to psst from any text field, or here.</string>
+    <string name="setup_keyboard_in_use">On and in use.</string>
+    <string name="setup_keyboard_enable">Turn on the psst keyboard</string>
+    <string name="setup_keyboard_switch">Switch keyboard</string>
+
+    <string name="setup_try">Try it</string>
+    <string name="setup_try_hint">Your words appear here</string>
+    <string name="setup_try_speak">Tap the field, then the round button, and speak.</string>
+    <string name="setup_try_switch">Tap the field, switch to psst, tap the round button, and speak.</string>
+
+</resources>

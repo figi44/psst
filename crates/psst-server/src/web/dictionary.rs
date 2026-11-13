@@ -259,7 +259,7 @@ fn panel(state: &AppState, view: &psst_proto::api::DictionaryView, t: &Dictionar
     let fields = outcome.form.clone().filter(|_| mine).unwrap_or_else(|| TermForm::of(&term));
     let uses = state
         .db
-        .history(1000)
+        .history(1000, None)
         .unwrap_or_default()
         .iter()
         .filter(|row| {

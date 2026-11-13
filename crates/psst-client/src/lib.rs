@@ -284,6 +284,11 @@ pub struct FrameSender {
 }
 
 impl FrameSender {
+    /// Waits while the buffer is full. [`ClientError::Closed`] once the session takes no more audio.
+    pub async fn send(&self, frame: AudioFrame) -> Result<(), ClientError> {
+        self.tx.send(Outgoing::Frame(Box::new(frame))).await.map_err(|_| ClientError::Closed)
+    }
+
     pub fn try_send(&self, frame: AudioFrame) -> Result<(), TrySendError> {
         self.tx.try_send(Outgoing::Frame(Box::new(frame))).map_err(|err| match err {
             mpsc::error::TrySendError::Full(_) => TrySendError::Full,

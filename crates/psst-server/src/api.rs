@@ -463,7 +463,7 @@ async fn history(
 ) -> Result<Json<Vec<HistoryRow>>, ApiErr> {
     let Query(query) = query.map_err(|err| ApiErr::new(ApiErrorCode::BadRequest, err.body_text()))?;
     let limit = query.limit.unwrap_or(HISTORY_DEFAULT).min(HISTORY_MAX);
-    Ok(Json(state.db.history(limit)?))
+    Ok(Json(state.db.history(limit, query.device.as_deref())?))
 }
 
 async fn dictionary_view(_: Admin, State(state): State<AppRef>) -> Json<DictionaryView> {

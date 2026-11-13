@@ -38,3 +38,12 @@ flake:
 fix:
     cargo fmt
     cargo clippy --workspace --all-targets --locked --fix --allow-dirty --allow-staged -- -D warnings
+
+# The debug APK and Android lint, in `nix develop .#android`. Arguments go to Gradle: `just android -Ppsst.abis=arm64-v8a`.
+[positional-arguments]
+android *args:
+    gradle -p android :app:assembleDebug :app:lintDebug "$@"
+
+# Install the debug APK on the connected device or emulator, in `nix develop .#android`.
+android-install:
+    gradle -p android :app:installDebug

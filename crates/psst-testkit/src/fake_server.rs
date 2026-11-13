@@ -10,7 +10,7 @@ use std::{
 use futures_util::{SinkExt, StreamExt};
 use psst_proto::{
     Endpoint, ErrorCode, FRAME_SAMPLES, Final, HistoryId, PROTOCOL_VERSION, ServerTimings, SessionId,
-    api::{ApiError, ApiErrorCode, PairRedeem, PairRedeemed},
+    api::{ApiError, ApiErrorCode, HistoryRow, PairRedeem, PairRedeemed},
     ws::{
         CancelledMsg, ClientMsg, Codec, ErrorMsg, FinalMsg, ProgressMsg, ProgressState, ProtocolDetail,
         ReadyModelState, ReadyMsg, ReportMsg, ServerLimits, ServerMsg, StartMsg, WelcomeMsg,
@@ -98,6 +98,8 @@ struct State {
     reports: Vec<ReportMsg>,
     connections: u64,
     next_history: HistoryId,
+    history: Vec<HistoryRow>,
+    history_requests: Vec<String>,
 }
 
 impl State {
@@ -221,6 +223,17 @@ impl FakeServer {
         self.inner.state().reports.clone()
     }
 
+    /// What `GET /api/history` answers, whatever its query asks for, as from a server that
+    /// predates `device`.
+    pub fn set_history(&self, rows: Vec<HistoryRow>) {
+        self.inner.state().history = rows;
+    }
+
+    /// The path and query of every `GET /api/history`.
+    pub fn history_requests(&self) -> Vec<String> {
+        self.inner.state().history_requests.clone()
+    }
+
     pub fn connections(&self) -> u64 {
         self.inner.state().connections
     }
@@ -311,20 +324,23 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(inner: Arc<Inner>, mut st
         return;
     }
     const PAIR: &[u8] = b"POST /api/pair/";
-    let mut head = [0u8; PAIR.len()];
+    const HISTORY: &[u8] = b"GET /api/history";
+    let mut head = [0u8; HISTORY.len()];
     let mut buffered = Vec::new();
-    while buffered.len() < PAIR.len() {
-        let want = PAIR.len() - buffered.len();
+    while buffered.len() < head.len() {
+        let want = head.len() - buffered.len();
         match stream.read(&mut head[..want]).await {
             Ok(0) | Err(_) => return,
             Ok(n) => buffered.extend_from_slice(&head[..n]),
         }
     }
-    if buffered.starts_with(PAIR) {
-        pair(&inner, Prefixed { prefix: buffered, pos: 0, inner: stream }).await;
-        return;
-    }
     let stream = Prefixed { prefix: buffered, pos: 0, inner: stream };
+    if stream.prefix.starts_with(PAIR) {
+        return pair(&inner, stream).await;
+    }
+    if stream.prefix.starts_with(HISTORY) {
+        return history(&inner, stream, tcp).await;
+    }
     let mut auth = None;
     #[allow(clippy::result_large_err)] // the error type is tungstenite's
     let callback = |req: &Request, resp: Response| {
@@ -596,26 +612,62 @@ fn finish(inner: &Inner, id: SessionId) -> Option<ServerMsg> {
     }
 }
 
-async fn pair<S: AsyncRead + AsyncWrite + Unpin>(inner: &Inner, mut stream: S) {
+async fn read_request<S: AsyncRead + Unpin>(stream: &mut S) -> Option<(String, Vec<u8>)> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 1024];
-    let body = loop {
+    loop {
         match stream.read(&mut chunk).await {
-            Ok(0) | Err(_) => return,
+            Ok(0) | Err(_) => return None,
             Ok(n) => buf.extend_from_slice(&chunk[..n]),
         }
         let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
-        let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
-        let len = head
-            .lines()
-            .find_map(|l| l.strip_prefix("content-length:"))
-            .and_then(|v| v.trim().parse::<usize>().ok())
-            .unwrap_or(0);
+        let head = String::from_utf8_lossy(&buf[..end]).into_owned();
+        let len = header(&head, "content-length").and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
         if buf.len() >= end + 4 + len {
-            break buf[end + 4..end + 4 + len].to_vec();
+            return Some((head, buf[end + 4..end + 4 + len].to_vec()));
+        }
+    }
+}
+
+fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
+    head.lines().skip(1).find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        key.trim().eq_ignore_ascii_case(name).then(|| value.trim())
+    })
+}
+
+async fn respond<S: AsyncWrite + Unpin>(mut stream: S, status: &str, json: &str) {
+    let response = format!(
+        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{json}",
+        json.len()
+    );
+    let _ = stream.write_all(response.as_bytes()).await;
+    let _ = stream.shutdown().await;
+}
+
+async fn history<S: AsyncRead + AsyncWrite + Unpin>(inner: &Inner, mut stream: S, tcp: bool) {
+    let Some((head, _)) = read_request(&mut stream).await else { return };
+    while inner.state().stalled {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let path = head.split_whitespace().nth(1).unwrap_or_default().to_owned();
+    let authorised = !tcp || header(&head, "authorization") == Some(&format!("Bearer {}", inner.cfg.token));
+    let (status, json) = {
+        let mut state = inner.state();
+        state.history_requests.push(path);
+        if authorised {
+            ("200 OK", serde_json::to_string(&state.history))
+        } else {
+            let error = ApiError { code: ApiErrorCode::Unauthorized, message: "unknown device token".into() };
+            ("401 Unauthorized", serde_json::to_string(&error))
         }
     };
-    let auto = buf.starts_with(b"POST /api/pair/auto ");
+    respond(stream, status, &json.expect("serialise")).await;
+}
+
+async fn pair<S: AsyncRead + AsyncWrite + Unpin>(inner: &Inner, mut stream: S) {
+    let Some((head, body)) = read_request(&mut stream).await else { return };
+    let auto = head.starts_with("POST /api/pair/auto ");
     let (status, json) = match serde_json::from_slice::<PairRedeem>(&body) {
         // Like a server whose auto_pair lists this machine.
         _ if auto => (
@@ -641,13 +693,7 @@ async fn pair<S: AsyncRead + AsyncWrite + Unpin>(inner: &Inner, mut stream: S) {
             serde_json::to_string(&ApiError { code: ApiErrorCode::BadRequest, message: "bad body".into() }),
         ),
     };
-    let json = json.expect("serialise");
-    let response = format!(
-        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{json}",
-        json.len()
-    );
-    let _ = stream.write_all(response.as_bytes()).await;
-    let _ = stream.shutdown().await;
+    respond(stream, status, &json.expect("serialise")).await;
 }
 
 struct Prefixed<S> {
