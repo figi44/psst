@@ -12,4 +12,5 @@ mod pages;
 mod profiles;
 mod reload;
 mod sessions;
+mod streams;
 mod ui_cli;

@@ -38,6 +38,8 @@ class StubModel:
         self.clock = clock
         self.oom_ids = oom_ids
         self.errors = errors or {}
+        self.transcribed: list[int] = []
+        """The number of samples of each recording transcribed."""
 
     def load(self, request: LoadRequest, progress: ProgressFn) -> str:
         progress("download", 524_288, 1_048_576)
@@ -51,6 +53,7 @@ class StubModel:
         if request.id in self.errors:
             raise self.errors[request.id]
         self.clock.advance(0.18)
+        self.transcribed.append(len(samples))
         terms = ", ".join(request.bias.terms)
         prompt = " ".join(part for part in (request.bias.style, terms and terms + ".") if part)
         return Transcription(

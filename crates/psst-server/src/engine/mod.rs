@@ -8,7 +8,7 @@
 mod process;
 
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     mem,
     path::PathBuf,
     sync::{
@@ -20,7 +20,8 @@ use std::{
 
 use psst_config::ModelOptions;
 use psst_engine_proto::{
-    Bias, EngineErrorCode, FromEngine, Load, LoadPhase, PROTOCOL_VERSION, ToEngine, Transcribe, TranscribeResult,
+    Bias, EngineErrorCode, FromEngine, Load, LoadPhase, PROTOCOL_VERSION, StreamRef, ToEngine, Transcribe,
+    TranscribeResult,
 };
 use psst_proto::{
     ErrorCode,
@@ -122,6 +123,48 @@ pub struct JobRequest {
     /// The recording as a frame payload: `f32` little-endian at 16 kHz.
     pub payload: Vec<u8>,
     pub audio_ms: u32,
+    /// The recording's stream, if it was sent to the engine as it came in: the request then
+    /// closes the stream, and `payload` is only for falling back to `transcribe`.
+    pub stream: Option<Stream>,
+}
+
+/// A live recording sent to the engine while it comes in (the "Streams" section of
+/// `psst_engine_proto`'s docs), from [`Supervisor::open_stream`]. Dropping it discards the stream;
+/// a [`JobRequest`] closes it.
+#[derive(Debug)]
+pub struct Stream {
+    id: JobId,
+    commands: mpsc::UnboundedSender<Command>,
+    submitted: bool,
+}
+
+impl Stream {
+    /// The recording's next samples, `pcm_s16le`.
+    pub fn append(&self, pcm: &[u8]) {
+        let _ = self.commands.send(Command::Append(self.id, pcm_to_payload(pcm)));
+    }
+
+    fn submit(mut self) -> JobId {
+        self.submitted = true;
+        self.id
+    }
+}
+
+impl Drop for Stream {
+    fn drop(&mut self) {
+        if !self.submitted {
+            let _ = self.commands.send(Command::Discard(self.id));
+        }
+    }
+}
+
+/// `pcm_s16le` as an engine audio payload: `f32` little-endian.
+pub fn pcm_to_payload(pcm: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(pcm.len() * 2);
+    for pair in pcm.as_chunks::<2>().0 {
+        payload.extend_from_slice(&(f32::from(i16::from_le_bytes(*pair)) / 32768.0).to_le_bytes());
+    }
+    payload
 }
 
 /// A submitted request.
@@ -162,6 +205,9 @@ enum Command {
     Unload(oneshot::Sender<ModelStatus>),
     Submit(Job),
     Cancel(JobId),
+    Open { id: JobId, language: String, bias: Bias },
+    Append(JobId, Vec<u8>),
+    Discard(JobId),
     Resume,
     Shutdown(oneshot::Sender<()>),
 }
@@ -197,6 +243,8 @@ impl Supervisor {
             unload_waiters: Vec::new(),
             shutdown_waiters: Vec::new(),
             shutting_down: false,
+            streams_supported: false,
+            streams: HashMap::new(),
         };
         tokio::spawn(actor.run());
         Supervisor { commands, status, next_job: Arc::new(AtomicU64::new(1)) }
@@ -220,8 +268,21 @@ impl Supervisor {
         answer.await.unwrap_or_else(|_| self.status())
     }
 
-    pub fn submit(&self, request: JobRequest) -> JobHandle {
+    /// Starts sending a live recording to the engine as it comes in. Only an engine that takes
+    /// streams gets it, and only while the model is loaded; otherwise the request that closes it
+    /// sends the whole recording as `transcribe`.
+    pub fn open_stream(&self, language: String, bias: Bias) -> Stream {
         let id = self.next_job.fetch_add(1, Ordering::Relaxed);
+        let _ = self.commands.send(Command::Open { id, language, bias });
+        Stream { id, commands: self.commands.clone(), submitted: false }
+    }
+
+    pub fn submit(&self, request: JobRequest) -> JobHandle {
+        let streamed = request.stream.is_some();
+        let id = match request.stream {
+            Some(stream) => stream.submit(),
+            None => self.next_job.fetch_add(1, Ordering::Relaxed),
+        };
         let status = Arc::new(JobStatus::default());
         let (done, outcome) = oneshot::channel();
         let job = Job {
@@ -230,6 +291,7 @@ impl Supervisor {
             bias: request.bias,
             payload: Arc::new(request.payload),
             audio_ms: request.audio_ms,
+            streamed,
             status: status.clone(),
             done: Some(done),
             enqueued: Instant::now(),
@@ -273,6 +335,8 @@ struct Job {
     bias: Bias,
     payload: Arc<Vec<u8>>,
     audio_ms: u32,
+    /// Its id is a stream's, which it closes if the stream is still open in this engine.
+    streamed: bool,
     status: Arc<JobStatus>,
     done: Option<oneshot::Sender<JobOutcome>>,
     enqueued: Instant,
@@ -351,6 +415,8 @@ struct Run {
     deadline: Instant,
     /// Set when the request was cancelled: the engine is killed at this instant.
     kill_at: Option<Instant>,
+    /// Sent as `close` rather than `transcribe`.
+    closes_stream: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -391,6 +457,10 @@ struct Actor {
     unload_waiters: Vec<oneshot::Sender<ModelStatus>>,
     shutdown_waiters: Vec<oneshot::Sender<()>>,
     shutting_down: bool,
+    /// Whether the running engine takes streams.
+    streams_supported: bool,
+    /// The streams open in an engine, with that engine's generation.
+    streams: HashMap<JobId, u64>,
 }
 
 fn ms(duration: Duration) -> u32 {
@@ -467,6 +537,7 @@ impl Actor {
             Command::Cancel(id) => {
                 if let Some(pos) = self.queue.iter().position(|job| job.id == id) {
                     let mut job = self.queue.remove(pos).expect("position is in range");
+                    self.discard_stream(id);
                     job.finish(JobOutcome::Cancelled);
                 } else if let Phase::Busy { run, .. } = &mut self.phase
                     && run.job.id == id
@@ -476,6 +547,23 @@ impl Actor {
                     run.job.finish(JobOutcome::Cancelled);
                 }
             }
+            Command::Open { id, language, bias } => {
+                if self.streams_supported
+                    && let Phase::Ready { proc } | Phase::Busy { proc, .. } = &self.phase
+                {
+                    let options = self.cfg.options.to_json();
+                    proc.send(&ToEngine::Open(Transcribe { id, language, bias, options }), Arc::default());
+                    self.streams.insert(id, proc.generation);
+                }
+            }
+            Command::Append(id, payload) => {
+                if let Some(proc) = self.phase.proc()
+                    && self.streams.get(&id) == Some(&proc.generation)
+                {
+                    proc.send(&ToEngine::Append(StreamRef { id }), Arc::new(payload));
+                }
+            }
+            Command::Discard(id) => self.discard_stream(id),
             Command::Resume => {
                 if self.target == Target::Loaded && !self.shutting_down {
                     self.restart_after_resume();
@@ -525,6 +613,7 @@ impl Actor {
                     self.fail_model(now, error, true);
                 } else {
                     tracing::info!("engine {} {} started; loading {}", hello.engine, hello.version, self.cfg.model);
+                    self.streams_supported = hello.capabilities.stream;
                     let Phase::Starting { proc, .. } = mem::replace(&mut self.phase, Phase::Idle) else {
                         unreachable!()
                     };
@@ -586,6 +675,12 @@ impl Actor {
                 }
                 let attempts_left = job.attempts < MAX_ATTEMPTS;
                 match error.code {
+                    // The engine lost the stream; the next attempt sends the whole recording.
+                    code if run.closes_stream && code != EngineErrorCode::Oom && attempts_left => {
+                        tracing::warn!("the engine couldn't close the stream ({}); sending it whole", error.message);
+                        job.status.set(JobPhase::Retrying);
+                        self.queue.push_front(job);
+                    }
                     EngineErrorCode::Oom if attempts_left => {
                         tracing::warn!("the engine ran out of GPU memory; trying once more");
                         job.oom_retry = true;
@@ -605,6 +700,13 @@ impl Actor {
                         job.fail(code, format!("the engine failed: {}", error.message), None);
                     }
                 }
+            }
+            // An `open` or `append` the engine refused: the stream is gone there.
+            (FromEngine::Error(error), phase) if error.id.is_some_and(|id| self.streams.contains_key(&id)) => {
+                self.phase = phase;
+                let id = error.id.expect("checked above");
+                tracing::warn!("the engine dropped stream {id}: {}", error.message);
+                self.streams.remove(&id);
             }
             (msg, phase) => {
                 self.phase = phase;
@@ -707,6 +809,7 @@ impl Actor {
             let job = &self.queue[i];
             if job.waiting_since.is_some() && job.wait_total(now) >= deadline {
                 let mut job = self.queue.remove(i).expect("index is in range");
+                self.discard_stream(job.id);
                 let message = format!("the model wasn't ready within {} s", deadline.as_secs());
                 job.fail(ErrorCode::Timeout, message, None);
             } else {
@@ -741,23 +844,33 @@ impl Actor {
             if job.oom_retry {
                 options.batch_size = 1;
             }
-            proc.send(
-                &ToEngine::Transcribe(Transcribe {
-                    id: job.id,
-                    language: job.language.clone(),
-                    bias: job.bias.clone(),
-                    options: options.to_json(),
-                }),
-                job.payload.clone(),
-            );
+            // A stream is closed once at most: a retry sends the whole recording.
+            let closes_stream = job.streamed && self.streams.remove(&job.id) == Some(proc.generation);
+            if closes_stream {
+                proc.send(&ToEngine::Close(StreamRef { id: job.id }), Arc::default());
+            } else {
+                proc.send(
+                    &ToEngine::Transcribe(Transcribe {
+                        id: job.id,
+                        language: job.language.clone(),
+                        bias: job.bias.clone(),
+                        options: options.to_json(),
+                    }),
+                    job.payload.clone(),
+                );
+            }
             let deadline = now + ATTEMPT_BASE + Duration::from_millis(job.audio_ms.into());
-            self.phase = Phase::Busy { proc, run: Box::new(Run { job, sent: now, deadline, kill_at: None }) };
+            let run = Run { job, sent: now, deadline, kill_at: None, closes_stream };
+            self.phase = Phase::Busy { proc, run: Box::new(run) };
         }
     }
 
     fn spawn(&mut self, now: Instant) {
         self.generation += 1;
         self.download = None;
+        // Streams live in one engine; requests for the old ones send their recordings whole.
+        self.streams.clear();
+        self.streams_supported = false;
         match EngineProcess::spawn(&self.cfg, self.generation, self.events.clone()) {
             Ok(proc) => self.phase = Phase::Starting { proc, silent_until: now + LOAD_SILENCE },
             Err(err) => {
@@ -823,6 +936,16 @@ impl Actor {
         ) {
             tracing::info!("the machine woke up; restarting the engine");
             self.kill_on_purpose();
+        }
+    }
+
+    /// Forgets a stream, telling the engine if it's still open there.
+    fn discard_stream(&mut self, id: JobId) {
+        if let Some(generation) = self.streams.remove(&id)
+            && let Some(proc) = self.phase.proc()
+            && proc.generation == generation
+        {
+            proc.send(&ToEngine::Discard(StreamRef { id }), Arc::default());
         }
     }
 

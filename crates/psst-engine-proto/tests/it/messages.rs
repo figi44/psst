@@ -2,7 +2,7 @@ use std::fmt::Debug;
 
 use psst_engine_proto::{
     Bias, Capabilities, DecodeError, EngineError, EngineErrorCode, EngineTimings, FromEngine, Hello, Load, LoadPhase,
-    Loaded, Message, Progress, ToEngine, Transcribe, decode, encode, payload_to_samples, samples_to_payload,
+    Loaded, Message, Progress, StreamRef, ToEngine, Transcribe, decode, encode, payload_to_samples, samples_to_payload,
 };
 use serde_json::{Value, json};
 
@@ -37,7 +37,30 @@ fn server_to_engine_messages() {
         json!({"type": "transcribe", "id": 42, "language": "en", "bias": {"style": "Hi.", "terms": ["psst"]},
                "options": {"path": "batched"}}),
     );
+    assert_wire(
+        ToEngine::Open(Transcribe {
+            id: 43,
+            language: "cs".into(),
+            bias: Bias::default(),
+            options: json!({"path": "batched"}),
+        }),
+        json!({"type": "open", "id": 43, "language": "cs", "bias": {"style": "", "terms": []},
+               "options": {"path": "batched"}}),
+    );
+    assert_wire(ToEngine::Append(StreamRef { id: 43 }), json!({"type": "append", "id": 43}));
+    assert_wire(ToEngine::Close(StreamRef { id: 43 }), json!({"type": "close", "id": 43}));
+    assert_wire(ToEngine::Discard(StreamRef { id: 43 }), json!({"type": "discard", "id": 43}));
     assert_wire(ToEngine::Shutdown, json!({"type": "shutdown"}));
+}
+
+#[test]
+fn an_engine_that_doesnt_mention_streams_takes_none() {
+    let msg: FromEngine = decode(
+        br#"{"type":"hello","protocol":1,"engine":"old","version":"0.1.0","capabilities":{"bias":true,"max_audio_s":900}}"#,
+    )
+    .unwrap();
+    let FromEngine::Hello(hello) = msg else { panic!("{msg:?}") };
+    assert!(!hello.capabilities.stream);
 }
 
 #[test]
@@ -47,10 +70,10 @@ fn engine_to_server_messages() {
             protocol: 1,
             engine: "faster-whisper".into(),
             version: "0.1.0".into(),
-            capabilities: Capabilities { bias: true, max_audio_s: 900 },
+            capabilities: Capabilities { bias: true, max_audio_s: 900, stream: true },
         }),
         json!({"type": "hello", "protocol": 1, "engine": "faster-whisper", "version": "0.1.0",
-               "capabilities": {"bias": true, "max_audio_s": 900}}),
+               "capabilities": {"bias": true, "max_audio_s": 900, "stream": true}}),
     );
     assert_wire(
         FromEngine::Progress(Progress { phase: LoadPhase::Download, bytes: Some(10), total: Some(100) }),
@@ -77,11 +100,25 @@ fn engine_to_server_messages() {
 
 #[test]
 fn result_timings_shape() {
-    let timings = EngineTimings { decode_ms: 180, prompt_tokens: 19, bias_terms_used: 3, prompt_truncated: false };
+    let timings = EngineTimings {
+        decode_ms: 180,
+        prompt_tokens: 19,
+        bias_terms_used: 3,
+        prompt_truncated: false,
+        chunks: 2,
+        chunks_reused: 1,
+    };
     assert_eq!(
         serde_json::to_value(timings).unwrap(),
-        json!({"decode_ms": 180, "prompt_tokens": 19, "bias_terms_used": 3, "prompt_truncated": false})
+        json!({"decode_ms": 180, "prompt_tokens": 19, "bias_terms_used": 3, "prompt_truncated": false,
+               "chunks": 2, "chunks_reused": 1})
     );
+    // A `transcribe` result leaves the stream counts out.
+    let result: EngineTimings =
+        serde_json::from_value(json!({"decode_ms": 180, "prompt_tokens": 19, "bias_terms_used": 3,
+                                      "prompt_truncated": false}))
+        .unwrap();
+    assert_eq!((result.chunks, result.chunks_reused), (0, 0));
 }
 
 #[test]

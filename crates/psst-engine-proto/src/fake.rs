@@ -8,6 +8,7 @@
 //! restarts: a script of `[exit, result]` crashes once and then succeeds.
 
 use std::{
+    collections::HashMap,
     fs::{self, OpenOptions},
     io::{self, Read, Write},
     path::{Path, PathBuf},
@@ -44,11 +45,14 @@ pub struct HelloScript {
     pub protocol: u32,
     pub bias: bool,
     pub max_audio_s: u32,
+    /// Whether to take streams. A stream's `close` is answered like a `transcribe` of everything
+    /// appended to it, and consumes a step as one does.
+    pub stream: bool,
 }
 
 impl Default for HelloScript {
     fn default() -> Self {
-        Self { protocol: PROTOCOL_VERSION, bias: true, max_audio_s: 900 }
+        Self { protocol: PROTOCOL_VERSION, bias: true, max_audio_s: 900, stream: false }
     }
 }
 
@@ -129,12 +133,12 @@ impl Default for TranscribeStep {
     }
 }
 
-/// One line of the request log.
+/// One line of the request log. Every request is logged except `append`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LoggedRequest {
     /// The header as received.
     pub header: Value,
-    /// Payload length in samples.
+    /// Payload length in samples; for `close`, the samples appended to the stream.
     pub samples: usize,
 }
 
@@ -209,20 +213,32 @@ pub fn run(
             protocol: script.hello.protocol,
             engine: "fake".into(),
             version: env!("CARGO_PKG_VERSION").into(),
-            capabilities: Capabilities { bias: script.hello.bias, max_audio_s: script.hello.max_audio_s },
+            capabilities: Capabilities {
+                bias: script.hello.bias,
+                max_audio_s: script.hello.max_audio_s,
+                stream: script.hello.stream,
+            },
         }),
     )?;
 
     let mut loaded: Option<Loaded> = None;
     let mut transcribes_this_run = 0;
+    // Open streams: their `open` and the samples appended so far.
+    let mut streams: HashMap<u64, (Transcribe, usize)> = HashMap::new();
     loop {
         let Some(frame) = read_frame(input, &limits)? else {
             return Ok(Exit::EndOfInput);
         };
-        let samples = frame.payload.len() / 4;
+        let kind = header_type(&frame.header);
+        let mut samples = frame.payload.len() / 4;
+        if kind.as_deref() == Some("close")
+            && let Some((_, appended)) = request_id(&frame.header).and_then(|id| streams.get(&id))
+        {
+            samples = *appended;
+        }
         let transcribe_index = match log {
-            Some(log) => log_request(log, &frame.header, samples),
-            None => transcribes_this_run,
+            Some(log) if kind.as_deref() != Some("append") => log_request(log, &frame.header, samples),
+            _ => transcribes_this_run,
         };
         let request = match decode::<ToEngine>(&frame.header) {
             Ok(request) => request,
@@ -260,6 +276,46 @@ pub fn run(
                     send(output, reply)?;
                 }
             },
+            ToEngine::Open(request) => {
+                if loaded.is_none() {
+                    let message = "open before a successful load".to_owned();
+                    send(output, error(Some(request.id), EngineErrorCode::NotLoaded, message, false))?;
+                    continue;
+                }
+                streams.insert(request.id, (request, 0));
+            }
+            ToEngine::Append(stream) => match (streams.get_mut(&stream.id), payload_to_samples(&frame.payload)) {
+                (Some((_, appended)), Some(audio)) => *appended += audio.len(),
+                (None, _) => {
+                    let message = format!("no open stream {}", stream.id);
+                    send(output, error(Some(stream.id), EngineErrorCode::BadRequest, message, false))?;
+                }
+                (Some(_), None) => {
+                    let message = "payload length is not a multiple of 4".to_owned();
+                    send(output, error(Some(stream.id), EngineErrorCode::BadRequest, message, false))?;
+                }
+            },
+            ToEngine::Discard(stream) => {
+                streams.remove(&stream.id);
+            }
+            ToEngine::Close(stream) => {
+                transcribes_this_run += 1;
+                let Some((request, appended)) = streams.remove(&stream.id) else {
+                    let message = format!("no open stream {}", stream.id);
+                    send(output, error(Some(stream.id), EngineErrorCode::BadRequest, message, false))?;
+                    continue;
+                };
+                let Some(model) = &loaded else {
+                    let message = "close before a successful load".to_owned();
+                    send(output, error(Some(request.id), EngineErrorCode::NotLoaded, message, false))?;
+                    continue;
+                };
+                let step = script.transcribe.get(transcribe_index).cloned().unwrap_or_default();
+                match answer(step, model, &request, appended) {
+                    Ok(reply) => send(output, reply)?,
+                    Err(code) => return Ok(Exit::Scripted(code)),
+                }
+            }
             ToEngine::Transcribe(request) => {
                 transcribes_this_run += 1;
                 let Some(model) = &loaded else {
@@ -273,29 +329,42 @@ pub fn run(
                     continue;
                 };
                 let step = script.transcribe.get(transcribe_index).cloned().unwrap_or_default();
-                let reply = match step {
-                    TranscribeStep::Result { text, delay_ms, no_speech_prob, speech_ms } => {
-                        sleep_ms(delay_ms);
-                        let result = TranscribeResultScript { text, delay_ms, no_speech_prob, speech_ms };
-                        FromEngine::Result(result.reply(model, &request, audio.len()))
-                    }
-                    TranscribeStep::Error { code, message, retryable, delay_ms } => {
-                        sleep_ms(delay_ms);
-                        error(Some(request.id), code, message, retryable)
-                    }
-                    TranscribeStep::Exit { code, delay_ms } => {
-                        sleep_ms(delay_ms);
-                        return Ok(Exit::Scripted(code));
-                    }
-                    TranscribeStep::Hang => hang(),
-                };
-                send(output, reply)?;
+                match answer(step, model, &request, audio.len()) {
+                    Ok(reply) => send(output, reply)?,
+                    Err(code) => return Ok(Exit::Scripted(code)),
+                }
             }
         }
     }
 }
 
-/// Appends a request to the log and returns how many `transcribe` requests came before it.
+/// Answers a `transcribe`, or a stream's `close`, of `samples` samples with a scripted step: the
+/// reply, or the status of a scripted exit.
+fn answer(step: TranscribeStep, model: &Loaded, request: &Transcribe, samples: usize) -> Result<FromEngine, u8> {
+    match step {
+        TranscribeStep::Result { text, delay_ms, no_speech_prob, speech_ms } => {
+            sleep_ms(delay_ms);
+            let result = TranscribeResultScript { text, delay_ms, no_speech_prob, speech_ms };
+            Ok(FromEngine::Result(result.reply(model, request, samples)))
+        }
+        TranscribeStep::Error { code, message, retryable, delay_ms } => {
+            sleep_ms(delay_ms);
+            Ok(error(Some(request.id), code, message, retryable))
+        }
+        TranscribeStep::Exit { code, delay_ms } => {
+            sleep_ms(delay_ms);
+            Err(code)
+        }
+        TranscribeStep::Hang => hang(),
+    }
+}
+
+fn header_type(header: &[u8]) -> Option<String> {
+    serde_json::from_slice::<Value>(header).ok()?.get("type")?.as_str().map(str::to_owned)
+}
+
+/// Appends a request to the log and returns how many `transcribe` and `close` requests came
+/// before it.
 fn log_request(log: &Path, header: &[u8], samples: usize) -> usize {
     let header =
         serde_json::from_slice(header).unwrap_or_else(|_| Value::String(String::from_utf8_lossy(header).into()));
@@ -312,7 +381,7 @@ fn log_request(log: &Path, header: &[u8], samples: usize) -> usize {
     entries
         .lines()
         .filter_map(|line| serde_json::from_str::<LoggedRequest>(line).ok())
-        .filter(|entry| entry.header.get("type").and_then(Value::as_str) == Some("transcribe"))
+        .filter(|entry| matches!(entry.header.get("type").and_then(Value::as_str), Some("transcribe" | "close")))
         .count()
         .saturating_sub(1)
 }
@@ -356,6 +425,7 @@ impl TranscribeResultScript {
                 prompt_tokens: prompt.split_whitespace().count() as u32,
                 bias_terms_used: request.bias.terms.len() as u32,
                 prompt_truncated: false,
+                ..EngineTimings::default()
             },
             trace: EngineTrace {
                 engine: "fake".into(),

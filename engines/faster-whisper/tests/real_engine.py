@@ -12,6 +12,7 @@ import queue
 import re
 import subprocess
 import sys
+import time
 import threading
 import wave
 from array import array
@@ -129,6 +130,28 @@ class EngineProcess:
             },
             samples,
         )
+        return self.recv(timeout)
+
+    def stream(
+        self,
+        stream_id: int,
+        pieces: Sequence[bytes],
+        *,
+        wait_s: float = 0.0,
+        style: str = "",
+        terms: Sequence[str] = (),
+        timeout: float = 60,
+        **options: Any,
+    ) -> dict[str, Any]:
+        """Sends a recording as a stream, in ``pieces`` ``wait_s`` apart, closes it, and returns the
+        answer."""
+        request = {"id": stream_id, "language": "en", "bias": {"style": style, "terms": list(terms)}, "options": options}
+        self.send({"type": "open", **request})
+        for i, piece in enumerate(pieces):
+            if i:
+                time.sleep(wait_s)
+            self.send({"type": "append", "id": stream_id}, piece)
+        self.send({"type": "close", "id": stream_id})
         return self.recv(timeout)
 
     def close(self) -> int:

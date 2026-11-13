@@ -37,7 +37,7 @@ def tokenizer():
 def engine(tokenizer):
     with EngineProcess(env={"HF_HUB_OFFLINE": "1"}) as engine:
         hello = engine.recv()
-        assert hello["capabilities"] == {"bias": True, "max_audio_s": 900}
+        assert hello["capabilities"] == {"bias": True, "max_audio_s": 900, "stream": True}
         loaded, progress = engine.load("tiny", "cpu", "int8")
         assert progress == [{"type": "progress", "phase": "load"}]
         assert len(loaded["revision"]) == 40
@@ -74,3 +74,45 @@ def test_silence_has_no_segments(engine):
     assert result["type"] == "result", result
     assert result["trace"]["result"]["segments"] == []
     assert result["trace"]["result"]["speech_ms"] == 0
+
+
+def without_decode_time(result: dict) -> dict:
+    return {**result, "id": None, "timings": {k: v for k, v in result["timings"].items() if k not in ("decode_ms", "chunks", "chunks_reused")}}
+
+
+def test_a_stream_that_ends_in_a_pause_is_answered_from_the_work_done_ahead(engine):
+    """The answer is the whole recording's, and the chunk was decoded during the pause."""
+    second = 16_000
+    samples = speech() + [0.0] * second
+    whole = engine.transcribe(4, payload(samples), style=STYLE, terms=TERMS)
+    # The pause is in the audio before the wait, so the engine decodes ahead while it waits.
+    streamed = engine.stream(
+        5, [payload(samples[: -second // 5]), payload(samples[-second // 5 :])], wait_s=3, style=STYLE, terms=TERMS
+    )
+    assert streamed["type"] == "result", streamed
+    assert (streamed["timings"]["chunks"], streamed["timings"]["chunks_reused"]) == (1, 1)
+    assert without_decode_time(streamed) == without_decode_time(whole)
+
+
+def test_a_stream_still_speaking_at_close_is_decoded_then(engine):
+    samples = speech()
+    whole = engine.transcribe(6, payload(samples), style=STYLE, terms=TERMS)
+    streamed = engine.stream(7, [payload(samples[:16_000]), payload(samples[16_000:])], wait_s=1, style=STYLE, terms=TERMS)
+    assert (streamed["timings"]["chunks"], streamed["timings"]["chunks_reused"]) == (1, 0)
+    assert without_decode_time(streamed) == without_decode_time(whole)
+
+
+def test_a_long_stream_reuses_the_chunks_finished_while_recording(engine):
+    """Over 30 s, the chunks decoded ahead were decoded alone rather than in one batch, which may
+    move word timings and probabilities slightly, as another batch size does; the text is the
+    same."""
+    samples = long_speech()
+    whole = engine.transcribe(8, payload(samples))
+    piece = 5 * 16_000
+    pieces = [payload(samples[i : i + piece]) for i in range(0, len(samples), piece)]
+    streamed = engine.stream(9, pieces, wait_s=1)
+    assert streamed["timings"]["chunks"] == 2
+    assert streamed["timings"]["chunks_reused"] >= 1
+    assert_covers_long_speech(streamed)
+    texts = [[(s["text"], s["start_ms"]) for s in r["trace"]["result"]["segments"]] for r in (streamed, whole)]
+    assert texts[0] == texts[1]

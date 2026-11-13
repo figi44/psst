@@ -13,7 +13,7 @@ use psst_proto::{
     DeviceId, ErrorCode, FRAME_SAMPLES, HistoryId, PROTOCOL_VERSION, SAMPLE_RATE, ServerTimings,
     api::ModelState,
     ws::{
-        AudioFormat, CancelMsg, CancelledMsg, ClientMsg, ErrorMsg, FinalMsg, ProgressMsg, ProgressState,
+        AudioFormat, CancelMsg, CancelledMsg, ClientMsg, ErrorMsg, FinalMsg, Mode, ProgressMsg, ProgressState,
         ReadyModelState, ReadyMsg, ReportMsg, ServerLimits, ServerMsg, StartMsg, StopMsg, WelcomeMsg,
     },
 };
@@ -25,7 +25,7 @@ use tokio::{
 
 use crate::{
     auth::{Identity, Refusal},
-    engine::{JobOutcome, JobPhase, JobRequest, JobStatus},
+    engine::{JobOutcome, JobPhase, JobRequest, JobStatus, Stream, pcm_to_payload},
     registry::{Attachment, Cancel, ConnEvent, Rejection, SessionKey, Start, StartRequest},
     state::AppState,
 };
@@ -164,6 +164,11 @@ enum Phase {
 
 struct Recording {
     pcm: Vec<u8>,
+    /// Live sessions send their audio to the engine as it arrives, a frame behind: the last frame
+    /// is padded, and only its real samples are sent, at `stop`.
+    stream: Option<Stream>,
+    /// Bytes of `pcm` sent to the stream.
+    streamed: usize,
     last_frame: Instant,
     history_id: HistoryId,
     profile: Profile,
@@ -276,13 +281,20 @@ impl Conn {
             }
             Ok(Start::Record { epoch, history_id }) => {
                 tracing::info!("session {session_id} of {}: recording", self.device);
+                let profile = profile.expect("a new recording was admitted with a known profile");
+                let bias = start.eval.is_none_or(|eval| eval.bias);
+                let stream = (start.mode == Mode::Live && self.state.model_loaded()).then(|| {
+                    self.state.engine.open_stream(profile.language.clone(), engine_bias(&profile, &dictionary, bias))
+                });
                 let recording = Recording {
                     pcm: Vec::with_capacity(10 * SAMPLE_RATE as usize * 2),
+                    stream,
+                    streamed: 0,
                     last_frame: Instant::now(),
                     history_id,
-                    profile: profile.expect("a new recording was admitted with a known profile"),
+                    profile,
                     dictionary,
-                    bias: start.eval.is_none_or(|eval| eval.bias),
+                    bias,
                 };
                 self.active = Some(Active {
                     key,
@@ -322,6 +334,13 @@ impl Conn {
                 .await;
         }
         recording.pcm.extend_from_slice(bytes);
+        if let Some(stream) = &recording.stream {
+            let upto = recording.pcm.len().saturating_sub(FRAME_SAMPLES * 2);
+            if upto > recording.streamed {
+                stream.append(&recording.pcm[recording.streamed..upto]);
+                recording.streamed = upto;
+            }
+        }
         recording.last_frame = Instant::now();
         let limit_s = u64::from(self.state.server.limits.max_recording_s) + TOO_LONG_GRACE_S;
         if recording.pcm.len() as u64 / 2 > limit_s * u64::from(SAMPLE_RATE) {
@@ -354,7 +373,7 @@ impl Conn {
             tracing::debug!("ignoring `stop` for session {}, which isn't active here", stop.session_id);
             return Flow::Continue;
         };
-        let Phase::Recording(recording) = &active.phase else { return Flow::Continue };
+        let Phase::Recording(recording) = &mut active.phase else { return Flow::Continue };
         let (key, epoch) = (active.key.clone(), active.epoch);
         let received = recording.pcm.len() as u64 / 2;
         if !(stop.samples <= received && received < stop.samples + FRAME_SAMPLES as u64) {
@@ -364,20 +383,17 @@ impl Conn {
 
         let stop_at = Instant::now();
         let real = &recording.pcm[..stop.samples as usize * 2];
-        let payload: Vec<u8> = real
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .flat_map(|pair| (f32::from(i16::from_le_bytes(*pair)) / 32768.0).to_le_bytes())
-            .collect();
+        let payload = pcm_to_payload(real);
         let profile = &recording.profile;
-        let bias = if recording.bias {
-            Bias { style: profile.prompt_style.clone(), terms: recording.dictionary.bias_terms(&profile.language) }
-        } else {
-            Bias::default()
-        };
+        let bias = engine_bias(profile, &recording.dictionary, recording.bias);
         let audio_ms = u32::try_from(stop.samples / SAMPLES_PER_MS).unwrap_or(u32::MAX);
-        let request = JobRequest { language: profile.language.clone(), bias, payload, audio_ms };
+        let stream = recording.stream.take();
+        if let Some(stream) = &stream
+            && real.len() > recording.streamed
+        {
+            stream.append(&real[recording.streamed..]);
+        }
+        let request = JobRequest { language: profile.language.clone(), bias, payload, audio_ms, stream };
         let engine = &self.state.engine;
         let Some(handle) =
             self.state.registry.stop(&key, epoch, self.attachment.conn_id, audio_ms, || engine.submit(request))
@@ -509,6 +525,16 @@ impl Conn {
     }
 }
 
+/// What the engine is told to expect: the profile's style and the dictionary's terms, or nothing
+/// for `eval.bias = false`.
+fn engine_bias(profile: &Profile, dictionary: &Dictionary, bias: bool) -> Bias {
+    if bias {
+        Bias { style: profile.prompt_style.clone(), terms: dictionary.bias_terms(&profile.language) }
+    } else {
+        Bias::default()
+    }
+}
+
 /// Whether a new recording may begin, from the model's state.
 fn admit(state: &AppState) -> Result<(), Rejection> {
     let status = state.engine.status();
@@ -575,6 +601,7 @@ impl SessionJob {
                     pipeline_ms,
                     stop_to_final_ms: millis(self.stop_at.elapsed()),
                 };
+                let engine = done.result.timings;
                 let trace = done.result.trace;
                 let msg = FinalMsg {
                     session_id,
@@ -585,10 +612,13 @@ impl SessionJob {
                 };
                 if state.registry.finish(&self.key, self.epoch, msg) {
                     tracing::info!(
-                        "session {session_id} of {}: final after {} ms ({} attempts)",
+                        "session {session_id} of {}: final after {} ms ({} attempts, {} of {} chunks decoded \
+                         while recording)",
                         self.key.device,
                         timings.stop_to_final_ms,
-                        timings.attempts
+                        timings.attempts,
+                        engine.chunks_reused,
+                        engine.chunks
                     );
                     if let Err(err) =
                         state.db.finish_session(self.history_id, &trace.model, &trace.revision, &fin, &timings)

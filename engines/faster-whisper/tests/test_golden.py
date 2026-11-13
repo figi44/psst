@@ -13,7 +13,7 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
-from psst_engine_faster_whisper.engine import Engine, parse_load, parse_transcribe
+from psst_engine_faster_whisper.engine import Engine, parse_load, parse_stream_id, parse_transcribe
 from psst_engine_faster_whisper.protocol import (
     max_payload_bytes,
     parse_header,
@@ -63,11 +63,25 @@ def test_decodes_server_frames():
     assert len(samples) == 1600
     assert list(samples[:8]) == [0.0, 0.25, -0.25, 0.5, -0.5, 1.0, -1.0, 0.125]
 
+    open_ = read_golden("open.bin")
+    request = parse_transcribe(parse_header(open_.header))
+    assert (request.id, request.language, request.bias.terms) == (43, "cs", ("Hyprland",))
+    assert open_.payload == b""
+    append = read_golden("append.bin")
+    assert parse_stream_id(parse_header(append.header)) == 43
+    assert list(samples_from_payload(append.payload)[:8]) == [0.0, 0.25, -0.25, 0.5, -0.5, 1.0, -1.0, 0.125]
+    for name, kind in (("close.bin", "close"), ("discard.bin", "discard")):
+        frame = read_golden(name)
+        assert parse_header(frame.header) == {"type": kind, "id": 43}
+        assert frame.payload == b""
+
     shutdown = read_golden("shutdown.bin")
     assert parse_header(shutdown.header) == {"type": "shutdown"}
 
 
 def golden_name(message: dict) -> str:
+    if "chunks" in message.get("timings", {}):
+        return "stream-result.bin"  # not `result-…`: .gitignore keeps those out, as Nix build links
     detail = message.get("phase") or message.get("code")
     return f"{message['type']}-{detail}.bin".replace("_", "-") if detail else f"{message['type']}.bin"
 
@@ -99,6 +113,12 @@ def test_writes_engine_frames():
         {"type": "transcribe", "id": 43, "language": "en", "bias": {"style": "", "terms": []}, "options": {}},
         payload_from_samples([0.0] * 1600),
     )
+    write_frame(
+        requests,
+        {"type": "open", "id": 44, "language": "en", "bias": {"style": "", "terms": []}, "options": {}},
+    )
+    write_frame(requests, {"type": "append", "id": 44}, payload_from_samples([0.0] * 1600))
+    write_frame(requests, {"type": "close", "id": 44})
     write_frame(requests, {"type": "shutdown"})
     requests.seek(0)
 
@@ -126,6 +146,7 @@ def test_writes_engine_frames():
         "result.bin",
         "error-unsupported.bin",
         "error-oom.bin",
+        "stream-result.bin",
     ]
 
 

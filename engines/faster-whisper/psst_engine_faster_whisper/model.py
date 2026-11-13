@@ -10,6 +10,7 @@ import dataclasses
 import gc
 import os
 import sys
+import traceback
 from array import array
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
@@ -121,6 +122,9 @@ class Backend:
     """Turns f32 samples into what ``transcribe`` takes."""
     warm_up: Callable[[Any], None]
     """Runs a loaded model once, so the first dictation doesn't pay for CUDA's one-off setup."""
+    stream: Callable[[Any, dict[str, Any]], Any] | None = None
+    """``stream.Stream``: a live recording decoded ahead, given the model and the arguments of
+    the pipeline's ``transcribe``. ``None``: streams are transcribed whole at ``close``."""
 
     @classmethod
     def faster_whisper(cls) -> Backend:
@@ -128,6 +132,8 @@ class Backend:
         import numpy
         from faster_whisper.tokenizer import _LANGUAGE_CODES
         from faster_whisper.utils import _MODELS
+
+        from . import stream
 
         return cls(
             whisper_model=faster_whisper.WhisperModel,
@@ -137,6 +143,7 @@ class Backend:
             languages=_LANGUAGE_CODES,
             audio=lambda samples: numpy.frombuffer(samples, dtype=numpy.float32),
             warm_up=_warm_up,
+            stream=stream.Stream,
         )
 
 
@@ -157,10 +164,21 @@ def log(message: str) -> None:
     print(f"psst-engine-faster-whisper: {message}", file=sys.stderr, flush=True)
 
 
+@dataclass
+class _Stream:
+    request: TranscribeRequest
+    options: Options
+    rendered: bias.RenderedBias
+    live: Any
+    """The backend's stream, or ``None`` to transcribe ``buffer`` at ``close``."""
+    buffer: array
+
+
 class FasterWhisperModel:
     def __init__(self, backend: Backend | None = None) -> None:
         self._backend = backend
         self._model: Any = None
+        self._streams: dict[int, _Stream] = {}
 
     def load(self, request: LoadRequest, progress: ProgressFn) -> str:
         """Loads from the local cache, or downloads once if the model is missing or fails to load."""
@@ -208,6 +226,66 @@ class FasterWhisperModel:
             raise LoadFailed(f"loading {repo} failed: {type(err).__name__}: {err}") from None
 
     def transcribe(self, request: TranscribeRequest, samples: array) -> Transcription:
+        backend, model, options, rendered, args = self._prepare(request)
+
+        def run() -> tuple[list[Any], Any]:
+            segments, info = backend.batched_pipeline(model).transcribe(backend.audio(samples), **args)
+            return list(segments), info
+
+        segments, info = self._on_gpu(run)
+        return _transcription(options, rendered, segments, info)
+
+    def open_stream(self, request: TranscribeRequest) -> None:
+        backend, model, options, rendered, args = self._prepare(request)
+        live = backend.stream(model, args) if backend.stream is not None else None
+        self._streams[request.id] = _Stream(request, options, rendered, live, array("f"))
+
+    def append_stream(self, stream_id: int, samples: array) -> None:
+        stream = self._streams[stream_id]
+        if stream.live is None:
+            stream.buffer.extend(samples)
+        else:
+            stream.live.append(samples)
+
+    def close_stream(self, stream_id: int) -> Transcription:
+        stream = self._streams.pop(stream_id)
+        if stream.live is None:
+            return self.transcribe(stream.request, stream.buffer)
+        segments, info, chunks, reused = self._on_gpu(stream.live.close)
+        transcription = _transcription(stream.options, stream.rendered, segments, info)
+        transcription.chunks, transcription.chunks_reused = chunks, reused
+        return transcription
+
+    def discard_stream(self, stream_id: int) -> None:
+        self._streams.pop(stream_id, None)
+
+    def background(self) -> bool:
+        """Decodes ahead for one stream with new audio, the longest-waiting first."""
+        for stream_id, stream in self._streams.items():
+            if stream.live is not None and stream.live.has_work():
+                break
+        else:
+            return False
+        del self._streams[stream_id]
+        self._streams[stream_id] = stream
+        try:
+            stream.live.work()
+        except Exception as err:
+            if isinstance(err, RuntimeError):
+                kind = gpu_error(err)
+                if kind == "gpu":
+                    raise Fatal(f"CUDA error: {err}") from None
+                if kind == "oom":
+                    self._recover(self._backend, self._model, err)
+            traceback.print_exc(file=sys.stderr)
+            log(f"decoding stream {stream_id} ahead failed; it's decoded whole at close")
+            stream.live.stopped = True
+        return True
+
+    def _prepare(
+        self, request: TranscribeRequest
+    ) -> tuple[Backend, Any, Options, bias.RenderedBias, dict[str, Any]]:
+        """Checks a request and turns it into the pipeline's ``transcribe`` arguments."""
         backend, model = self._backend, self._model
         if backend is None or model is None:
             raise RuntimeError("transcribe before a successful load")
@@ -215,47 +293,35 @@ class FasterWhisperModel:
         language = request.language or None
         if language is not None and language not in backend.languages:
             raise InvalidRequest(f"`language` {language!r} is not a Whisper language code")
-
         rendered = bias.render(
             request.bias.style,
             request.bias.terms,
             terms_as=options.terms_as,
             encode=lambda text: model.hf_tokenizer.encode(text, add_special_tokens=False).ids,
         )
+        args = {
+            "language": language,
+            "beam_size": options.beam_size,
+            "word_timestamps": options.word_timestamps,
+            "vad_filter": options.vad_filter,
+            "initial_prompt": rendered.initial_prompt,
+            "hotwords": rendered.hotwords,
+            "batch_size": options.batch_size,
+        }
+        return backend, model, options, rendered, args
+
+    def _on_gpu(self, work: Callable[[], Any]) -> Any:
+        """Runs ``work``, turning GPU errors into ``OutOfMemory`` or ``Fatal``."""
         try:
-            segments, info = backend.batched_pipeline(model).transcribe(
-                backend.audio(samples),
-                language=language,
-                beam_size=options.beam_size,
-                word_timestamps=options.word_timestamps,
-                vad_filter=options.vad_filter,
-                initial_prompt=rendered.initial_prompt,
-                hotwords=rendered.hotwords,
-                batch_size=options.batch_size,
-            )
-            segments = list(segments)
+            return work()
         except RuntimeError as err:
             kind = gpu_error(err)
             if kind == "oom":
-                self._recover(backend, model, err)
+                self._recover(self._backend, self._model, err)
                 raise OutOfMemory(str(err)) from None
             if kind == "gpu":
                 raise Fatal(f"CUDA error: {err}") from None
             raise
-
-        return Transcription(
-            result={
-                "language": info.language,
-                "speech_ms": _ms(info.duration_after_vad),
-                "segments": [_segment(segment) for segment in segments],
-            },
-            path=PATH,
-            options=dataclasses.asdict(options),
-            prompt=rendered.text,
-            prompt_tokens=rendered.tokens,
-            bias_terms_used=rendered.terms_used,
-            prompt_truncated=rendered.truncated,
-        )
 
     def _recover(self, backend: Backend, model: Any, oom: RuntimeError) -> None:
         """Makes sure the model can run again after the GPU ran out of memory, so that the server's
@@ -293,9 +359,26 @@ class FasterWhisperModel:
         return os.path.basename(os.path.normpath(snapshot))
 
     def _release(self) -> None:
+        self._streams.clear()
         if self._model is not None:
             self._model = None
             gc.collect()
+
+
+def _transcription(options: Options, rendered: bias.RenderedBias, segments: list[Any], info: Any) -> Transcription:
+    return Transcription(
+        result={
+            "language": info.language,
+            "speech_ms": _ms(info.duration_after_vad),
+            "segments": [_segment(segment) for segment in segments],
+        },
+        path=PATH,
+        options=dataclasses.asdict(options),
+        prompt=rendered.text,
+        prompt_tokens=rendered.tokens,
+        bias_terms_used=rendered.terms_used,
+        prompt_truncated=rendered.truncated,
+    )
 
 
 def _segment(segment: Any) -> dict[str, Any]:

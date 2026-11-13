@@ -10,8 +10,8 @@
 use std::{fs, io::Cursor, path::PathBuf};
 
 use psst_engine_proto::{
-    Bias, EngineErrorCode, FrameLimits, FromEngine, Load, LoadPhase, ToEngine, Transcribe, decode, encode, read_frame,
-    samples_to_payload, write_frame,
+    Bias, EngineErrorCode, FrameLimits, FromEngine, Load, LoadPhase, StreamRef, ToEngine, Transcribe, decode, encode,
+    read_frame, samples_to_payload, write_frame,
 };
 use serde_json::json;
 
@@ -36,6 +36,7 @@ fn decodes_engine_frames() {
     let FromEngine::Hello(hello) = read_golden("hello.bin") else { panic!("hello.bin") };
     assert_eq!((hello.protocol, hello.engine.as_str()), (1, "faster-whisper"));
     assert!(hello.capabilities.bias);
+    assert!(hello.capabilities.stream);
     assert_eq!(hello.capabilities.max_audio_s, 900);
 
     let FromEngine::Progress(download) = read_golden("progress-download.bin") else { panic!("progress-download.bin") };
@@ -66,6 +67,11 @@ fn decodes_engine_frames() {
     assert_eq!(words.len(), 5);
     assert_eq!((words[4].text.as_str(), words[4].prob), (" psst.", 0.61));
 
+    assert_eq!((result.timings.chunks, result.timings.chunks_reused), (0, 0));
+    let FromEngine::Result(stream) = read_golden("stream-result.bin") else { panic!("stream-result.bin") };
+    assert_eq!(stream.id, 44);
+    assert_eq!((stream.timings.chunks, stream.timings.chunks_reused), (0, 0));
+
     let FromEngine::Error(unsupported) = read_golden("error-unsupported.bin") else { panic!("error-unsupported.bin") };
     assert_eq!((unsupported.id, unsupported.code, unsupported.retryable), (None, EngineErrorCode::Unsupported, false));
 
@@ -89,7 +95,8 @@ fn every_engine_frame_decodes() {
             "loaded.bin",
             "progress-download.bin",
             "progress-load.bin",
-            "result.bin"
+            "result.bin",
+            "stream-result.bin"
         ]
     );
     for name in names {
@@ -130,6 +137,22 @@ fn writes_server_frames() {
             }),
             samples_to_payload(&samples),
         ),
+        (
+            "open.bin",
+            ToEngine::Open(Transcribe {
+                id: 43,
+                language: "cs".into(),
+                bias: Bias { style: "Upravuji konfiguraci NixOS.".into(), terms: vec!["Hyprland".into()] },
+                options: json!({
+                    "path": "batched", "beam_size": 5, "word_timestamps": true, "vad_filter": true,
+                    "terms_as": "prompt", "batch_size": 8
+                }),
+            }),
+            Vec::new(),
+        ),
+        ("append.bin", ToEngine::Append(StreamRef { id: 43 }), samples_to_payload(&samples[..320])),
+        ("close.bin", ToEngine::Close(StreamRef { id: 43 }), Vec::new()),
+        ("discard.bin", ToEngine::Discard(StreamRef { id: 43 }), Vec::new()),
         ("shutdown.bin", ToEngine::Shutdown, Vec::new()),
     ];
     for (name, msg, payload) in frames {

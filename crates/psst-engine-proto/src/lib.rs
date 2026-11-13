@@ -9,6 +9,34 @@
 //! - [`ToEngine`] / [`FromEngine`]: the messages in each direction; [`decode`] and [`encode`]
 //!   convert between them and frame headers.
 //! - [`fake`]: the scripted engine behind `psst-server __fake-engine`.
+//!
+//! # Streams
+//!
+//! An engine whose `hello` has [`Capabilities::stream`] takes a live recording while it's still
+//! coming in, so that little is left to do once it stops. When a live session starts while the
+//! model is loaded, the server sends [`ToEngine::Open`] with the session's request, then each
+//! frame's audio as it arrives with [`ToEngine::Append`]. At `stop`, the session's request is
+//! [`ToEngine::Close`] instead of `transcribe`, queued like any other. Cancelling the session, or
+//! losing it before `stop`, sends [`ToEngine::Discard`]. Uploads, and sessions that start while
+//! the model is loading, use `transcribe`.
+//!
+//! - **The answer is the same** as `transcribe`'s for the whole recording; a stream only changes
+//!   when the work is done. One caveat: a recording of more than one chunk (over 30 s of speech)
+//!   may differ slightly in word timings and probabilities, as with another `batch_size`, since
+//!   the chunks decoded ahead were decoded on their own.
+//! - **Engines take appends at any time**, also while answering another request, and work on their
+//!   streams between requests. An `append` or `close` for a stream that isn't open gets
+//!   `error bad_request`, and so does a stream longer than `max_audio_s` (which is then
+//!   discarded). A `discard` of a stream that isn't open does nothing.
+//! - **Falling back.** If the engine restarted since the stream's `open`, the server sends
+//!   `transcribe` with the whole recording instead of `close`; a `close` that fails is retried the
+//!   same way, as the request's next attempt.
+//! - **The faster-whisper engine** keeps the speech detector's probabilities as audio arrives, and
+//!   decodes a chunk of up to 30 s ahead once it can no longer change: when the next chunk has
+//!   begun, or when the last speech segment has ended and its 400 ms padding fits in the audio so
+//!   far (after about 0.4 s of silence). At `close` it runs the batched pipeline over the whole
+//!   recording, reusing every chunk decoded ahead whose features are unchanged, so a dictation
+//!   that ends with a pause is answered without decoding anything.
 
 pub mod fake;
 pub mod frame;
@@ -42,16 +70,29 @@ pub enum ToEngine {
     Load(Load),
     /// The payload is the whole recording.
     Transcribe(Transcribe),
+    /// Starts a stream: a recording sent while it's still going on, and answered at `close`.
+    /// Only for engines whose `hello` has [`Capabilities::stream`].
+    Open(Transcribe),
+    /// The payload is the stream's next samples.
+    Append(StreamRef),
+    /// The stream's recording is complete: answered with `result` or `error`, as `transcribe` is.
+    Close(StreamRef),
+    /// Forget a stream, without an answer.
+    Discard(StreamRef),
     Shutdown,
 }
 
 impl Message for ToEngine {
-    const TYPES: &'static [&'static str] = &["load", "transcribe", "shutdown"];
+    const TYPES: &'static [&'static str] = &["load", "transcribe", "open", "append", "close", "discard", "shutdown"];
 
     fn type_name(&self) -> &'static str {
         match self {
             Self::Load(_) => "load",
             Self::Transcribe(_) => "transcribe",
+            Self::Open(_) => "open",
+            Self::Append(_) => "append",
+            Self::Close(_) => "close",
+            Self::Discard(_) => "discard",
             Self::Shutdown => "shutdown",
         }
     }
@@ -98,6 +139,9 @@ pub struct Capabilities {
     pub bias: bool,
     /// Longest recording the engine accepts; also sets its frame payload limit.
     pub max_audio_s: u32,
+    /// Whether the engine takes streams (`open`, `append`, `close`, `discard`). Absent: no.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub stream: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,6 +188,12 @@ pub struct Transcribe {
     pub options: Value,
 }
 
+/// The stream an `append`, `close` or `discard` is for: the `id` of its `open`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamRef {
+    pub id: u64,
+}
+
 /// What the engine should expect to hear. Empty for eval runs without bias.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bias {
@@ -167,6 +217,12 @@ pub struct EngineTimings {
     pub bias_terms_used: u32,
     /// Whether `style` alone was over the budget and was cut from its start.
     pub prompt_truncated: bool,
+    /// Answering `close`: the chunks of up to 30 s the recording was decoded in…
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub chunks: u32,
+    /// …and how many of them were decoded before `close`, while it was still recording.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub chunks_reused: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,6 +250,14 @@ pub enum EngineErrorCode {
     /// GPU out of memory; the engine keeps running.
     Oom,
     Internal,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 /// Why a frame header couldn't be turned into a message.
