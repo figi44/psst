@@ -112,11 +112,7 @@ fn run(
                     wav: &mut WavWriter,
                     gapped: &mut bool,
                     frames: &mut Vec<i16>| {
-        let dropped = shared.take_dropped();
-        if dropped > 0 {
-            conv.push_silence(dropped as usize, frames);
-        }
-        if dropped > 0 || shared.take_glitched() {
+        if shared.take_glitched() {
             *gapped = true;
             emit(RecEvent::Gap);
         }
@@ -139,6 +135,7 @@ fn run(
         if let Some(reason) = shared.failure() {
             drop(capture);
             if pump(&mut ring, &mut conv, &mut wav, &mut gapped, &mut frames).is_ok() {
+                conv.push_silence(shared.take_owed_silence() as usize, &mut frames);
                 let _ = wav.write(&frames);
             }
             let _ = wav.finish();
@@ -164,6 +161,8 @@ fn run(
         emit(RecEvent::Failed { reason, samples: wav.samples });
         return;
     }
+    // Silence for samples that never fit in the ring belongs after everything in it.
+    conv.push_silence(shared.take_owed_silence() as usize, &mut frames);
     conv.finish(&mut frames);
     if let Err(reason) = send_frames(&mut frames, &mut wav, emit) {
         emit(RecEvent::Failed { reason, samples: wav.samples });
@@ -368,16 +367,12 @@ mod tests {
     struct Scripted {
         rate: u32,
         samples: Vec<f32>,
-        overflow: usize,
         fail: Option<String>,
     }
 
     impl AudioSource for Scripted {
         fn open(&self, mut feed: Feed) -> Result<OpenCapture, String> {
             feed.push(&self.samples);
-            if self.overflow > 0 {
-                feed.shared.dropped.fetch_add(self.overflow as u64, Ordering::AcqRel);
-            }
             if let Some(reason) = &self.fail {
                 feed.fail(reason.clone());
             }
@@ -415,10 +410,8 @@ mod tests {
     #[test]
     fn sixteen_khz_input_is_written_and_framed_unchanged() {
         let signal: Vec<f32> = (0..16_100).map(|i| ((i % 200) as f32 - 100.0) / 200.0).collect();
-        let (events, wav, _dir) = record(
-            Scripted { rate: 16_000, samples: signal.clone(), overflow: 0, fail: None },
-            Duration::from_millis(50),
-        );
+        let (events, wav, _dir) =
+            record(Scripted { rate: 16_000, samples: signal.clone(), fail: None }, Duration::from_millis(50));
         assert_eq!(events.last(), Some(&RecEvent::Finished { samples: 16_100, gapped: false }));
         let expected: Vec<i16> = signal.iter().map(|&s| to_i16(s)).collect();
         let sent = audio_of(&events);
@@ -437,7 +430,7 @@ mod tests {
         let signal: Vec<f32> =
             (0..48_000).map(|i| (i as f32 * 440.0 * std::f32::consts::TAU / 48_000.0).sin() * 0.5).collect();
         let (events, _wav, _dir) =
-            record(Scripted { rate: 48_000, samples: signal, overflow: 0, fail: None }, Duration::from_millis(50));
+            record(Scripted { rate: 48_000, samples: signal, fail: None }, Duration::from_millis(50));
         assert_eq!(events.last(), Some(&RecEvent::Finished { samples: 16_000, gapped: false }));
         let sent = audio_of(&events);
         // The tone reaches the last 10 ms instead of being cut off with the resampler's delay.
@@ -448,19 +441,25 @@ mod tests {
     }
 
     #[test]
-    fn overflow_is_filled_with_silence_and_flagged() {
-        let (events, _wav, _dir) = record(
-            Scripted { rate: 16_000, samples: vec![0.25; 3_200], overflow: 1_600, fail: None },
-            Duration::from_millis(50),
-        );
+    fn overflow_becomes_silence_after_the_audio_before_it() {
+        // A full ring, then 320 samples that don't fit.
+        let mut signal = vec![0.25; RING_SAMPLES];
+        signal.extend([0.5; 320]);
+        let (events, wav, _dir) =
+            record(Scripted { rate: 16_000, samples: signal, fail: None }, Duration::from_millis(50));
         assert!(events.contains(&RecEvent::Gap));
-        assert_eq!(events.last(), Some(&RecEvent::Finished { samples: 4_800, gapped: true }));
+        let total = RING_SAMPLES as u64 + 320;
+        assert_eq!(events.last(), Some(&RecEvent::Finished { samples: total, gapped: true }));
+        let sent = audio_of(&events);
+        assert!(sent[..RING_SAMPLES].iter().all(|&s| s == to_i16(0.25)));
+        assert!(sent[RING_SAMPLES..].iter().all(|&s| s == 0), "the gap is where the lost audio was");
+        assert_eq!(psst_client::read_wav_info(&wav).unwrap().samples, total);
     }
 
     #[test]
     fn a_lost_device_stops_the_recording_and_keeps_what_was_written() {
         let (events, wav, _dir) = record(
-            Scripted { rate: 16_000, samples: vec![0.25; 3_200], overflow: 0, fail: Some("unplugged".into()) },
+            Scripted { rate: 16_000, samples: vec![0.25; 3_200], fail: Some("unplugged".into()) },
             Duration::from_millis(50),
         );
         assert_eq!(events.last(), Some(&RecEvent::Failed { reason: "unplugged".into(), samples: 3_200 }));
@@ -469,7 +468,7 @@ mod tests {
 
     #[test]
     fn a_file_that_cannot_be_created_fails_before_any_audio() {
-        let source = Arc::new(Scripted { rate: 16_000, samples: vec![], overflow: 0, fail: None });
+        let source = Arc::new(Scripted { rate: 16_000, samples: vec![], fail: None });
         assert!(start(source, PathBuf::from("/nonexistent/dir/rec.wav"), |_| {}).is_err());
     }
 

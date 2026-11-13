@@ -60,8 +60,10 @@ pub fn source_for(input: &AudioInput) -> Arc<dyn AudioSource> {
 /// What the capture callback and the recorder share besides the ring buffer.
 #[derive(Debug, Default)]
 pub struct FeedShared {
-    /// Samples that didn't fit in the ring (at the source's rate); filled with silence.
-    dropped: AtomicU64,
+    /// Silence owed for samples that didn't fit in the ring (at the source's rate). The capture
+    /// side pushes it, in capture order, before any newer samples; the recorder appends what's
+    /// still owed once capture has stopped.
+    owed_silence: AtomicU64,
     /// A glitch whose length is unknown (an xrun).
     glitched: AtomicBool,
     /// Capture callbacks so far.
@@ -71,8 +73,9 @@ pub struct FeedShared {
 }
 
 impl FeedShared {
-    pub fn take_dropped(&self) -> u64 {
-        self.dropped.swap(0, Ordering::AcqRel)
+    /// Silence still owed; call only once capture has stopped.
+    pub fn take_owed_silence(&self) -> u64 {
+        self.owed_silence.swap(0, Ordering::AcqRel)
     }
 
     pub fn take_glitched(&self) -> bool {
@@ -99,24 +102,44 @@ impl Feed {
         Feed { producer, shared }
     }
 
-    /// Pushes captured samples; what doesn't fit is counted and later filled with silence.
+    /// Pushes captured samples. What doesn't fit is replaced by silence in its place: the
+    /// recording keeps its length and order.
     pub fn push(&mut self, samples: &[f32]) {
+        if !self.pay_silence() {
+            self.owe(samples.len());
+            return;
+        }
         let (_, rest) = self.producer.push_partial_slice(samples);
         if !rest.is_empty() {
-            self.shared.dropped.fetch_add(rest.len() as u64, Ordering::AcqRel);
+            self.owe(rest.len());
         }
     }
 
     /// Pushes `n` samples of silence for a discontinuity of known length.
     pub fn push_silence(&mut self, n: usize) {
-        const ZEROS: [f32; 256] = [0.0; 256];
-        let mut left = n;
-        while left > 0 {
-            let take = left.min(ZEROS.len());
-            self.push(&ZEROS[..take]);
-            left -= take;
-        }
+        self.owe(n);
+        self.pay_silence();
+    }
+
+    fn owe(&self, n: usize) {
+        self.shared.owed_silence.fetch_add(n as u64, Ordering::AcqRel);
         self.shared.glitched.store(true, Ordering::Release);
+    }
+
+    /// Pushes the silence owed so far, as far as it fits; `true` once nothing is owed.
+    fn pay_silence(&mut self) -> bool {
+        const ZEROS: [f32; 256] = [0.0; 256];
+        let mut owed = self.shared.owed_silence.load(Ordering::Acquire);
+        while owed > 0 {
+            let n = (owed as usize).min(ZEROS.len()).min(self.producer.slots());
+            if n == 0 {
+                return false;
+            }
+            let _ = self.producer.push_partial_slice(&ZEROS[..n]);
+            self.shared.owed_silence.fetch_sub(n as u64, Ordering::AcqRel);
+            owed -= n as u64;
+        }
+        true
     }
 
     /// A glitch of unknown length.
@@ -157,6 +180,22 @@ pub fn level(frame: &[i16]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn samples_that_overflow_become_silence_in_their_place() {
+        let (producer, mut ring) = rtrb::RingBuffer::new(4);
+        let shared = Arc::new(FeedShared::default());
+        let mut feed = Feed::new(producer, shared.clone());
+        feed.push(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]); // 5 and 6 don't fit
+        let mut out = vec![0.0; 4];
+        let _ = ring.pop_partial_slice(&mut out);
+        assert_eq!(out, [1.0, 2.0, 3.0, 4.0]);
+        feed.push(&[7.0, 8.0, 9.0]); // the owed silence goes first; 9 doesn't fit
+        let _ = ring.pop_partial_slice(&mut out);
+        assert_eq!(out, [0.0, 0.0, 7.0, 8.0]);
+        assert!(shared.take_glitched());
+        assert_eq!(shared.take_owed_silence(), 1, "still owed for 9, appended at the end");
+    }
 
     #[test]
     fn the_level_meter_spans_silence_to_full_scale() {
