@@ -1,0 +1,125 @@
+# One pull request, refreshed daily and merged by hand: nixpkgs moves rustc and the CUDA engine,
+# which CI neither builds nor runs on a GPU.
+name: Flake update
+
+on:
+  schedule:
+    - cron: '23 2 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  update:
+    name: Update
+    # Skipped rather than failing every night until the GitHub App is set up.
+    if: vars.FLAKE_UPDATE_CLIENT_ID != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # No credentials until the push: the steps before it evaluate the updated inputs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+        with:
+          # The GPU machine's caches, so the dry run lists only what it would build itself.
+          extra_nix_config: |
+            extra-substituters = https://cache.nixos-cuda.org https://cache.flox.dev
+            extra-trusted-public-keys = cache.nixos-cuda.org:74DUi4Ye579gUqzH4ziL9IyiJBlDpMRn9MBN8oNan9M= flox-cache-public-1:7F4OyH7ZCnFhcze3fJdfyXYLQw/aV7GEed86nQ7IsOs=
+      - name: Update the inputs
+        id: update
+        run: |
+          versions() {
+            nix eval --json --inputs-from . nixpkgs#legacyPackages.x86_64-linux --apply 'p: {
+              rustc = p.rustc.version;
+              Python = p.python3.version;
+              faster-whisper = p.python3Packages.faster-whisper.version;
+              ctranslate2 = p.ctranslate2.version;
+              CUDA = p.cudaPackages.cudaMajorMinorVersion;
+              cuDNN = p.cudaPackages.cudnn.version;
+            }'
+          }
+          versions > "$RUNNER_TEMP/before.json"
+          nix flake update
+          if git diff --quiet flake.lock; then
+            echo "The inputs haven't moved."
+            exit 0
+          fi
+          versions > "$RUNNER_TEMP/after.json"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+      - name: List what the GPU machine would build
+        if: steps.update.outputs.changed
+        run: nix build --dry-run .#psst-engine-faster-whisper-cuda 2>&1 | tee "$RUNNER_TEMP/dry-run.log"
+      - name: Describe the update
+        if: steps.update.outputs.changed
+        run: |
+          built=$(awk '/will be built:$/ { on = 1; next } /^[^ ]/ { on = 0 }
+            on { sub(/^ *\/nix\/store\/[a-z0-9]+-/, ""); sub(/\.drv$/, ""); print "- `" $0 "`" }' "$RUNNER_TEMP/dry-run.log")
+          {
+            echo "CI doesn't build the CUDA engine: check it in \`scripts/gpu-session.sh\` before merging."
+            echo
+            echo '| | Before | After |'
+            echo '| --- | --- | --- |'
+            jq -r --slurpfile after "$RUNNER_TEMP/after.json" '
+              to_entries[] | $after[0][.key] as $new
+              | if .value == $new then "| \(.key) | \(.value) | \($new) |"
+                else "| **\(.key)** | \(.value) | **\($new)** |" end' "$RUNNER_TEMP/before.json"
+            echo
+            echo "Built from source on the GPU machine (the engine, faster-whisper and ctranslate2's Python bindings always are):"
+            echo
+            echo "${built:-- nothing}"
+            echo
+            echo 'Changes:'
+            echo
+            jq -r --slurpfile old <(git show HEAD:flake.lock) '
+              .nodes | to_entries[] | .key as $input | .value.locked as $new
+              | $old[0].nodes[$input].locked as $was
+              | select($new.type == "github" and $was.rev != $new.rev)
+              | "- [\($input)](https://github.com/\($new.owner)/\($new.repo)/compare/\($was.rev)...\($new.rev))"' flake.lock
+          } > "$RUNNER_TEMP/body.md"
+          cat "$RUNNER_TEMP/body.md" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: app
+        if: steps.update.outputs.changed
+        with:
+          client-id: ${{ vars.FLAKE_UPDATE_CLIENT_ID }}
+          private-key: ${{ secrets.FLAKE_UPDATE_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      # As the app: CI doesn't run for what GITHUB_TOKEN pushes, and with a personal token the pull
+      # request would be the owner's own, with no review to ask them for.
+      - name: Open or refresh the pull request
+        if: steps.update.outputs.changed
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          APP: ${{ steps.app.outputs.app-slug }}[bot]
+          BRANCH: flake-update
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          remote="https://x-access-token:$GH_TOKEN@github.com/$GH_REPO"
+          id=$(gh api "/users/$APP" --jq .id)
+          git -c user.name="$APP" -c user.email="$id+$APP@users.noreply.github.com" \
+            commit --quiet --message 'Update the flake inputs' flake.lock
+          # Each push reruns every workflow on the pull request.
+          if git fetch --quiet "$remote" "$BRANCH" 2> /dev/null && git diff --quiet FETCH_HEAD -- flake.lock; then
+            echo "$BRANCH already has these inputs."
+            exit 0
+          fi
+          git push --quiet --force "$remote" "HEAD:refs/heads/$BRANCH"
+          pr=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [[ -n $pr ]]; then
+            gh pr edit "$pr" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh pr create --head "$BRANCH" --title 'Update the flake inputs' --body-file "$RUNNER_TEMP/body.md" \
+              --reviewer "$OWNER"
+          fi

@@ -1,11 +1,11 @@
 {
   description = "psst: self-hosted dictation for Linux";
 
-  # Pinned, so builds hit derivations the binary caches already have.
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/1d060086d60cb76a40cf37109f979d88a5bd6396";
+  # nixos-unstable only advances to commits Hydra has built, so builds hit the binary cache.
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   # Only for evaluating the Home Manager module in `checks`.
   inputs.home-manager = {
-    url = "github:nix-community/home-manager/b787c48e2ec57a9d098f5c2721882a3bc1e16f97";
+    url = "github:nix-community/home-manager";
     inputs.nixpkgs.follows = "nixpkgs";
   };
   # Only for the android shell, whose Rust needs std for the Android targets: nixpkgs' rustc is
@@ -13,7 +13,7 @@
   # rust-overlay over fenix: it carries every release's hashes, so the toolchain follows nixpkgs'
   # rustc version with no hash to update, and it builds on our nixpkgs instead of importing its own.
   inputs.rust-overlay = {
-    url = "github:oxalica/rust-overlay/b70538330f20adc9665afa2976471eb5b85ebd1f";
+    url = "github:oxalica/rust-overlay";
     inputs.nixpkgs.follows = "nixpkgs";
   };
 

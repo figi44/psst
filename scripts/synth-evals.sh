@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
-# The flake's pinned nixpkgs (piper-tts 1.8.0).
+# The nixpkgs the committed clips were rendered with (piper-tts 1.8.0).
 nixpkgs=github:NixOS/nixpkgs/1d060086d60cb76a40cf37109f979d88a5bd6396
 
 if [[ -z ${PSST_SYNTH_SHELL:-} ]]; then

@@ -1,0 +1,39 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  extends: ['config:best-practices', 'security:minimumReleaseAgeCrate'],
+  // Cargo reads `=1.2.3` as an exact requirement, which stops crates sharing a dependency.
+  ignorePresets: [':pinDevDependencies'],
+  timezone: 'Europe/Prague',
+  // Wider than the hosted app's 4 hours between runs of a repository, so every day has one.
+  schedule: ['* 0-5 * * *'],
+  // Without branch protection, which private repositories on the free plan don't get, GitHub's
+  // auto-merge has no checks to wait for. Renovate merges itself once every check has passed.
+  platformAutomerge: false,
+  reviewers: ['figi44'],
+  osvVulnerabilityAlerts: true,
+  // The engine's Python packages come from nixpkgs; pyproject.toml's ranges only have to admit them.
+  ignorePaths: ['spikes/**', 'engines/**'],
+  cargo: {
+    // Cargo.toml names the version Cargo.lock holds, as `cargo add` writes it.
+    rangeStrategy: 'bump',
+  },
+  // Weekly, as Renovate can't group it with other updates. Reviewed, not automerged: `cargo update`
+  // takes crates of any age, past minimumReleaseAgeCrate's three days.
+  lockFileMaintenance: {
+    schedule: ['* 0-5 * * 1'],
+  },
+  packageRules: [
+    {
+      matchUpdateTypes: ['patch'],
+      groupName: 'dependencies',
+      automerge: true,
+    },
+    // Cargo treats 0.x → 0.(x+1) as breaking, so those wait for review as majors do.
+    {
+      matchUpdateTypes: ['minor'],
+      matchCurrentVersion: '!/^0\\./',
+      groupName: 'dependencies',
+      automerge: true,
+    },
+  ],
+}
