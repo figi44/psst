@@ -1,5 +1,7 @@
-//! The task that owns one WebSocket connection: it writes what the handles ask for, routes what
-//! the server sends to the active session, and watches for `progress` silence.
+//! The tasks that own one WebSocket connection. The actor routes what the server sends to the
+//! active session, decides what to send, and watches for `progress` silence; a reader task and a
+//! writer task do the socket I/O, so a stalled socket never stops the watchdog, `cancel` or
+//! `close`.
 
 use std::{
     collections::VecDeque,
@@ -17,9 +19,9 @@ use psst_proto::{
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::{TcpStream, UnixStream},
-    sync::{mpsc, oneshot, watch},
+    sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch},
     task::JoinHandle,
-    time::{Instant, sleep_until},
+    time::{Duration, Instant, sleep_until},
 };
 use tokio_tungstenite::{
     WebSocketStream,
@@ -29,8 +31,15 @@ use tracing::{debug, warn};
 
 use crate::{AudioFrame, Client, ClientError, LostReason, PROGRESS_TIMEOUT, SessionEvent, StartOpts};
 
-/// Frames written before one flush during an upload.
+/// Messages written before one flush.
 const WRITE_BATCH: usize = 50;
+/// Audio frames handed to the writer and not yet written: 1 s. Further frames wait in the
+/// session's buffer, so uploads keep their backpressure.
+const IN_FLIGHT: usize = 50;
+/// How long queued messages may take to drain once the connection is no longer needed.
+const DRAIN_GRACE: Duration = Duration::from_secs(30);
+/// How long the writer may take to finish after the connection was lost or closed.
+const CLOSE_GRACE: Duration = Duration::from_secs(1);
 
 pub(crate) enum Cmd {
     Start(Box<NewSession>),
@@ -167,6 +176,8 @@ pub(crate) async fn connect(ep: &Endpoint, token: Option<&Token>) -> Result<Clie
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let (sink, mut stream) = ws.split();
     let (incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+    let (writer_tx, writer_rx) = mpsc::unbounded_channel();
+    let writer_task = tokio::spawn(write_loop(sink, writer_rx, incoming_tx.clone()));
     let reader_shared = shared.clone();
     let reader = tokio::spawn(async move {
         let reason = loop {
@@ -185,7 +196,9 @@ pub(crate) async fn connect(ep: &Endpoint, token: Option<&Token>) -> Result<Clie
         let _ = incoming_tx.send(Incoming::Closed(reason));
     });
     let actor = Actor {
-        sink,
+        writer: writer_tx,
+        writer_task,
+        permits: Arc::new(Semaphore::new(IN_FLIGHT)),
         incoming: incoming_rx,
         cmds: cmd_rx,
         cmds_open: true,
@@ -211,6 +224,47 @@ fn text(msg: &ClientMsg) -> Message {
     Message::text(serde_json::to_string(msg).expect("client messages serialise"))
 }
 
+/// What the writer task writes, in order.
+enum Out {
+    Msg(Message),
+    /// An audio frame and its place among the frames in flight, freed once it's written.
+    Frame(Box<AudioFrame>, OwnedSemaphorePermit),
+}
+
+/// Writes messages in order, flushing after each batch. Ends when the actor drops its sender
+/// (then it closes the WebSocket) or a write fails (then it tells the actor).
+async fn write_loop(
+    mut sink: SplitSink<Ws, Message>,
+    mut rx: mpsc::UnboundedReceiver<Out>,
+    incoming: mpsc::UnboundedSender<Incoming>,
+) {
+    let failed = |err: tungstenite::Error| {
+        let _ = incoming.send(Incoming::Closed(format!("cannot write: {err}")));
+    };
+    while let Some(first) = rx.recv().await {
+        let mut next = Some(first);
+        let mut batch = 0;
+        while let Some(out) = next.take() {
+            let result = match out {
+                Out::Msg(msg) => sink.feed(msg).await,
+                Out::Frame(frame, _permit) => sink.feed(Message::binary(frame_bytes(&frame))).await,
+            };
+            if let Err(err) = result {
+                return failed(err);
+            }
+            batch += 1;
+            if batch < WRITE_BATCH {
+                next = rx.try_recv().ok();
+            }
+        }
+        if let Err(err) = sink.flush().await {
+            return failed(err);
+        }
+    }
+    let _ = sink.send(Message::Close(None)).await;
+    let _ = sink.close().await;
+}
+
 enum Incoming {
     Msg(Message, Instant),
     Closed(String),
@@ -233,7 +287,9 @@ struct Active {
 }
 
 struct Actor {
-    sink: SplitSink<Ws, Message>,
+    writer: mpsc::UnboundedSender<Out>,
+    writer_task: JoinHandle<()>,
+    permits: Arc<Semaphore>,
     incoming: mpsc::UnboundedReceiver<Incoming>,
     cmds: mpsc::UnboundedReceiver<Cmd>,
     cmds_open: bool,
@@ -253,20 +309,20 @@ enum Flow {
 
 impl Actor {
     async fn run(mut self) {
-        let reason = loop {
+        let (reason, grace) = loop {
             if !self.cmds_open && !self.has_pending_audio() && self.queued.is_empty() {
-                break "no handle uses the connection any more".to_string();
+                break ("no handle uses the connection any more".to_string(), DRAIN_GRACE);
             }
             let deadline = self.active.as_ref().map(|a| a.last_heard + PROGRESS_TIMEOUT);
             let flow = tokio::select! {
                 biased;
                 incoming = self.incoming.recv() => match incoming {
-                    Some(Incoming::Msg(msg, at)) => self.on_message(msg, at).await,
+                    Some(Incoming::Msg(msg, at)) => self.on_message(msg, at),
                     Some(Incoming::Closed(reason)) => Flow::Close(self.closed_reason(reason)),
                     None => Flow::Close("the reader stopped".into()),
                 },
                 cmd = self.cmds.recv(), if self.cmds_open => match cmd {
-                    Some(cmd) => self.on_cmd(cmd).await,
+                    Some(cmd) => self.on_cmd(cmd),
                     None => {
                         self.cmds_open = false;
                         Flow::Continue
@@ -276,19 +332,25 @@ impl Actor {
                     self.lose_all(LostReason::ProgressTimeout);
                     Flow::Close(LostReason::ProgressTimeout.to_string())
                 }
-                out = next_outgoing(&mut self.active) => self.on_outgoing(out).await,
+                (permit, out) = next_outgoing(&mut self.active, &self.permits) => self.on_outgoing(permit, out),
             };
             if let Flow::Close(reason) = flow {
-                break reason;
+                break (reason, CLOSE_GRACE);
             }
         };
         debug!("closing the connection: {reason}");
-        let _ = self.sink.send(Message::Close(None)).await;
-        let _ = self.sink.close().await;
         self.reader.abort();
         self.lose_all(LostReason::ConnectionClosed { reason: reason.clone() });
         self.shared.closed.send_replace(Some(reason));
-        // Pending pings fail when their senders drop with `self`.
+        // The writer drains what's queued and closes the WebSocket, within `grace`. Pending pings
+        // fail when their senders drop with `self`.
+        let Actor { writer, mut writer_task, .. } = self;
+        drop(writer);
+        tokio::spawn(async move {
+            if tokio::time::timeout(grace, &mut writer_task).await.is_err() {
+                writer_task.abort();
+            }
+        });
     }
 
     fn closed_reason(&self, reason: String) -> String {
@@ -314,36 +376,37 @@ impl Actor {
         }
     }
 
-    async fn write(&mut self, msg: Message) -> Flow {
-        match self.sink.send(msg).await {
+    /// Queues a message for the writer. A failed write comes back as `Incoming::Closed`.
+    fn write(&mut self, msg: Message) -> Flow {
+        match self.writer.send(Out::Msg(msg)) {
             Ok(()) => Flow::Continue,
-            Err(err) => Flow::Close(format!("cannot write: {err}")),
+            Err(_) => Flow::Close("the writer stopped".into()),
         }
     }
 
-    async fn on_cmd(&mut self, cmd: Cmd) -> Flow {
+    fn on_cmd(&mut self, cmd: Cmd) -> Flow {
         match cmd {
             Cmd::Start(new) => {
                 if self.active.is_some() {
                     self.queued.push_back(*new);
                     Flow::Continue
                 } else {
-                    self.send_start(*new).await
+                    self.send_start(*new)
                 }
             }
-            Cmd::Cancel(id) => self.cancel(id, None).await,
-            Cmd::Fail(id, reason) => self.cancel(id, Some(reason)).await,
-            Cmd::Report(report) => self.write(text(&ClientMsg::Report(report))).await,
+            Cmd::Cancel(id) => self.cancel(id, None),
+            Cmd::Fail(id, reason) => self.cancel(id, Some(reason)),
+            Cmd::Report(report) => self.write(text(&ClientMsg::Report(report))),
             Cmd::Ping(tx) => {
                 let first = self.pings.is_empty();
                 self.pings.push(tx);
-                if first { self.write(Message::Ping(Default::default())).await } else { Flow::Continue }
+                if first { self.write(Message::Ping(Default::default())) } else { Flow::Continue }
             }
             Cmd::Close => Flow::Close("closed by the client".into()),
         }
     }
 
-    async fn send_start(&mut self, new: NewSession) -> Flow {
+    fn send_start(&mut self, new: NewSession) -> Flow {
         let NewSession { opts, events, frames, ready } = new;
         let start = ClientMsg::Start(StartMsg {
             session_id: opts.session_id,
@@ -363,16 +426,12 @@ impl Actor {
             ended: false,
             last_heard: Instant::now(),
         });
-        let flow = self.write(text(&start)).await;
-        if let Some(active) = &mut self.active {
-            active.last_heard = Instant::now();
-        }
-        flow
+        self.write(text(&start))
     }
 
     /// Cancels a session: on the server if its `start` went out, locally if it's still queued.
     /// With `failure`, the owner sees that error instead of `Cancelled`.
-    async fn cancel(&mut self, id: SessionId, failure: Option<String>) -> Flow {
+    fn cancel(&mut self, id: SessionId, failure: Option<String>) -> Flow {
         let ending = |failure: Option<String>| match failure {
             Some(message) => SessionEvent::Error(ErrorMsg::new(Some(id), psst_proto::ErrorCode::Internal, message)),
             None => SessionEvent::Cancelled,
@@ -391,10 +450,10 @@ impl Actor {
             active.ended = true;
             let _ = active.events.send(ending(failure));
         }
-        self.write(text(&ClientMsg::Cancel(CancelMsg { session_id: id }))).await
+        self.write(text(&ClientMsg::Cancel(CancelMsg { session_id: id })))
     }
 
-    async fn on_message(&mut self, msg: Message, at: Instant) -> Flow {
+    fn on_message(&mut self, msg: Message, at: Instant) -> Flow {
         if !self.pings.is_empty() {
             for ping in self.pings.drain(..) {
                 let _ = ping.send(());
@@ -467,56 +526,44 @@ impl Actor {
         if terminal {
             self.active = None;
             if let Some(next) = self.queued.pop_front() {
-                return self.send_start(next).await;
+                return self.send_start(next);
             }
         }
         Flow::Continue
     }
 
-    async fn on_outgoing(&mut self, out: Option<Outgoing>) -> Flow {
-        let Some(out) = out else {
-            // Every sender is gone without `stop`: nothing more will come.
-            if let Some(active) = &mut self.active {
+    fn on_outgoing(&mut self, permit: OwnedSemaphorePermit, out: Option<Outgoing>) -> Flow {
+        let Some(active) = &mut self.active else { return Flow::Continue };
+        let out = match out {
+            Some(Outgoing::Frame(frame)) => Out::Frame(frame, permit),
+            Some(Outgoing::Stop(samples)) => {
                 active.frames = None;
+                Out::Msg(text(&ClientMsg::Stop(StopMsg { session_id: active.id, samples })))
             }
-            return Flow::Continue;
+            None => {
+                // Every sender is gone without `stop`: nothing more will come.
+                active.frames = None;
+                return Flow::Continue;
+            }
         };
-        let id = self.active.as_ref().map(|a| a.id).expect("outgoing audio needs an active session");
-        let mut out = Some(out);
-        let mut written = 0;
-        while let Some(next) = out.take() {
-            match next {
-                Outgoing::Frame(frame) => {
-                    if let Err(err) = self.sink.feed(Message::binary(frame_bytes(&frame))).await {
-                        return Flow::Close(format!("cannot write: {err}"));
-                    }
-                    written += 1;
-                    if written < WRITE_BATCH {
-                        out = self.active.as_mut().and_then(|a| a.frames.as_mut()).and_then(|rx| rx.try_recv().ok());
-                    }
-                }
-                Outgoing::Stop(samples) => {
-                    if let Some(active) = &mut self.active {
-                        active.frames = None;
-                    }
-                    if let Err(err) = self.sink.feed(text(&ClientMsg::Stop(StopMsg { session_id: id, samples }))).await
-                    {
-                        return Flow::Close(format!("cannot write: {err}"));
-                    }
-                }
-            }
-        }
-        match self.sink.flush().await {
+        match self.writer.send(out) {
             Ok(()) => Flow::Continue,
-            Err(err) => Flow::Close(format!("cannot write: {err}")),
+            Err(_) => Flow::Close("the writer stopped".into()),
         }
     }
 }
 
-/// The active session's next piece of audio, once it may be sent. Pending otherwise.
-async fn next_outgoing(active: &mut Option<Active>) -> Option<Outgoing> {
+/// The active session's next piece of audio, once it may be sent and the writer has room for
+/// it. Pending otherwise. Cancel-safe: a permit taken without a frame is simply released.
+async fn next_outgoing(
+    active: &mut Option<Active>,
+    permits: &Arc<Semaphore>,
+) -> (OwnedSemaphorePermit, Option<Outgoing>) {
     match active {
-        Some(Active { streaming: true, frames: Some(rx), .. }) => rx.recv().await,
+        Some(Active { streaming: true, frames: Some(rx), .. }) => {
+            let permit = permits.clone().acquire_owned().await.expect("the semaphore is never closed");
+            (permit, rx.recv().await)
+        }
         _ => std::future::pending().await,
     }
 }

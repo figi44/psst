@@ -383,3 +383,42 @@ async fn report_reaches_the_server() {
         move |server: &FakeServer| server.reports().iter().any(|r| r.session_id == id && r.timings == timings);
     assert!(tokio::task::spawn_blocking(move || server.wait_until(WAIT, reported)).await.unwrap());
 }
+
+/// An upload whose server stops reading: the socket fills and writes block.
+async fn stalled_upload(server: &FakeServer, client: &mut Client, dir: &std::path::Path) -> psst_client::Session {
+    let wav = dir.join("long.wav");
+    write_wav(&wav, &test_audio(60_000)); // 1.9 MB, more than the socket buffers hold
+    let mut session = upload_file(client, StartOpts { resume: true, ..opts(Mode::Upload) }, &wav);
+    // The server stalls while its `ready` is on the way, so it reads none of the audio.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    server.set_stalled(true);
+    assert!(matches!(session.next_event().await, SessionEvent::Ready { need_audio: true, .. }));
+    session
+}
+
+#[tokio::test]
+async fn a_stalled_upload_is_lost_even_while_cancel_waits_behind_the_audio() {
+    let server = FakeServer::start(FakeServerConfig { ready_delay: Duration::from_millis(300), ..Default::default() });
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = Client::connect(&server.endpoint(), None).await.unwrap();
+    let mut session = stalled_upload(&server, &mut client, dir.path()).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    session.cancel().await.unwrap();
+    let started = std::time::Instant::now();
+    let events = until_terminal(&mut session).await;
+    assert_eq!(events.last(), Some(&SessionEvent::Lost(LostReason::ProgressTimeout)));
+    assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+    timeout(WAIT, client.closed()).await.unwrap();
+}
+
+#[tokio::test]
+async fn close_ends_a_stalled_connection_at_once() {
+    let server = FakeServer::start(FakeServerConfig { ready_delay: Duration::from_millis(300), ..Default::default() });
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = Client::connect(&server.endpoint(), None).await.unwrap();
+    let mut session = stalled_upload(&server, &mut client, dir.path()).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    client.close();
+    timeout(Duration::from_millis(500), client.closed()).await.expect("closed at once");
+    assert!(matches!(session.next_event().await, SessionEvent::Lost(LostReason::ConnectionClosed { .. })));
+}
