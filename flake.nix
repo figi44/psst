@@ -52,6 +52,8 @@
             pkgs.clippy
             pkgs.rustfmt
             pkgs.cargo-nextest
+            # `just check` runs everything CI checks (justfile).
+            pkgs.just
             pkgs.sccache
             pkgs.mold
             pkgs.pkg-config
@@ -71,9 +73,14 @@
           ];
           RUSTFLAGS = "-C link-arg=-fuse-ld=mold";
           RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
+          # bindgenHook hands bindgen NIX_CFLAGS_COMPILE, whose -frandom-seed is this shell's own
+          # store hash, and the PipeWire bindings rebuild whenever bindgen's flags change: without
+          # dropping it, any change to the shell rebuilds them (and misses CI's cache).
+          #
           # sccache shares compiled crates across worktrees (~/.cache/sccache). CI uses its own
           # build cache instead.
           shellHook = ''
+            export BINDGEN_EXTRA_CLANG_ARGS="$(sed -E 's/ ?-frandom-seed=[^ ]+//' <<<"$BINDGEN_EXTRA_CLANG_ARGS")"
             if [ -z "''${CI:-}" ]; then
               export RUSTC_WRAPPER=sccache
             fi

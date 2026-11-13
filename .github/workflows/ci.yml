@@ -42,11 +42,26 @@ jobs:
         uses: nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a # v1.2.1
       # Only main saves the cache. A pull request's cache is visible only to that pull request,
       # pushes main's out of the 10 GB limit, and its later runs restore it over main's newer one.
+      # v1: v0 had grown to 1 GB with what it kept from every older Cargo.lock (see the sweep).
       - uses: Swatinem/rust-cache@v2
+        id: cache
         with:
+          prefix-key: v1-rust
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo fmt --check
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo nextest run --workspace --locked --profile ci
+      # The justfile's recipes, so `just check` runs exactly this.
+      - run: just fmt-check
+      - run: just clippy
+      - run: just test --profile ci
       - name: Golden frames match the committed ones
-        run: git diff --exit-code -- engines/faster-whisper/tests/golden
+        run: just golden
+      # rust-cache keeps every file named like a dependency's crate or target, at any version: a
+      # cache restored for an older Cargo.lock is saved again with both builds in it, and the
+      # tests' `it-*` binaries stay too (once_cell has a test target named `it`). Keep only what
+      # this job's builds used. Both are fresh, so this replays them in seconds.
+      - name: Sweep dependency artifacts this build didn't use
+        if: github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
+        run: |
+          {
+            cargo clippy --workspace --all-targets --locked --message-format json -- -D warnings
+            cargo test --workspace --no-run --locked --message-format json
+          } | python3 -I .github/scripts/sweep-target.py target

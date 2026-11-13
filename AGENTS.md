@@ -18,20 +18,23 @@ the contracts everything else is built against.
 
 ## Building and testing
 
-Work inside the dev shell: `nix develop` (Rust from the pinned nixpkgs, cargo-nextest, sccache,
-mold, the system libraries, and Python with pytest for the engine).
+Work inside the dev shell: `nix develop` (Rust from the pinned nixpkgs, cargo-nextest, just,
+sccache, mold, the system libraries, and Python with pytest for the engine).
 
-Build and test the whole workspace before every push:
+Run everything CI checks before every push:
 
 ```sh
-cargo fmt --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo build --workspace
-cargo nextest run --workspace
-(cd engines/faster-whisper && pytest)
-git diff --exit-code -- engines/faster-whisper/tests/golden   # golden frames unchanged
+just check
 ```
 
+That's rustfmt, clippy with warnings as errors, `cargo nextest run --workspace`, the engine's
+pytest, the golden frames, the eval gate and `nix flake check --no-build`, in that order. `just`
+lists each step as a recipe of its own (`just clippy`, `just test -E 'package(psst-dict)'`), and
+CI's Rust job runs the same recipes.
+
+- **Each crate's integration tests are one binary**, `tests/it/main.rs`, with a module per file.
+  Add a test file as a module there: every other `tests/*.rs` is a binary of its own, compiled and
+  linked separately.
 - **Tests run without a GPU**, through `psst-server __fake-engine` (`psst_engine_proto::fake`).
   GPU tests are marked as such and run locally inside `scripts/gpu-session.sh`.
 - **Wayland tests run by default.** Each starts its own offscreen nested niri

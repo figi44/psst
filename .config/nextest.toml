@@ -1,6 +1,6 @@
 # `paste_timing` asserts a 50 ms p95 through llvmpipe, so it runs alone.
 [[profile.default.overrides]]
-filter = 'binary_id(psst-e2e::wayland) & test(=paste_timing)'
+filter = 'binary_id(psst-e2e::it) & test(=wayland::paste_timing)'
 threads-required = "num-test-threads"
 
 # CI's runners have 2 CPUs, but most of the suite's time is spent waiting on real timers (a 10 s
