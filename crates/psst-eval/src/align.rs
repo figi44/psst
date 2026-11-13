@@ -5,8 +5,8 @@
 pub struct Alignment {
     /// Substitutions, deletions and insertions.
     pub errors: usize,
-    /// For each hypothesis word: whether it's aligned to an equal reference word.
-    pub matched: Vec<bool>,
+    /// For each hypothesis word: the index of the equal reference word it's aligned to.
+    pub matched: Vec<Option<usize>>,
 }
 
 /// Aligns `hypothesis` against `reference` with the fewest errors. Ties prefer a match or
@@ -28,14 +28,14 @@ pub fn align<T: PartialEq>(reference: &[T], hypothesis: &[T]) -> Alignment {
         }
     }
 
-    let mut matched = vec![false; m];
+    let mut matched = vec![None; m];
     let (mut i, mut j) = (n, m);
     while i > 0 || j > 0 {
         let here = cost[i * width + j];
         if i > 0 && j > 0 {
             let same = reference[i - 1] == hypothesis[j - 1];
             if here == cost[(i - 1) * width + j - 1] + usize::from(!same) {
-                matched[j - 1] = same;
+                matched[j - 1] = same.then_some(i - 1);
                 i -= 1;
                 j -= 1;
                 continue;

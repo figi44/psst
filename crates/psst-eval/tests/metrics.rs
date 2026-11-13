@@ -80,6 +80,21 @@ fn a_dictionary_edit_that_breaks_a_correct_word_is_a_false_correction() {
 }
 
 #[test]
+fn an_edit_counts_when_it_unmatches_a_correct_word_whatever_else_it_fixes() {
+    let raw = "cloud cod";
+    let out = output(raw, vec![edit(Stage::Dictionary, "fuzzy", raw, "cloud cod", "Claude Code")], "Claude Code");
+    assert_eq!(counts("cloud code", &[], &out, false).false_corrections, 1);
+}
+
+#[test]
+fn an_edit_that_adds_missing_words_to_a_correct_one_is_not() {
+    let raw = "Claude is great";
+    let out = output(raw, vec![edit(Stage::Dictionary, "fuzzy", raw, "Claude", "Claude Code")], "Claude Code is great");
+    let c = counts("Claude Code is great", &["Claude Code"], &out, false);
+    assert_eq!((c.false_corrections, c.word_errors), (0, 0));
+}
+
+#[test]
 fn a_dictionary_edit_that_fixes_a_term_is_not() {
     let raw = "Run hyper land now.";
     let out = output(raw, vec![edit(Stage::Dictionary, "exact", raw, "hyper land", "Hyprland")], "Run Hyprland now.");
