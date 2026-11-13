@@ -424,6 +424,7 @@ impl Actor {
         let NewSession { opts, events, frames, ready, encoder } = new;
         let start = ClientMsg::Start(StartMsg {
             post_processing: opts.post_processing,
+            target: opts.target,
             session_id: opts.session_id,
             profile: opts.profile,
             audio: AudioFormat { codec: encoder.codec(), ..AudioFormat::default() },

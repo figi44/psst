@@ -20,6 +20,7 @@ const WAIT: Duration = Duration::from_secs(5);
 fn opts(mode: Mode) -> StartOpts {
     StartOpts {
         post_processing: None,
+        target: None,
         session_id: Uuid::new_v4(),
         profile: None,
         mode,

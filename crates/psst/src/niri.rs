@@ -9,9 +9,19 @@ use tracing::debug;
 
 pub const TIMEOUT: Duration = Duration::from_millis(150);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Window {
+    pub app_id: String,
+    pub title: Option<String>,
+}
+
 pub async fn focused_app_id(socket: &Path, timeout: Duration) -> Option<String> {
+    focused_window(socket, timeout).await.map(|window| window.app_id)
+}
+
+pub async fn focused_window(socket: &Path, timeout: Duration) -> Option<Window> {
     match tokio::time::timeout(timeout, query(socket)).await {
-        Ok(Ok(app_id)) => app_id,
+        Ok(Ok(window)) => window,
         Ok(Err(err)) => {
             debug!("niri: {err}");
             None
@@ -23,14 +33,16 @@ pub async fn focused_app_id(socket: &Path, timeout: Duration) -> Option<String> 
     }
 }
 
-async fn query(socket: &Path) -> std::io::Result<Option<String>> {
+async fn query(socket: &Path) -> std::io::Result<Option<Window>> {
     let mut stream = UnixStream::connect(socket).await?;
     stream.write_all(b"\"FocusedWindow\"\n").await?;
     stream.shutdown().await?;
     let mut line = String::new();
     BufReader::new(stream).read_line(&mut line).await?;
     let reply: Value = serde_json::from_str(&line).map_err(std::io::Error::other)?;
-    Ok(reply.pointer("/Ok/FocusedWindow/app_id").and_then(Value::as_str).map(str::to_owned))
+    let Some(window) = reply.pointer("/Ok/FocusedWindow") else { return Ok(None) };
+    let text = |key: &str| window.get(key).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned);
+    Ok(text("app_id").map(|app_id| Window { app_id, title: text("title") }))
 }
 
 #[cfg(test)]
@@ -55,12 +67,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reads_the_focused_app_id() {
+    async fn reads_the_focused_window() {
         let (_dir, path) = fake_niri(
             "{\"Ok\":{\"FocusedWindow\":{\"id\":3,\"title\":\"~\",\"app_id\":\"com.mitchellh.ghostty\",\"pid\":1}}}\n",
         )
         .await;
-        assert_eq!(focused_app_id(&path, TIMEOUT).await.as_deref(), Some("com.mitchellh.ghostty"));
+        let window = Window { app_id: "com.mitchellh.ghostty".into(), title: Some("~".into()) };
+        assert_eq!(focused_window(&path, TIMEOUT).await, Some(window));
+    }
+
+    #[tokio::test]
+    async fn a_window_without_a_title_still_has_its_app() {
+        let (_dir, path) =
+            fake_niri("{\"Ok\":{\"FocusedWindow\":{\"id\":3,\"title\":null,\"app_id\":\"Slack\"}}}\n").await;
+        assert_eq!(focused_app_id(&path, TIMEOUT).await.as_deref(), Some("Slack"));
     }
 
     #[tokio::test]

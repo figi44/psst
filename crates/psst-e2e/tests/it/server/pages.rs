@@ -295,3 +295,28 @@ async fn profiles_are_edited_added_and_reset_through_the_pages() {
     let layers: Vec<_> = profiles(&server).await.profiles.into_iter().map(|p| (p.name, p.layer)).collect();
     assert_eq!(layers, [("czech".into(), ProfileLayer::File), ("default".into(), ProfileLayer::File)]);
 }
+
+#[tokio::test]
+async fn the_post_processing_lab_runs_a_style_as_if_dictating_into_an_app() {
+    let server = web_server();
+    let browser = logged_in(&server).await;
+    let fields = [
+        ("input", "hi anna the build is green"),
+        ("variant", "polished"),
+        ("app", "firefox"),
+        ("title", "Inbox - Gmail"),
+        ("action", "run"),
+    ];
+    see_other(&browser.post("/post-processing", &fields).await, "/post-processing?style=polished");
+    let page = browser.get("/post-processing").await;
+    // With no ChatGPT plan connected the run fails, and still shows the prompt it sent.
+    for text in [
+        "Connect your ChatGPT plan first.",
+        "into firefox · Inbox - Gmail",
+        "value=\"firefox\"",
+        "value=\"Inbox - Gmail\"",
+        "dictating into the app &quot;firefox&quot;, in a window titled &quot;Inbox - Gmail&quot;",
+    ] {
+        assert!(page.body.contains(text), "{text} on the page: {}", page.body);
+    }
+}

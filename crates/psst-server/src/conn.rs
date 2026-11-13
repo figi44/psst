@@ -11,7 +11,8 @@ use psst_proto::{
     api::ModelState,
     ws::{
         CancelMsg, CancelledMsg, ClientInfo, ClientMsg, Codec, ErrorMsg, FinalMsg, Mode, ProgressMsg, ProgressState,
-        ProtocolDetail, ReadyModelState, ReadyMsg, ReportMsg, ServerLimits, ServerMsg, StartMsg, StopMsg, WelcomeMsg,
+        ProtocolDetail, ReadyModelState, ReadyMsg, ReportMsg, ServerLimits, ServerMsg, StartMsg, StopMsg, Target,
+        WelcomeMsg,
     },
 };
 use serde_json::json;
@@ -170,6 +171,7 @@ struct Recording {
     history_id: HistoryId,
     profile: Profile,
     post_processing: Option<String>,
+    target: Option<Target>,
     dictionary: Arc<Dictionary>,
     bias: bool,
 }
@@ -301,6 +303,7 @@ impl Conn {
                     history_id,
                     profile,
                     post_processing: start.post_processing.clone().filter(|style| style != "none"),
+                    target: start.target.clone(),
                     dictionary,
                     bias,
                 };
@@ -421,6 +424,7 @@ impl Conn {
             history_id: recording.history_id,
             profile: recording.profile,
             post_processing: recording.post_processing,
+            target: recording.target,
             dictionary: recording.dictionary,
             pipeline: PipelineOptions { dictionary: recording.bias },
             audio_ms,
@@ -591,6 +595,7 @@ struct SessionJob {
     history_id: HistoryId,
     profile: Profile,
     post_processing: Option<String>,
+    target: Option<Target>,
     dictionary: Arc<Dictionary>,
     pipeline: PipelineOptions,
     audio_ms: u32,
@@ -617,7 +622,7 @@ impl SessionJob {
                 let mut fin = psst_pipeline::run(&done.result.trace, &self.profile, &self.dictionary, &self.pipeline);
                 let pipeline_ms = millis(started.elapsed());
                 if let Some(style) = &self.post_processing {
-                    crate::tidy::dictation(&state, style, &mut fin).await;
+                    crate::tidy::dictation(&state, style, self.target.as_ref(), &mut fin).await;
                 }
                 let timings = ServerTimings {
                     audio_ms: self.audio_ms,

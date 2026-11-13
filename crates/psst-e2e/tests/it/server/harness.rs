@@ -228,6 +228,7 @@ impl Client {
     pub async fn start(&mut self, session_id: SessionId, mode: Mode, resume: bool) {
         self.start_with(StartMsg {
             post_processing: None,
+            target: None,
             session_id,
             profile: None,
             audio: AudioFormat::default(),
@@ -245,6 +246,7 @@ impl Client {
     pub async fn start_eval(&mut self, session_id: SessionId, bias: bool) {
         self.start_with(StartMsg {
             post_processing: None,
+            target: None,
             session_id,
             profile: None,
             audio: AudioFormat::default(),

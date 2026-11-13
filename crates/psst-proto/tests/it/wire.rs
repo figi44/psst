@@ -10,7 +10,7 @@ use psst_proto::{
     ws::{
         AudioFormat, CancelMsg, CancelledMsg, ClientInfo, ClientMsg, Codec, ErrorMsg, EvalOpts, FinalMsg, HelloMsg,
         Mode, ProgressMsg, ProgressState, ProtocolDetail, ReadyModelState, ReadyMsg, ReportMsg, ServerLimits,
-        ServerMsg, StartMsg, StopMsg, WelcomeMsg,
+        ServerMsg, StartMsg, StopMsg, Target, WelcomeMsg,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -95,6 +95,7 @@ fn start_with_defaults_omits_optional_fields() {
     assert_wire(
         &ClientMsg::Start(StartMsg {
             post_processing: None,
+            target: None,
             session_id: sid(),
             profile: None,
             audio: AudioFormat::default(),
@@ -112,6 +113,7 @@ fn start_with_opus() {
     assert_wire(
         &ClientMsg::Start(StartMsg {
             post_processing: None,
+            target: None,
             session_id: sid(),
             profile: None,
             audio: AudioFormat { codec: Codec::Opus, ..AudioFormat::default() },
@@ -128,7 +130,8 @@ fn start_with_opus() {
 fn start_with_every_field() {
     assert_wire(
         &ClientMsg::Start(StartMsg {
-            post_processing: None,
+            post_processing: Some("polished".into()),
+            target: Some(Target { app: "firefox".into(), title: Some("Inbox - Gmail".into()) }),
             session_id: sid(),
             profile: Some("czech".into()),
             audio: AudioFormat::default(),
@@ -136,7 +139,8 @@ fn start_with_every_field() {
             resume: true,
             eval: Some(EvalOpts { bias: false }),
         }),
-        json!({"type": "start", "session_id": SID, "profile": "czech",
+        json!({"type": "start", "session_id": SID, "profile": "czech", "post_processing": "polished",
+               "target": {"app": "firefox", "title": "Inbox - Gmail"},
                "audio": {"codec": "pcm_s16le", "sample_rate": 16000, "frame_ms": 20}, "mode": "upload",
                "resume": true, "eval": {"bias": false}}),
     );

@@ -24,6 +24,7 @@ fn hangup(server: &TestServer) {
 fn start(session_id: SessionId, profile: &str, resume: bool) -> StartMsg {
     StartMsg {
         post_processing: None,
+        target: None,
         session_id,
         profile: Some(profile.into()),
         audio: AudioFormat::default(),

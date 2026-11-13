@@ -12,6 +12,7 @@ use super::harness::*;
 fn opus_opts(mode: Mode) -> StartOpts {
     StartOpts {
         post_processing: None,
+        target: None,
         session_id: SessionId::new_v4(),
         profile: None,
         mode,
@@ -100,6 +101,7 @@ async fn a_message_that_is_not_a_20_ms_opus_packet_is_bad_audio() {
         client
             .start_with(StartMsg {
                 post_processing: None,
+                target: None,
                 session_id: id,
                 profile: None,
                 audio,

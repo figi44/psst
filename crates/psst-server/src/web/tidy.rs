@@ -45,6 +45,10 @@ pub struct LabForm {
     #[serde(default)]
     variant: String,
     #[serde(default)]
+    app: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
     example: String,
     #[serde(default)]
     load: String,
@@ -105,7 +109,12 @@ pub async fn show(
 
 pub async fn act(viewer: Viewer, State(state): State<AppRef>, form: Result<Form<LabForm>, FormRejection>) -> Response {
     let Ok(Form(form)) = form else { return Redirect::to(PAGE).into_response() };
-    let mut draft = Draft { input: form.input.replace("\r\n", "\n").trim().to_owned(), variant: form.variant };
+    let mut draft = Draft {
+        input: form.input.replace("\r\n", "\n").trim().to_owned(),
+        variant: form.variant,
+        app: form.app,
+        title: form.title,
+    };
     if let Some(id) = form.load.strip_prefix("h:").and_then(|id| id.parse::<HistoryId>().ok())
         && let Ok(Some(row)) = state.db.history_row(id)
         && let Some(fin) = row.r#final
@@ -124,13 +133,13 @@ pub async fn act(viewer: Viewer, State(state): State<AppRef>, form: Result<Form<
         }
         "run" => {
             if let Some(entry) = tidy::entry(&state, &draft.variant) {
-                tidy::run(&state, &draft.input, &entry).await;
+                tidy::run(&state, &draft.input, draft.target().as_ref(), &entry).await;
             }
         }
         "all" => {
             // Newest runs show first, so the last one run tops the list.
             for entry in tidy::entries(&state).iter().rev() {
-                tidy::run(&state, &draft.input, entry).await;
+                tidy::run(&state, &draft.input, draft.target().as_ref(), entry).await;
             }
         }
         _ => {}
@@ -350,6 +359,8 @@ async fn page(state: &AppRef, viewer: &Viewer, error: Option<String>) -> Respons
         pending,
         manage_usage => chatgpt::MANAGE_USAGE,
         input => draft.input.clone(),
+        app => draft.app.clone(),
+        title => draft.title.clone(),
         switch,
         style,
         styles_count => entries.len(),
@@ -376,6 +387,10 @@ fn view(run: &Run, tz: &TimeZone) -> Value {
         effort => effort.to_lowercase(),
         tier,
         time,
+        target => run.target.as_ref().map(|t| match &t.title {
+            Some(title) => format!("{} · {}", t.app, shorten(title, 48)),
+            None => t.app.clone(),
+        }),
         input => run.input.clone(),
         instructions => run.instructions.clone(),
     };

@@ -12,7 +12,7 @@ use std::{fmt, io, path::Path, sync::Arc, time::Duration};
 use psst_proto::{
     ClientTimings, ErrorCode, FRAME_SAMPLES, HistoryId, PROTOCOL_VERSION, SessionId,
     ws::{
-        Codec, ErrorMsg, EvalOpts, FinalMsg, Mode, ProgressState, ProtocolDetail, ReadyModelState, ReportMsg,
+        Codec, ErrorMsg, EvalOpts, FinalMsg, Mode, ProgressState, ProtocolDetail, ReadyModelState, ReportMsg, Target,
         WelcomeMsg,
     },
 };
@@ -214,6 +214,7 @@ pub struct StartOpts {
     pub session_id: SessionId,
     pub profile: Option<String>,
     pub post_processing: Option<String>,
+    pub target: Option<Target>,
     pub mode: Mode,
     pub resume: bool,
     pub eval: Option<EvalOpts>,

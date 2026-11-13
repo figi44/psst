@@ -68,6 +68,7 @@ async fn dictate(server: &TestServer, profile: &str) -> (String, String, String)
     client
         .start_with(StartMsg {
             post_processing: None,
+            target: None,
             session_id,
             profile: Some(profile.into()),
             audio: AudioFormat::default(),

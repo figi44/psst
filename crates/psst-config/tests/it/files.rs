@@ -2,8 +2,8 @@ use std::{fs, path::PathBuf};
 
 use psst_config::{
     AppRule, AudioCodec, AudioInput, ClientConfig, Color, ConfigError, ConfigFile, DecodePath, DictionaryFile,
-    PasteAction, PasteRule, ProfileSpec, ProfilesFile, Rule, ServerConfig, ServerFiles, Sounds, TermLanguages,
-    TermSpec, TermsAs,
+    PasteAction, PasteRule, PostProcessingContext, ProfileSpec, ProfilesFile, Rule, ServerConfig, ServerFiles, Sounds,
+    TermLanguages, TermSpec, TermsAs,
 };
 use psst_proto::Endpoint;
 
@@ -288,6 +288,15 @@ fn client_audio_codec_is_opus_unless_set_to_pcm() {
     assert_eq!(codec("[audio]\ncodec = \"pcm\"").unwrap(), AudioCodec::Pcm);
     assert_eq!(codec("[audio]\ncodec = \"opus\"").unwrap(), AudioCodec::Opus);
     invalid::<ClientConfig>("[audio]\ncodec = \"flac\"", "flac");
+}
+
+#[test]
+fn client_post_processing_context_is_off_unless_asked_for() {
+    let context = |s: &str| ClientConfig::from_toml_str(s).map(|c| c.post_processing_context);
+    assert_eq!(context("").unwrap(), PostProcessingContext::None);
+    assert_eq!(context("post_processing_context = \"app\"").unwrap(), PostProcessingContext::App);
+    assert_eq!(context("post_processing_context = \"window\"").unwrap(), PostProcessingContext::Window);
+    invalid::<ClientConfig>("post_processing_context = \"everything\"", "everything");
 }
 
 #[test]

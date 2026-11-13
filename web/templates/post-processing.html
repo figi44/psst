@@ -64,7 +64,7 @@
       <div class="field">
         <label for="pp-prompt">Prompt</label>
         <textarea class="input lab-prompt" id="pp-prompt" name="prompt" rows="16" spellcheck="false">{{ style.prompt }}</textarea>
-        <p class="hint">Sent as the model's instructions, followed by your {{ words }} dictionary words so it keeps their spelling. The transcript goes as the message.</p>
+        <p class="hint">Sent as the model's instructions, followed by your {{ words }} dictionary words so it keeps their spelling, and by the app the dictation goes into when <code>post_processing_context</code> in client.toml sends it. The transcript goes as the message.</p>
       </div>
       <div class="lab-knobs">
         <div class="field">
@@ -132,6 +132,16 @@
           {%- endif %}
         </div>
       </div>
+      <div class="lab-knobs">
+        <div class="field">
+          <label for="lab-app">Dictating into</label>
+          <input class="input" id="lab-app" name="app" value="{{ app }}" placeholder="Optional, like Slack" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="lab-title">Window title</label>
+          <input class="input" id="lab-title" name="title" value="{{ title }}" placeholder="Optional, like Inbox - Gmail" autocomplete="off" spellcheck="false">
+        </div>
+      </div>
       <div class="actions lab-actions">
         <button class="btn primary" type="submit" name="action" value="run"{% if not email %} disabled{% endif %}>Run {{ style.name }}</button>
         <button class="btn" type="submit" name="action" value="all"{% if not email %} disabled{% endif %}>Run all {{ styles_count }} styles</button>
@@ -148,7 +158,7 @@
     <ol class="lab-runs">
       {%- for run in runs %}
       <li class="lab-run">
-        <p class="meta"><strong>{{ run.variant }}{% if run.edited %} (changed){% endif %}</strong><span class="sep"></span><span>{{ run.model }}</span><span class="sep"></span><span>reasoning {{ run.effort }}</span><span class="sep"></span><span>{{ run.tier }}</span><span class="sep"></span><span>{{ run.time }}</span></p>
+        <p class="meta"><strong>{{ run.variant }}{% if run.edited %} (changed){% endif %}</strong><span class="sep"></span><span>{{ run.model }}</span><span class="sep"></span><span>reasoning {{ run.effort }}</span><span class="sep"></span><span>{{ run.tier }}</span>{% if run.target %}<span class="sep"></span><span>into {{ run.target }}</span>{% endif %}<span class="sep"></span><span>{{ run.time }}</span></p>
         {%- if run.ok %}
         <p class="lab-stats"><strong>{{ run.total_ms }} ms</strong> · first word {{ run.first_ms }} · {{ run.tokens }}{% if run.connect_ms %} · after {{ run.connect_ms }} ms opening the connection{% endif %}</p>
         <div class="lab-out">{% if run.segments %}{% for s in run.segments %}<span class="d-{{ s.kind }}">{{ s.text }}</span>{% endfor %}{% else %}{{ run.text }}{% endif %}</div>

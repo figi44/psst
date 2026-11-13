@@ -9,12 +9,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use psst_config::{AppRule, ClientConfig, ConfigFile, MenuConfig, PasteAction, ProfilesFile};
+use psst_config::{AppRule, ClientConfig, ConfigFile, MenuConfig, PasteAction, PostProcessingContext, ProfilesFile};
 use psst_engine_proto::fake::{LoggedRequest, Script, TranscribeStep};
-use psst_proto::Endpoint;
+use psst_proto::{Endpoint, ws::Target};
 use psst_testkit::{
-    RealEngine, Sandbox, TestClientConfig, TestDaemon, TestServer, TestServerConfig, nested_niri, spawn_daemon,
-    spawn_server, test_audio,
+    RealEngine, Sandbox, TestClientConfig, TestDaemon, TestServer, TestServerConfig,
+    fake_server::{FakeServer, FakeServerConfig, Outcome},
+    nested_niri, spawn_daemon, spawn_server, test_audio,
     wayland::{ClipboardOwner, HostKeyboard, keys, screenshot},
     write_wav,
 };
@@ -270,6 +271,22 @@ fn the_focused_apps_rule_from_niri_picks_the_chord() {
     desk.ok(&["toggle"]);
     let got = desk.pasted(Duration::from_secs(5));
     assert_eq!((got["text"].as_str(), got["chord"].as_str()), (Some("In a terminal. "), Some("ctrl+shift+v")), "{got}");
+}
+
+#[test]
+fn post_processing_hears_which_window_the_dictation_goes_into() {
+    let server = FakeServer::start(FakeServerConfig::default());
+    server.push_outcome(Outcome::Final("Hi Anna. ".into()));
+    let desk = Desktop::start_with(server.endpoint(), &test_audio(3_000), |cfg| {
+        cfg.post_processing = "polished".into();
+        cfg.post_processing_context = PostProcessingContext::Window;
+    });
+    desk.ok(&["toggle"]);
+    thread::sleep(Duration::from_millis(400));
+    desk.ok(&["toggle"]);
+    assert_pasted(&desk.pasted(Duration::from_secs(5)), "Hi Anna. ");
+    let target = Target { app: "psst-paste-target".into(), title: Some("psst paste target".into()) };
+    assert_eq!(server.sessions()[0].starts[0].target, Some(target));
 }
 
 #[test]

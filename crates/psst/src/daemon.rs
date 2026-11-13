@@ -12,11 +12,11 @@ use psst_client::{
     api::{ApiCallError, ApiClient, Method},
     upload_file,
 };
-use psst_config::{ClientConfig, PasteAction, Sounds};
+use psst_config::{ClientConfig, PasteAction, PostProcessingContext, Sounds};
 use psst_proto::{
     ClientTimings, DeviceId, Endpoint, ErrorCode, FRAME_MS, SessionId, Token,
     api::{HistoryRow, PairRedeemed, routes},
-    ws::{FinalMsg, Mode, ProgressState},
+    ws::{FinalMsg, Mode, ProgressState, Target},
 };
 use psst_wayland::{
     Chord, HistoryEntry, Listing, MenuAction, MenuOutcome, MenuSpec, ModelChoice, OverlayState, WaylandCmd,
@@ -141,6 +141,11 @@ pub async fn spawn(cfg: ClientConfig, paths: Paths, deps: Deps) -> anyhow::Resul
     let profile = menu::load_profile(&paths.state_dir, &cfg.profile).unwrap_or_else(|| cfg.profile.clone());
     let post_processing = menu::load_post_processing(&paths.state_dir, &cfg.post_processing)
         .unwrap_or_else(|| cfg.post_processing.clone());
+    if cfg.post_processing_context != PostProcessingContext::None && deps.niri_socket.is_none() {
+        warn!(
+            "post_processing_context reads the focused window from niri, which isn't running: dictations go without it"
+        );
+    }
     let recovery = store.recover(&profile)?;
     for id in &recovery.interrupted {
         info!("recording {id} was interrupted; kept as incomplete");
@@ -275,6 +280,10 @@ enum Input {
         generation: u64,
         app_id: Option<String>,
     },
+    Target {
+        id: SessionId,
+        window: Option<niri::Window>,
+    },
     MenuFact(menu::Fact),
     MenuDone(menu::Done),
     Resumed,
@@ -403,6 +412,9 @@ struct CatchUp {
 struct Dictation {
     id: SessionId,
     profile: String,
+    target: Option<Target>,
+    /// The server hears nothing until it's known, so the `start` carries it.
+    finding_target: bool,
     generation: u64,
     started_at: Timestamp,
     copy_only: bool,
@@ -438,6 +450,8 @@ impl Dictation {
         Dictation {
             id,
             profile,
+            target: None,
+            finding_target: false,
             generation,
             started_at: Timestamp::now(),
             copy_only: false,
@@ -696,6 +710,7 @@ impl Core {
             Input::TokenRefused(token) => self.refused_token = Some(token),
             Input::ConnClosed { epoch, reason } => self.on_conn_closed(epoch, reason),
             Input::Focus { generation, app_id } => self.on_focus(generation, app_id),
+            Input::Target { id, window } => self.on_target(id, window),
             Input::MenuFact(fact) => self.on_menu_fact(fact),
             Input::MenuDone(done) => self.on_menu_done(done),
             Input::Resumed => {
@@ -799,6 +814,7 @@ impl Core {
             }
         }
         d.net = self.begin_check();
+        d.finding_target = self.find_target(id);
         self.recording = Some(d);
         // `OverlayShown` comes only when the overlay appears, so with one already up (a notice, or
         // the previous dictation finishing) the time isn't measured.
@@ -825,6 +841,28 @@ impl Core {
         self.stop_chime = Some((id, Instant::now() + self.t.stop_chime_wait));
         info!("stopped {id}");
         Response::ok(format!("stopped {id}"))
+    }
+
+    /// Whether it went looking: only when post-processing would use what it finds.
+    fn find_target(&self, id: SessionId) -> bool {
+        let wanted =
+            self.cfg.post_processing_context != PostProcessingContext::None && self.sent_post_processing().is_some();
+        let Some(socket) = self.deps.niri_socket.clone().filter(|_| wanted) else { return false };
+        let tx = self.tx.clone();
+        let timeout = self.deps.timing.niri_lookup;
+        tokio::spawn(async move {
+            let window = niri::focused_window(&socket, timeout).await;
+            let _ = tx.send(Input::Target { id, window });
+        });
+        true
+    }
+
+    fn on_target(&mut self, id: SessionId, window: Option<niri::Window>) {
+        let with_title = self.cfg.post_processing_context == PostProcessingContext::Window;
+        let Some(d) = self.dictation_mut(id) else { return };
+        d.finding_target = false;
+        d.target = window.map(|w| Target { app: w.app_id, title: w.title.filter(|_| with_title) });
+        debug!("{id} goes to {:?}", d.target);
     }
 
     /// The first tap started a recording; it's thrown away unheard.
@@ -1523,9 +1561,11 @@ impl Core {
 
     fn start_live(&mut self, client: &mut Client) {
         let Some(rec) = &mut self.recording else { return };
-        let (id, profile) = (rec.id, rec.profile.clone());
+        let (id, profile, target) = (rec.id, rec.profile.clone(), rec.target.clone());
+        let post_processing = self.sent_post_processing();
         let session = client.start(StartOpts {
-            post_processing: self.sent_post_processing(),
+            target: post_processing.as_ref().and(target),
+            post_processing,
             session_id: id,
             profile: Some(profile),
             mode: Mode::Live,
@@ -1549,10 +1589,12 @@ impl Core {
 
     fn start_upload(&mut self, client: &mut Client, index: usize) {
         let d = &self.pipeline[index];
-        let (id, profile) = (d.id, d.profile.clone());
+        let (id, profile, target) = (d.id, d.profile.clone(), d.target.clone());
         let wav = self.store.wav_path(id);
+        let post_processing = self.sent_post_processing();
         let opts = StartOpts {
-            post_processing: self.sent_post_processing(),
+            target: post_processing.as_ref().and(target),
+            post_processing,
             session_id: id,
             profile: Some(profile),
             mode: Mode::Upload,
@@ -1835,6 +1877,7 @@ impl Core {
             session_id: id,
             profile: Some(rec.meta.profile),
             post_processing: self.sent_post_processing(),
+            target: None,
             mode: Mode::Upload,
             resume: true,
             eval: None,
@@ -2260,9 +2303,17 @@ impl Core {
         if let Some(mut client) = self.usable_client()
             && self.slot.is_none()
         {
-            if let Some(index) = self.pipeline.iter().position(|d| d.phase == Phase::Uploading && d.session.is_none()) {
+            if let Some(index) = self
+                .pipeline
+                .iter()
+                .position(|d| d.phase == Phase::Uploading && d.session.is_none() && !d.finding_target)
+            {
                 self.start_upload(&mut client, index);
-            } else if self.recording.as_ref().is_some_and(|r| r.net == Net::Pending && r.tap_until.is_none()) {
+            } else if self
+                .recording
+                .as_ref()
+                .is_some_and(|r| r.net == Net::Pending && r.tap_until.is_none() && !r.finding_target)
+            {
                 self.start_live(&mut client);
             } else if self.recording.is_none()
                 && self.pipeline.is_empty()

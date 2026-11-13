@@ -84,6 +84,10 @@ pub struct StartMsg {
     /// ChatGPT plan the server's web UI is connected to. Unset or `none`, none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub post_processing: Option<String>,
+    /// Where the text goes, for post-processing to shape it for that app. Sent only when the
+    /// user's config allows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<Target>,
     pub audio: AudioFormat,
     pub mode: Mode,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -91,6 +95,16 @@ pub struct StartMsg {
     /// Accepted only when the server runs with `eval_mode = true`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eval: Option<EvalOpts>,
+}
+
+/// The window that had focus as the recording started.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Target {
+    /// The Wayland app id, like `Slack` or `firefox`.
+    pub app: String,
+    /// Tells a web app apart from its browser: `Inbox - Gmail — Mozilla Firefox`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 /// `codec` is `pcm_s16le` or one from `welcome.codecs`; anything but 16000 Hz in 20 ms frames

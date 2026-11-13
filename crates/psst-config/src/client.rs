@@ -13,6 +13,7 @@ pub struct ClientConfig {
     /// How an LLM post-processes new dictations: `none`, `light` or `polished`. The quick menu
     /// switches it until this changes.
     pub post_processing: String,
+    pub post_processing_context: PostProcessingContext,
     pub sounds: Sounds,
     pub audio: AudioConfig,
     pub overlay: OverlayConfig,
@@ -30,6 +31,7 @@ impl Default for ClientConfig {
             server: Endpoint::Unix(DEFAULT_SOCKET.into()),
             profile: DEFAULT_PROFILE.into(),
             post_processing: "none".into(),
+            post_processing_context: PostProcessingContext::default(),
             sounds: Sounds::default(),
             audio: AudioConfig::default(),
             overlay: OverlayConfig::default(),
@@ -74,6 +76,20 @@ pub const KNOWN_TERMINALS: &[&str] = &[
     "org.kde.konsole",
     "xterm",
 ];
+
+/// What a dictation tells post-processing about where its text goes, so that a Slack message
+/// comes out unlike an email. Read from niri as the recording starts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PostProcessingContext {
+    #[default]
+    None,
+    /// The focused window's app id.
+    App,
+    /// Its title too, which tells Gmail from the browser it runs in, but can hold an email's
+    /// subject or a document's name: it goes to the server and on to the LLM.
+    Window,
+}
 
 /// The chimes as recording starts and stops, and on an error or when nothing was heard.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

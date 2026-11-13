@@ -14,7 +14,7 @@ use std::{
 };
 
 use jiff::Timestamp;
-use psst_proto::Final;
+use psst_proto::{Final, ws::Target};
 use serde::{Deserialize, Serialize};
 
 use crate::state::AppState;
@@ -84,11 +84,21 @@ impl Lab {
 pub struct Draft {
     pub input: String,
     pub variant: String,
+    /// Where the lab's runs pretend to dictate into, as a dictation's `target` says.
+    pub app: String,
+    pub title: String,
+}
+
+impl Draft {
+    pub fn target(&self) -> Option<Target> {
+        let title = Some(self.title.trim().to_owned()).filter(|t| !t.is_empty());
+        Some(Target { app: self.app.trim().to_owned(), title }).filter(|t| !t.app.is_empty())
+    }
 }
 
 impl Default for Draft {
     fn default() -> Draft {
-        Draft { input: String::new(), variant: prompts::DEFAULT.to_owned() }
+        Draft { input: String::new(), variant: prompts::DEFAULT.to_owned(), app: String::new(), title: String::new() }
     }
 }
 
@@ -224,6 +234,7 @@ pub fn delete_style(state: &AppState, entry: &Entry) -> anyhow::Result<()> {
 pub struct Run {
     pub at: Timestamp,
     pub input: String,
+    pub target: Option<Target>,
     pub variant: String,
     pub edited: bool,
     pub instructions: String,
@@ -239,10 +250,10 @@ pub struct Failure {
     pub usage_limit: bool,
 }
 
-/// The prompt as sent: the style's, with the dictionary's words.
-fn instructions(state: &AppState, style: &Style) -> String {
+/// The prompt as sent: the style's, with the dictionary's words and where the text goes.
+fn instructions(state: &AppState, style: &Style, target: Option<&Target>) -> String {
     let words: Vec<String> = state.live.dictionary().terms().iter().map(|t| t.text.clone()).collect();
-    prompts::with_vocabulary(&style.prompt, &words)
+    prompts::with_target(&prompts::with_vocabulary(&style.prompt, &words), target)
 }
 
 fn ask<'a>(style: &'a Style, instructions: &'a str, text: &'a str) -> Ask<'a> {
@@ -255,7 +266,7 @@ const DICTATION_BUDGET: Duration = Duration::from_secs(6);
 
 /// Post-processes a dictation's final text with `style_id`, keeping the text as it was when that
 /// fails or takes too long.
-pub async fn dictation(state: &Arc<AppState>, style_id: &str, fin: &mut Final) {
+pub async fn dictation(state: &Arc<AppState>, style_id: &str, target: Option<&Target>, fin: &mut Final) {
     let Some(Entry { style, .. }) = entry(state, style_id) else {
         tracing::warn!("unknown post-processing style {style_id:?}; the dictation stays as it was");
         return;
@@ -264,12 +275,14 @@ pub async fn dictation(state: &Arc<AppState>, style_id: &str, fin: &mut Final) {
     if text.is_empty() {
         return;
     }
-    let instructions = instructions(state, &style);
+    let instructions = instructions(state, &style, target);
+    // Only the app: a window title can be an email's subject.
+    let into = target.map_or(String::new(), |t| format!(" for {}", t.app));
     let started = Instant::now();
     match tokio::time::timeout(DICTATION_BUDGET, chatgpt::respond(state, &ask(&style, &instructions, text))).await {
         Ok(Ok(answer)) => {
             tracing::info!(
-                "post-processed a dictation with {style_id} in {} ms (first token after {} ms)",
+                "post-processed a dictation with {style_id}{into} in {} ms (first token after {} ms)",
                 started.elapsed().as_millis(),
                 answer.first_token.map_or(0, |d| d.as_millis())
             );
@@ -285,9 +298,9 @@ pub async fn dictation(state: &Arc<AppState>, style_id: &str, fin: &mut Final) {
 }
 
 /// Runs `input` through a style as dictations would, and keeps the run for the page.
-pub async fn run(state: &Arc<AppState>, input: &str, entry: &Entry) -> Run {
+pub async fn run(state: &Arc<AppState>, input: &str, target: Option<&Target>, entry: &Entry) -> Run {
     let Entry { style, edited, .. } = entry.clone();
-    let instructions = instructions(state, &style);
+    let instructions = instructions(state, &style, target);
     let outcome = chatgpt::respond(state, &ask(&style, &instructions, input)).await.map_err(|err| Failure {
         usage_limit: err.downcast_ref::<ApiError>().is_some_and(ApiError::usage_limit),
         text: format!("{err:#}"),
@@ -295,6 +308,7 @@ pub async fn run(state: &Arc<AppState>, input: &str, entry: &Entry) -> Run {
     let run = Run {
         at: Timestamp::now(),
         input: input.to_owned(),
+        target: target.cloned(),
         variant: entry.name.clone(),
         edited,
         instructions,

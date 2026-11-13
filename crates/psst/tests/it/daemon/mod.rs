@@ -19,8 +19,8 @@ use psst::{
     store::{Last, Meta, RecState, Store},
     ui::{Wayland, WaylandEvents, WaylandSink},
 };
-use psst_config::{AppRule, ClientConfig, MenuConfig, PasteAction, Sounds};
-use psst_proto::{ErrorCode, SessionId};
+use psst_config::{AppRule, ClientConfig, MenuConfig, PasteAction, PostProcessingContext, Sounds};
+use psst_proto::{ErrorCode, SessionId, ws::Target};
 use psst_testkit::{
     fake_server::{FakeServer, FakeServerConfig, Outcome},
     test_audio, write_wav,
@@ -584,28 +584,33 @@ async fn paste_last_and_copy_last_redeliver_the_last_text() {
     d.stop().await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn the_chord_follows_the_focused_window_and_app_rules() {
+/// Answers each `FocusedWindow` request with the window as it is then.
+fn fake_niri(dir: &Path, window: Arc<Mutex<serde_json::Value>>) -> PathBuf {
     use tokio::{
         io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
         net::UnixListener,
     };
-    let dir = tempfile::tempdir().unwrap();
-    let niri = dir.path().join("niri.sock");
+    let niri = dir.join("niri.sock");
     let listener = UnixListener::bind(&niri).unwrap();
-    let app = Arc::new(Mutex::new("com.mitchellh.ghostty".to_string()));
-    let serving = app.clone();
     tokio::spawn(async move {
         loop {
             let (stream, _) = listener.accept().await.unwrap();
             let (read, mut write) = stream.into_split();
             let mut line = String::new();
             BufReader::new(read).read_line(&mut line).await.unwrap();
-            let app_id = serving.lock().unwrap().clone();
-            let reply = format!("{{\"Ok\":{{\"FocusedWindow\":{{\"id\":1,\"app_id\":\"{app_id}\"}}}}}}\n");
-            write.write_all(reply.as_bytes()).await.unwrap();
+            let window = window.lock().unwrap().clone();
+            let reply = serde_json::json!({ "Ok": { "FocusedWindow": window } });
+            write.write_all(format!("{reply}\n").as_bytes()).await.unwrap();
         }
     });
+    niri
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_chord_follows_the_focused_window_and_app_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    let window = Arc::new(Mutex::new(serde_json::json!({ "id": 1, "app_id": "com.mitchellh.ghostty" })));
+    let niri = fake_niri(dir.path(), window.clone());
     let server = FakeServer::start(FakeServerConfig::default());
     server.push_outcome(Outcome::Final("terminal ".into()));
     server.push_outcome(Outcome::Final("secret ".into()));
@@ -621,13 +626,65 @@ async fn the_chord_follows_the_focused_window_and_app_rules() {
     .await;
     d.dictate(200).await;
     d.idle().await;
-    *app.lock().unwrap() = "org.keepassxc.KeePassXC".into();
+    *window.lock().unwrap() = serde_json::json!({ "id": 2, "app_id": "org.keepassxc.KeePassXC" });
     d.dictate(200).await;
     d.idle().await;
     assert_eq!(
         d.wayland.inserted(),
         vec![Inserted::Paste("terminal ".into(), Chord::CtrlShiftV), Inserted::Copy("secret ".into())]
     );
+    d.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn post_processing_hears_where_the_text_goes_only_when_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let gmail = serde_json::json!({ "id": 1, "app_id": "firefox", "title": "Inbox - Gmail" });
+    let niri = fake_niri(dir.path(), Arc::new(Mutex::new(gmail)));
+    let app = Target { app: "firefox".into(), title: None };
+    let window = Target { title: Some("Inbox - Gmail".into()), ..app.clone() };
+    let cases = [
+        ("polished", PostProcessingContext::None, None),
+        ("polished", PostProcessingContext::App, Some(app)),
+        ("polished", PostProcessingContext::Window, Some(window)),
+        ("none", PostProcessingContext::Window, None),
+    ];
+    for (style, context, target) in cases {
+        let server = FakeServer::start(FakeServerConfig::default());
+        server.push_outcome(Outcome::Final("Hi Anna. ".into()));
+        let d = daemon(&server, |cfg, deps| {
+            cfg.post_processing = style.into();
+            cfg.post_processing_context = context;
+            deps.niri_socket = Some(niri.clone());
+            deps.timing.niri_lookup = Duration::from_secs(5);
+        })
+        .await;
+        let id = d.dictate(200).await;
+        d.idle().await;
+        assert_eq!(server.session(id).unwrap().starts[0].target, target, "{style} with {context:?}");
+        assert_eq!(d.wayland.inserted(), vec![paste("Hi Anna. ")]);
+        d.stop().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_niri_that_never_answers_holds_the_start_only_until_the_lookup_gives_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let niri = dir.path().join("niri.sock");
+    let _niri = std::os::unix::net::UnixListener::bind(&niri).unwrap();
+    let server = FakeServer::start(FakeServerConfig::default());
+    server.push_outcome(Outcome::Final("Hi Anna. ".into()));
+    let d = daemon(&server, |cfg, deps| {
+        cfg.post_processing = "polished".into();
+        cfg.post_processing_context = PostProcessingContext::Window;
+        deps.niri_socket = Some(niri.clone());
+        deps.timing.niri_lookup = Duration::from_millis(300);
+    })
+    .await;
+    let id = d.dictate(100).await;
+    d.idle().await;
+    assert_eq!(server.session(id).unwrap().starts[0].target, None);
+    assert_eq!(d.wayland.inserted(), vec![paste("Hi Anna. ")]);
     d.stop().await;
 }
 
