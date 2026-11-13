@@ -84,3 +84,33 @@ async fn a_start_after_ten_quiet_seconds_on_a_slow_link_streams_live() {
     assert_eq!(d.wayland.inserted(), vec![paste("Over the tailnet. ")]);
     d.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_token_is_replaced_by_pairing_on_a_slow_link() {
+    let server = FakeServer::start(FakeServerConfig { tcp: true, ..Default::default() });
+    server.push_outcome(Outcome::Final("Paired again. ".into()));
+    // Through this link a connection takes 400 ms and a pairing 200 ms, so a 550 ms attempt fits
+    // either one, never a refused connection followed by a pairing.
+    let link = slow_link(server.tcp_endpoint().unwrap(), Duration::from_millis(100)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let credentials = dir.path().join("state/credentials");
+    std::fs::create_dir_all(dir.path().join("state")).unwrap();
+    let revoked = Credentials { server: link.clone(), device_id: "revoked".into(), token: Token::new("revoked") };
+    revoked.save(&credentials).unwrap();
+    let budget = Duration::from_millis(550);
+    let mut d = daemon_in(dir.path(), &server, |cfg, deps| {
+        cfg.server = link;
+        deps.timing.resume_budget = budget;
+        deps.timing.start_budget = budget;
+        deps.timing.attempt_budget = budget;
+    })
+    .await;
+
+    d.dictate(300).await;
+    d.idle().await;
+
+    assert_eq!(d.wayland.inserted(), vec![paste("Paired again. ")]);
+    assert_eq!(Credentials::load(&credentials).unwrap().unwrap().token, Token::new("fake-token"));
+    d._dir = Some(dir);
+    d.stop().await;
+}

@@ -74,6 +74,12 @@ CREATE TABLE IF NOT EXISTS web_sessions (
     expires_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS web_sessions_device ON web_sessions (device);
+-- Devices that paired themselves through `auto_pair`.
+CREATE TABLE IF NOT EXISTS tailnet_devices (
+    device TEXT PRIMARY KEY,
+    -- Tailscale's StableID for the machine.
+    node TEXT NOT NULL
+);
 ";
 
 pub const UNLOADED_BOOT_ID: &str = "unloaded_boot_id";
@@ -104,11 +110,45 @@ pub struct StoredNever {
     pub created_at: Timestamp,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TailnetPairing {
+    Paired {
+        id: String,
+        replaced: Option<String>,
+    },
+    /// The machine's device, which has connected.
+    Taken(String),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Revoke {
     Revoked,
     NotFound,
     Local,
+}
+
+fn revoke_device(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute("UPDATE devices SET revoked_ms = ?2 WHERE id = ?1", params![id, now_ms()])?;
+    conn.execute("DELETE FROM web_sessions WHERE device = ?1", params![id])?;
+    Ok(())
+}
+
+fn insert_token_device(conn: &Connection, name: &str, token_hash: &str) -> Result<String> {
+    loop {
+        let id = format!("{:08x}", rand::rng().random::<u32>());
+        let inserted = conn.execute(
+            "INSERT INTO devices (id, name, kind, token_hash, created_ms) VALUES (?1, ?2, 'token', ?3, ?4)",
+            params![id, name, token_hash, now_ms()],
+        );
+        match inserted {
+            Ok(_) => return Ok(id),
+            Err(rusqlite::Error::SqliteFailure(err, _)) if err.code == ErrorCode::ConstraintViolation => {
+                // An id collision; a token collision can't happen with 238 random bits.
+                continue;
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
 }
 
 fn now_ms() -> i64 {
@@ -174,22 +214,53 @@ impl Db {
     }
 
     pub fn add_token_device(&self, name: &str, token_hash: &str) -> Result<String> {
-        let conn = self.conn();
-        loop {
-            let id = format!("{:08x}", rand::rng().random::<u32>());
-            let inserted = conn.execute(
-                "INSERT INTO devices (id, name, kind, token_hash, created_ms) VALUES (?1, ?2, 'token', ?3, ?4)",
-                params![id, name, token_hash, now_ms()],
-            );
-            match inserted {
-                Ok(_) => return Ok(id),
-                Err(rusqlite::Error::SqliteFailure(err, _)) if err.code == ErrorCode::ConstraintViolation => {
-                    // An id collision; a token collision can't happen with 238 random bits.
-                    continue;
-                }
-                Err(err) => return Err(err.into()),
+        insert_token_device(&self.conn(), name, token_hash)
+    }
+
+    /// One live device per machine, so nothing else on it (a container, another user) can pair
+    /// beside its daemon. A device that never connected gives way: its token was lost on the way
+    /// back, which a lossy link or a client's time budget can do.
+    pub fn add_tailnet_device(&self, name: &str, node: &str, token_hash: &str) -> Result<TailnetPairing> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let live: Option<(String, Option<i64>)> = tx
+            .query_row(
+                "SELECT d.id, d.last_seen_ms FROM tailnet_devices t JOIN devices d ON d.id = t.device
+                 WHERE t.node = ?1 AND d.revoked_ms IS NULL",
+                params![node],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let replaced = match live {
+            Some((id, Some(_))) => return Ok(TailnetPairing::Taken(id)),
+            Some((id, None)) => {
+                revoke_device(&tx, &id)?;
+                Some(id)
             }
+            None => None,
+        };
+        let id = insert_token_device(&tx, name, token_hash)?;
+        tx.execute("INSERT INTO tailnet_devices (device, node) VALUES (?1, ?2)", params![id, node])?;
+        tx.commit()?;
+        Ok(TailnetPairing::Paired { id, replaced })
+    }
+
+    /// Revokes the devices of machines that `auto_pair` no longer lists, as `(id, name)`.
+    pub fn revoke_tailnet_devices_except(&self, names: &[String]) -> Result<Vec<(String, String)>> {
+        let live: Vec<(String, String)> = {
+            let conn = self.conn();
+            let mut stmt = conn.prepare(
+                "SELECT d.id, d.name FROM tailnet_devices t JOIN devices d ON d.id = t.device
+                 WHERE d.revoked_ms IS NULL",
+            )?;
+            let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        let dropped: Vec<_> = live.into_iter().filter(|(_, name)| !names.contains(name)).collect();
+        for (id, _) in &dropped {
+            self.revoke(id)?;
         }
+        Ok(dropped)
     }
 
     pub fn device_by_token(&self, token_hash: &str) -> Result<Option<TokenDevice>> {
@@ -244,8 +315,7 @@ impl Db {
             None => Ok(Revoke::NotFound),
             Some("local") => Ok(Revoke::Local),
             Some(_) => {
-                conn.execute("UPDATE devices SET revoked_ms = ?2 WHERE id = ?1", params![id, now_ms()])?;
-                conn.execute("DELETE FROM web_sessions WHERE device = ?1", params![id])?;
+                revoke_device(&conn, id)?;
                 Ok(Revoke::Revoked)
             }
         }

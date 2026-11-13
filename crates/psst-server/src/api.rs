@@ -28,11 +28,12 @@ use serde_json::Value;
 use crate::{
     auth::{self, Identity, RedeemError, Refusal},
     conn,
-    db::{Revoke, UNLOADED_BOOT_ID},
+    db::{Revoke, TailnetPairing, UNLOADED_BOOT_ID},
     dictionary::{self, Change},
     listen::Peer,
     profiles,
     state::AppState,
+    tailscale,
 };
 
 type AppRef = Arc<AppState>;
@@ -45,6 +46,7 @@ pub fn router(state: AppRef) -> Router {
         .route(routes::HEALTH, get(health))
         .route(routes::CLIENT, get(client))
         .route(routes::PAIR_REDEEM, post(pair_redeem))
+        .route(routes::PAIR_AUTO, post(pair_auto))
         .route(routes::MODEL, get(model))
         .route(routes::MODEL_LOAD, post(model_load))
         .route(routes::MODEL_UNLOAD, post(model_unload))
@@ -300,6 +302,52 @@ async fn pair_redeem(
     let device_id = state.db.add_token_device(&name, &auth::hash_token(&token))?;
     tracing::info!("paired device {device_id} ({name}, which calls itself {:?}) from {addr}", req.name);
     Ok(Json(PairRedeemed { device_id, token: Token::new(token) }))
+}
+
+/// Only tailscaled says which machine is calling. Faking a machine's address doesn't fool it: on
+/// tailscale0 only that machine's WireGuard key can send from the address, and the answer, token
+/// included, goes back to the address.
+async fn pair_auto(
+    State(state): State<AppRef>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+) -> Result<Json<PairRedeemed>, ApiErr> {
+    let Peer::Tcp(addr) = peer else {
+        return Err(ApiErr::new(ApiErrorCode::NotFound, "this machine doesn't pair; it uses the socket"));
+    };
+    if !state.pairings.admit(addr.ip()) {
+        return Err(ApiErr::new(ApiErrorCode::RateLimited, "too many pairing attempts; wait a minute"));
+    }
+    let forbidden = |message: String| Err(ApiErr::new(ApiErrorCode::Forbidden, message));
+    if state.server.auto_pair.is_empty() {
+        return forbidden("this server's auto_pair lists no machine; pair with a code from `psst-server pair`".into());
+    }
+    let machine = match tailscale::whois(&state.server.tailscale_socket, addr).await {
+        Ok(Some(machine)) => machine,
+        Ok(None) => return forbidden(format!("{} isn't a machine on the server's tailnet", addr.ip())),
+        Err(err) => {
+            tracing::warn!("cannot ask tailscaled who {addr} is: {err:#}");
+            return forbidden("the server cannot ask tailscaled which machine this is; see the server's log".into());
+        }
+    };
+    let name = machine.name;
+    if !state.server.auto_pair.contains(&name) {
+        return forbidden(format!("{name} isn't in the server's auto_pair"));
+    }
+    let token = auth::new_token();
+    match state.db.add_tailnet_device(&name, &machine.id, &auth::hash_token(&token))? {
+        TailnetPairing::Paired { id, replaced } => {
+            if let Some(replaced) = replaced {
+                tracing::info!("revoked device {replaced}, which {name} paired as but never connected with");
+                // One may be connecting right now, registered but not yet counted as seen.
+                state.conns.close(&replaced, "the device was paired again");
+            }
+            tracing::info!("paired device {id} ({name}, tailnet machine {}) from {addr}", machine.id);
+            Ok(Json(PairRedeemed { device_id: id, token: Token::new(token) }))
+        }
+        TailnetPairing::Taken(live) => forbidden(format!(
+            "{name} is already paired as device {live}; if it lost its token, run `psst-server devices revoke {live}` on the server"
+        )),
+    }
 }
 
 /// Never from a browser session, so a session can't extend itself.

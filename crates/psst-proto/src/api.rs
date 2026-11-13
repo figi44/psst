@@ -9,6 +9,8 @@ pub mod routes {
     pub const CLIENT: &str = "/v1/client";
     pub const HEALTH: &str = "/health";
     pub const PAIR_REDEEM: &str = "/api/pair/redeem";
+    /// No body: the server asks tailscaled which machine is calling, and checks its `auto_pair`.
+    pub const PAIR_AUTO: &str = "/api/pair/auto";
     pub const MODEL: &str = "/api/model";
     pub const MODEL_LOAD: &str = "/api/model/load";
     pub const MODEL_UNLOAD: &str = "/api/model/unload";

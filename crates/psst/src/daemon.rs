@@ -1,13 +1,21 @@
-use std::{collections::VecDeque, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::VecDeque,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use jiff::Timestamp;
 use psst_client::{
     AudioCodec, AudioFrame, Client, ClientError, FRAME_BUFFER, FrameSender, OpusSettings, Outdated, Session,
-    SessionEvent, StartOpts, TrySendError, upload_file,
+    SessionEvent, StartOpts, TrySendError,
+    api::{ApiCallError, ApiClient, Method},
+    upload_file,
 };
 use psst_config::{ClientConfig, PasteAction, Sounds};
 use psst_proto::{
-    ClientTimings, Endpoint, ErrorCode, FRAME_MS, SessionId,
+    ClientTimings, Endpoint, ErrorCode, FRAME_MS, SessionId, Token,
+    api::{PairRedeemed, routes},
     ws::{FinalMsg, Mode, ProgressState},
 };
 use psst_wayland::{Chord, OverlayState, WaylandCmd, WaylandEvent};
@@ -239,10 +247,26 @@ async fn serve_follower(
 enum Input {
     Request(Request, oneshot::Sender<Response>),
     Rec(SessionId, RecEvent),
-    Session { id: SessionId, seq: u64, event: SessionEvent },
-    Conn { attempt: u64, result: Result<Client, ConnFailure>, fresh: bool },
-    ConnClosed { epoch: u64, reason: String },
-    Focus { generation: u64, app_id: Option<String> },
+    Session {
+        id: SessionId,
+        seq: u64,
+        event: SessionEvent,
+    },
+    Conn {
+        attempt: u64,
+        result: Result<Client, ConnFailure>,
+        fresh: bool,
+    },
+    /// Sent as soon as it's known: the attempt may run out of time before it ends.
+    TokenRefused(Token),
+    ConnClosed {
+        epoch: u64,
+        reason: String,
+    },
+    Focus {
+        generation: u64,
+        app_id: Option<String>,
+    },
     Resumed,
     Follow(oneshot::Sender<watch::Receiver<Status>>),
     Shutdown(oneshot::Sender<()>),
@@ -251,6 +275,73 @@ enum Input {
 struct ConnFailure {
     reason: String,
     outdated: Option<Outdated>,
+}
+
+impl ConnFailure {
+    fn new(err: ClientError, pairing: Option<String>) -> ConnFailure {
+        let outdated = match &err {
+            ClientError::Incompatible(incompatible) => Some(incompatible.outdated()),
+            _ => None,
+        };
+        let reason = match pairing {
+            Some(pairing) if unauthorized(&err) => format!("{err}; pairing by tailnet identity failed: {pairing}"),
+            _ => err.to_string(),
+        };
+        ConnFailure { reason, outdated }
+    }
+}
+
+fn unauthorized(err: &ClientError) -> bool {
+    matches!(err, ClientError::Refused(refusal) if refusal.code == ErrorCode::Unauthorized)
+}
+
+/// Pairs by tailnet identity when there's no token, or when the server refuses the one there is:
+/// it was revoked, or the server lost its database. A server whose `auto_pair` doesn't list this
+/// machine refuses, and the connection fails as it would have. A token refused before is tried
+/// after pairing, not before: on a slow link, the refused connection alone can use up an attempt's
+/// budget.
+async fn connect_or_pair(
+    endpoint: &Endpoint,
+    saved: Option<Token>,
+    refused_before: bool,
+    credentials: &Path,
+    on_refused: impl FnOnce(Token),
+) -> Result<Client, ConnFailure> {
+    let mut token = saved.clone();
+    let mut pairing = None;
+    if token.is_none() || refused_before {
+        match pair_itself(endpoint, credentials).await {
+            Ok(paired) => token = Some(paired),
+            Err(err) => pairing = Some(err),
+        }
+    }
+    let mut result = Client::connect(endpoint, token.as_ref()).await;
+    if let (Some(saved), Err(err)) = (saved, &result)
+        && token.as_ref() == Some(&saved)
+        && unauthorized(err)
+    {
+        on_refused(saved);
+        if !refused_before {
+            match pair_itself(endpoint, credentials).await {
+                Ok(paired) => result = Client::connect(endpoint, Some(&paired)).await,
+                Err(err) => pairing = Some(err),
+            }
+        }
+    }
+    result.map_err(|err| ConnFailure::new(err, pairing))
+}
+
+async fn pair_itself(endpoint: &Endpoint, credentials: &Path) -> Result<Token, String> {
+    let api = ApiClient::new(endpoint.clone(), None);
+    let paired: PairRedeemed =
+        api.call(Method::Post, routes::PAIR_AUTO, None::<&()>).await.map_err(|err| match err {
+            ApiCallError::Api { error, .. } => error.message,
+            other => other.to_string(),
+        })?;
+    let creds = Credentials { server: endpoint.clone(), device_id: paired.device_id, token: paired.token };
+    creds.save(credentials).map_err(|err| format!("cannot save {}: {err}", credentials.display()))?;
+    info!("paired with {endpoint} as device {} by this machine's tailnet identity", creds.device_id);
+    Ok(creds.token)
 }
 
 /// Short enough for the overlay to show whole; `psst status` has the versions on its server line.
@@ -416,6 +507,7 @@ struct Core {
     connected_at: Instant,
     conn_error: Option<String>,
     incompatible: Option<Outdated>,
+    refused_token: Option<Token>,
     /// Kept from the latest connection while there is none.
     round_trip: Duration,
     attempt: Option<u64>,
@@ -471,6 +563,7 @@ impl Core {
             connected_at: Instant::now(),
             conn_error: None,
             incompatible: None,
+            refused_token: None,
             round_trip: Duration::ZERO,
             attempt: None,
             attempts: 0,
@@ -537,6 +630,7 @@ impl Core {
             Input::Rec(id, event) => self.on_rec(id, event),
             Input::Session { id, seq, event } => self.on_session(id, seq, event),
             Input::Conn { attempt, result, fresh } => self.on_conn(attempt, result, fresh),
+            Input::TokenRefused(token) => self.refused_token = Some(token),
             Input::ConnClosed { epoch, reason } => self.on_conn_closed(epoch, reason),
             Input::Focus { generation, app_id } => self.on_focus(generation, app_id),
             Input::Resumed => {
@@ -911,18 +1005,21 @@ impl Core {
         let attempt = self.attempts;
         self.attempt = Some(attempt);
         let endpoint = self.cfg.server.clone();
-        let token = if self.endpoint_is_tcp() {
-            match Credentials::load(&self.credentials) {
+        let (token, credentials) = if self.endpoint_is_tcp() {
+            let token = match Credentials::load(&self.credentials) {
                 Ok(Some(creds)) => Some(creds.token),
                 Ok(None) => None,
                 Err(err) => {
                     warn!("cannot read {}: {err}", self.credentials.display());
                     None
                 }
-            }
+            };
+            (token, Some(self.credentials.clone()))
         } else {
-            None
+            (None, None)
         };
+        let refused_before = token.is_some() && token == self.refused_token;
+        let refused_tx = self.tx.clone();
         let current = if kind == AttemptKind::Check { self.client.clone() } else { None };
         let pong = self.pong_budget().min(budget);
         let tx = self.tx.clone();
@@ -937,13 +1034,13 @@ impl Core {
                         }
                     }
                 }
-                let result = Client::connect(&endpoint, token.as_ref()).await.map_err(|err| ConnFailure {
-                    outdated: match &err {
-                        ClientError::Incompatible(incompatible) => Some(incompatible.outdated()),
-                        _ => None,
-                    },
-                    reason: err.to_string(),
-                });
+                let result = match &credentials {
+                    Some(credentials) => {
+                        let refused = |token| drop(refused_tx.send(Input::TokenRefused(token)));
+                        connect_or_pair(&endpoint, token, refused_before, credentials, refused).await
+                    }
+                    None => Client::connect(&endpoint, None).await.map_err(|err| ConnFailure::new(err, None)),
+                };
                 (result, true)
             };
             let (result, fresh) = match tokio::time::timeout(budget, work).await {
@@ -990,6 +1087,7 @@ impl Core {
                 }
                 self.conn_error = None;
                 self.incompatible = None;
+                self.refused_token = None;
                 if let Some(rec) = &mut self.recording
                     && matches!(rec.net, Net::Checking { .. })
                 {

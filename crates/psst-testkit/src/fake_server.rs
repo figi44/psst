@@ -310,7 +310,7 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(inner: Arc<Inner>, mut st
     if !*inner.listening.borrow() {
         return;
     }
-    const PAIR: &[u8] = b"POST /api/pair/redeem";
+    const PAIR: &[u8] = b"POST /api/pair/";
     let mut head = [0u8; PAIR.len()];
     let mut buffered = Vec::new();
     while buffered.len() < PAIR.len() {
@@ -338,12 +338,6 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(inner: Arc<Inner>, mut st
         state.connections
     };
     let send = |msg: &ServerMsg| Message::text(serde_json::to_string(msg).expect("serialise"));
-    if tcp && auth.as_deref() != Some(&format!("Bearer {}", inner.cfg.token)) {
-        let err = ErrorMsg::new(None, ErrorCode::Unauthorized, "unknown device token");
-        let _ = ws.send(send(&ServerMsg::Error(err))).await;
-        let _ = ws.close(None).await;
-        return;
-    }
     let hello = loop {
         match ws.next().await {
             Some(Ok(Message::Text(body))) => match serde_json::from_str::<ClientMsg>(&body) {
@@ -354,6 +348,13 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(inner: Arc<Inner>, mut st
             _ => return,
         }
     };
+    // Like the server, which answers `hello` with every refusal.
+    if tcp && auth.as_deref() != Some(&format!("Bearer {}", inner.cfg.token)) {
+        let err = ErrorMsg::new(None, ErrorCode::Unauthorized, "unknown device token");
+        let _ = ws.send(send(&ServerMsg::Error(err))).await;
+        let _ = ws.close(None).await;
+        return;
+    }
     let (protocol, detail) = inner.state().protocol.unwrap_or((PROTOCOL_VERSION, true));
     if hello.protocol != protocol {
         let mut err = ErrorMsg::new(None, ErrorCode::Protocol, format!("the server speaks protocol {protocol}"));
@@ -614,7 +615,16 @@ async fn pair<S: AsyncRead + AsyncWrite + Unpin>(inner: &Inner, mut stream: S) {
             break buf[end + 4..end + 4 + len].to_vec();
         }
     };
+    let auto = buf.starts_with(b"POST /api/pair/auto ");
     let (status, json) = match serde_json::from_slice::<PairRedeem>(&body) {
+        // Like a server whose auto_pair lists this machine.
+        _ if auto => (
+            "200 OK",
+            serde_json::to_string(&PairRedeemed {
+                device_id: "fake-device".into(),
+                token: psst_proto::Token::new(inner.cfg.token.clone()),
+            }),
+        ),
         Ok(req) if req.code == inner.cfg.pair_code => (
             "200 OK",
             serde_json::to_string(&PairRedeemed {

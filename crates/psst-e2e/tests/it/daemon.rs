@@ -1,6 +1,7 @@
 use std::{
     fs,
     io::{BufRead, BufReader, Read},
+    net::{IpAddr, Ipv4Addr},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
@@ -12,8 +13,9 @@ use std::{
 use psst_engine_proto::fake::{Script, TranscribeStep};
 use psst_proto::Endpoint;
 use psst_testkit::{
-    Sandbox, TestClientConfig, TestDaemon, TestServer, TestServerConfig, spawn_daemon, spawn_server, test_audio,
-    write_wav,
+    Sandbox, TestClientConfig, TestDaemon, TestServer, TestServerConfig,
+    fake_tailscale::{FakeTailscale, TAILNET},
+    spawn_daemon, spawn_server, test_audio, write_wav,
 };
 use serde_json::Value;
 
@@ -24,8 +26,12 @@ const WAIT: Duration = Duration::from_secs(15);
 struct Server(TestServer);
 
 impl Server {
-    /// The pipeline appends a space to each (the `trailing_space` rule).
     fn start(texts: &[&str], tcp: bool) -> Server {
+        Self::start_with(texts, |cfg| cfg.tcp = tcp)
+    }
+
+    /// The pipeline appends a space to each (the `trailing_space` rule).
+    fn start_with(texts: &[&str], adjust: impl FnOnce(&mut TestServerConfig)) -> Server {
         let transcribe = texts
             .iter()
             .map(|text| TranscribeStep::Result {
@@ -35,7 +41,8 @@ impl Server {
                 speech_ms: None,
             })
             .collect();
-        let cfg = TestServerConfig { script: Script { transcribe, ..Script::default() }, tcp, ..Default::default() };
+        let mut cfg = TestServerConfig { script: Script { transcribe, ..Script::default() }, ..Default::default() };
+        adjust(&mut cfg);
         Server(spawn_server(Path::new(SERVER), cfg))
     }
 
@@ -242,6 +249,40 @@ fn pairing_stores_a_private_token_that_the_daemon_uses_over_tcp() {
     client.ok(&["toggle"]);
     client.wait_idle();
     assert_eq!(client.inserted_texts("paste"), vec!["Over TCP. "]);
+}
+
+#[test]
+fn a_machine_in_auto_pair_pairs_itself_and_again_once_revoked() {
+    let tailscale = FakeTailscale::start();
+    tailscale.add(IpAddr::V4(Ipv4Addr::LOCALHOST), "nThinkpadCNTRL", &format!("thinkpad.{TAILNET}"));
+    let server = Server::start_with(&["Paired by itself.", "Paired again."], |cfg| {
+        cfg.tcp = true;
+        cfg.server.auto_pair = vec!["thinkpad".into()];
+        cfg.server.tailscale_socket = tailscale.socket().into();
+    });
+    let client = Client::start(server.0.tcp_endpoint().unwrap());
+    let dictate = |client: &Client| {
+        client.ok(&["toggle"]);
+        thread::sleep(Duration::from_millis(300));
+        client.ok(&["toggle"]);
+        client.wait_idle();
+    };
+    let creds = client.daemon().state_dir().join("credentials");
+    let device = || -> String {
+        let stored: Value = serde_json::from_slice(&fs::read(&creds).unwrap()).unwrap();
+        stored["device_id"].as_str().unwrap().to_owned()
+    };
+
+    dictate(&client);
+    assert_eq!(client.inserted_texts("paste"), vec!["Paired by itself. "]);
+    assert_eq!(fs::metadata(&creds).unwrap().permissions().mode() & 0o777, 0o600);
+    let first = device();
+
+    let revoke = Command::new(SERVER).args(["devices", "revoke", &first, "--socket"]).arg(server.0.socket()).output();
+    assert!(revoke.unwrap().status.success());
+    dictate(&client);
+    assert_eq!(client.inserted_texts("paste"), vec!["Paired by itself. ", "Paired again. "]);
+    assert_ne!(device(), first);
 }
 
 #[test]

@@ -1,4 +1,5 @@
 pub mod fake_server;
+pub mod fake_tailscale;
 pub mod guard;
 mod sandbox;
 mod tools;

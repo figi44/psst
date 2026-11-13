@@ -31,6 +31,7 @@ let
     services.psst-server = {
       enable = true;
       settings.server.local_users = [ "alice" ];
+      settings.server.auto_pair = [ "thinkpad" ];
     };
   };
   noUsers = nixos {
@@ -122,6 +123,7 @@ pkgs.runCommand "psst-modules"
   }
   ''
     grep -Fx 'local_users = ["alice"]' $serverConfig/server.toml
+    grep -Fx 'auto_pair = ["thinkpad"]' $serverConfig/server.toml
     grep -Fx 'socket = "/run/psst/client.sock"' $serverConfig/server.toml
     grep -Fx 'server = "http://desktop:7341"' $clientToml
     grep -F 'profiles.toml' $rejected/testBuildFailure.log

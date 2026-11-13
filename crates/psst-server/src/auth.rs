@@ -141,6 +141,12 @@ impl Pairings {
         Pairing { code, expires_at }
     }
 
+    /// Auto-pairing guesses nothing, but shares the limit so callers can't hammer tailscaled.
+    pub fn admit(&self, addr: IpAddr) -> bool {
+        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        state.limit.admit(addr, Instant::now())
+    }
+
     /// A wrong code counts against every pending code, since nobody can tell which one was being
     /// guessed.
     pub fn redeem(&self, addr: IpAddr, code: &str) -> Result<String, RedeemError> {

@@ -59,6 +59,15 @@ fn web_url_is_an_http_origin() {
 }
 
 #[test]
+fn auto_pair_takes_magicdns_short_names() {
+    let config = ServerConfig::from_toml_str(r#"auto_pair = ["thinkpad", "pixel-9"]"#).unwrap();
+    assert_eq!(config.auto_pair, ["thinkpad", "pixel-9"]);
+    for name in ["", "thinkpad.tail1234.ts.net", "ThinkPad", "think pad", "-x"] {
+        invalid::<ServerConfig>(&format!("auto_pair = [{name:?}]"), "auto_pair");
+    }
+}
+
+#[test]
 fn a_full_server_model_section_parses() {
     let config = ServerConfig::from_toml_str(
         r#"

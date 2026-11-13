@@ -14,6 +14,12 @@ pub struct ServerConfig {
     pub socket: PathBuf,
     /// Socket users, as admins. When empty, `serve` without systemd accepts its own user.
     pub local_users: Vec<String>,
+    /// Tailnet machines, by MagicDNS short name, that pair themselves over TCP. tailscaled vouches
+    /// for which machine a connection comes from. Each gets one token; one dropped from the list
+    /// is revoked at the next start.
+    pub auto_pair: Vec<String>,
+    /// tailscaled's LocalAPI socket, asked who an `auto_pair` caller is.
+    pub tailscale_socket: PathBuf,
     /// Longest an accepted session waits for the model, reloads between attempts included.
     pub load_deadline_s: u32,
     pub history_days: u32,
@@ -36,6 +42,8 @@ impl Default for ServerConfig {
             ],
             socket: PathBuf::from(DEFAULT_SOCKET),
             local_users: Vec::new(),
+            auto_pair: Vec::new(),
+            tailscale_socket: PathBuf::from("/run/tailscale/tailscaled.sock"),
             load_deadline_s: 120,
             history_days: 30,
             eval_mode: false,
@@ -143,6 +151,11 @@ impl ConfigFile for ServerConfig {
         if self.local_users.iter().any(String::is_empty) {
             return Err("local_users must not contain empty names".into());
         }
+        if let Some(name) = self.auto_pair.iter().find(|name| !is_short_name(name)) {
+            return Err(format!(
+                "auto_pair takes tailnet machines' MagicDNS short names, such as \"thinkpad\", not `{name}`"
+            ));
+        }
         if self.load_deadline_s == 0 {
             return Err("load_deadline_s must be at least 1".into());
         }
@@ -170,6 +183,13 @@ impl ConfigFile for ServerConfig {
         }
         Ok(())
     }
+}
+
+/// A DNS label as MagicDNS writes it: lowercase, so it compares as is.
+fn is_short_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('-')
+        && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 pub fn web_origin(url: &str) -> Option<&str> {

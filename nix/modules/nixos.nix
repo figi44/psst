@@ -97,6 +97,17 @@ in
                 pairing.
               '';
             };
+            auto_pair = mkOption {
+              type = types.listOf types.str;
+              default = [ ];
+              example = [ "thinkpad" ];
+              description = ''
+                Tailnet machines, by MagicDNS short name, whose daemons pair themselves on their
+                first connection: the server asks tailscaled (`tailscale_socket`) which machine is
+                calling. Each gets one device; one removed from the list is revoked when the server
+                restarts.
+              '';
+            };
           };
         };
         default = { };

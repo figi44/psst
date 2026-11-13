@@ -55,6 +55,50 @@ let
                     ws.send(json.dumps({"type": "stop", "session_id": session, "samples": SAMPLES}))
                     answer(ws)
       '';
+  # tailscaled's LocalAPI, saying that 127.0.0.1 is the tailnet machine `thinkpad`.
+  fakeTailscaled =
+    pkgs.writers.writePython3 "fake-tailscaled"
+      {
+        flakeIgnore = [ "E501" ];
+      }
+      ''
+        import json
+        import os
+        import socketserver
+        from http.server import BaseHTTPRequestHandler
+
+        SOCKET = "/run/tailscale/tailscaled.sock"
+        WHOIS = {"Node": {"StableID": "nThinkpadCNTRL", "Name": "thinkpad.tail1234.ts.net."}}
+        STATUS = {"CurrentTailnet": {"MagicDNSSuffix": "tail1234.ts.net"}}
+
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path.startswith("/localapi/v0/whois?addr=127.0.0.1"):
+                    self.answer(200, WHOIS)
+                elif self.path == "/localapi/v0/status?peers=false":
+                    self.answer(200, STATUS)
+                else:
+                    self.answer(404, "no match for IP:port")
+
+            def answer(self, status, body):
+                data = json.dumps(body).encode()
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def address_string(self):
+                return "local"
+
+
+        os.makedirs("/run/tailscale", exist_ok=True)
+        if os.path.exists(SOCKET):
+            os.remove(SOCKET)
+        with socketserver.UnixStreamServer(SOCKET, Handler) as server:
+            os.chmod(SOCKET, 0o666)
+            server.serve_forever()
+      '';
 in
 pkgs.testers.runNixOSTest {
   name = "psst-server";
@@ -65,15 +109,21 @@ pkgs.testers.runNixOSTest {
     users.users.alice.isNormalUser = true;
     users.users.bob.isNormalUser = true;
     environment.systemPackages = [
+      pkgs.curl
       pkgs.socat
       dictate
     ];
+    systemd.services.fake-tailscaled = {
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig.ExecStart = fakeTailscaled;
+    };
 
     services.psst-server = {
       enable = true;
       enginePackage = fakeEngine;
       settings.server = {
         local_users = [ "alice" ];
+        auto_pair = [ "thinkpad" ];
         model = {
           command = [ "psst-engine-fake" ];
           device = "cpu";
@@ -173,6 +223,13 @@ pkgs.testers.runNixOSTest {
         assert transcribe["bias"] == {"style": "Testing psst in a VM.", "terms": ["psst", "NixOS"]}, transcribe
         [row] = json.loads(machine.succeed(as_user("alice", "psst-server history --json")))
         assert (row["id"], row["device"]) == (final["history_id"], "local:alice"), row
+
+    with subtest("a machine in auto_pair pairs itself: the sandboxed service reaches tailscaled's socket"):
+        machine.wait_until_succeeds("test -S /run/tailscale/tailscaled.sock")
+        paired = json.loads(machine.succeed("curl -sf -X POST http://127.0.0.1:7341/api/pair/auto"))
+        assert paired["token"].startswith("psst_"), paired
+        devices = json.loads(machine.succeed(as_user("alice", "psst-server devices list --json")))
+        assert any(d["id"] == paired["device_id"] and d["name"] == "thinkpad" for d in devices), devices
 
     with subtest("reload rereads profiles.toml and dictionary.toml, keeping the process and the engine"):
         pid = show("psst-server.service", "MainPID")

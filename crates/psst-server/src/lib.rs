@@ -10,6 +10,7 @@ mod profiles;
 mod registry;
 mod sleep;
 mod state;
+mod tailscale;
 mod web;
 
 use std::{
@@ -110,6 +111,9 @@ async fn start(cfg: ServeConfig, systemd: Option<std::os::unix::net::UnixListene
         fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     }
     let db = Db::open(&cfg.state_dir.join("psst.db"))?;
+    for (id, name) in db.revoke_tailnet_devices_except(&server.auto_pair)? {
+        tracing::info!("revoked device {id}: auto_pair no longer lists {name}");
+    }
     let (profile_layers, profiles) = ProfileLayers::load(files.profiles, &db)?;
     let (layered, dictionary) = Layered::load(files.dictionary, &db)?;
     for warning in dictionary.warnings() {
