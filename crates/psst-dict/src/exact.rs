@@ -135,13 +135,13 @@ impl Matcher {
     }
 
     /// Leftmost-longest exact matches of `language`'s terms in `text`, among the candidates
-    /// `allow` accepts.
+    /// `allow` accepts for their term.
     pub fn find<'d>(
         &self,
         terms: &'d [Term],
         text: &str,
         language: &str,
-        mut allow: impl FnMut(Range<usize>) -> bool,
+        mut allow: impl FnMut(Range<usize>, &Term) -> bool,
     ) -> Vec<ExactMatch<'d>> {
         let Some(automaton) = &self.automaton else { return Vec::new() };
         let folded = Folded::new(text);
@@ -162,11 +162,11 @@ impl Matcher {
         let mut matches = Vec::new();
         let mut taken = 0;
         for (range, claim) in candidates {
-            if range.start < taken || !allow(range.clone()) {
+            let term = &terms[claim.term];
+            if range.start < taken || !allow(range.clone(), term) {
                 continue;
             }
             taken = range.end;
-            let term = &terms[claim.term];
             let matched = &text[range.clone()];
             let outcome = if matched == term.text || (claim.is_text && is_common_word(language, matched)) {
                 if is_common_word(language, matched) { Outcome::Ignore } else { Outcome::Keep }

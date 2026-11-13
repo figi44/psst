@@ -1,19 +1,23 @@
-//! The dictionary (plan 7): loading, checks, bias terms, the common-word lists and exact
-//! matching. Pure; no I/O.
+//! The dictionary (plan 7): loading, checks, bias terms, the common-word lists, never rules and
+//! exact matching. Pure; no I/O.
 //!
 //! - [`Dictionary::from_file`] builds the dictionary from `dictionary.toml` and rejects the
 //!   conflicts of plan 7.1; [`Dictionary::warnings`] lists what is allowed but probably unintended.
 //!   `psst-server check-config` reports both.
+//! - [`NeverRule`]s veto a term replacing a span ([`Dictionary::vetoes`]), compared by
+//!   [`fuzzy_key`]. [`Dictionary::with_never_rules`] sets them.
 //! - [`Dictionary::bias_terms`] orders a language's terms for the engine (7.2 step 1).
 //! - [`Dictionary::exact_matches`] finds exact spellings in a text (7.2 step 2).
 //! - [`is_common_word`] and [`common_words`] answer from the 5,000 most frequent word forms of
 //!   English and Czech.
 //!
-//! Fuzzy matching, the database layer and never rules arrive in Phase 2.
+//! Fuzzy matching and the database layer arrive in Phase 2.
 
 mod common;
 mod exact;
 mod fold;
+mod key;
+mod never;
 
 use std::{collections::HashMap, fmt, ops::Range};
 
@@ -23,6 +27,8 @@ use psst_proto::TermId;
 pub use common::{COMMON_WORD_LANGUAGES, common_words, is_common_word};
 pub use exact::{ExactMatch, Outcome};
 pub use fold::term_id;
+pub use key::fuzzy_key;
+pub use never::NeverRule;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -67,11 +73,13 @@ pub struct Term {
 pub struct Dictionary {
     terms: Vec<Term>,
     exact: exact::Matcher,
+    /// Active never rules, sorted.
+    never: Vec<NeverRule>,
 }
 
 impl PartialEq for Dictionary {
     fn eq(&self, other: &Self) -> bool {
-        self.terms == other.terms
+        self.terms == other.terms && self.never == other.never
     }
 }
 
@@ -110,7 +118,7 @@ impl Dictionary {
             });
         }
         let exact = exact::Matcher::new(&terms)?;
-        Ok(Dictionary { terms, exact })
+        Ok(Dictionary { terms, exact, never: Vec::new() })
     }
 
     pub fn terms(&self) -> &[Term] {
@@ -131,15 +139,17 @@ impl Dictionary {
     /// Every term's `text` and `sounds_like` take part, compared ignoring case. A match starts and
     /// ends at whitespace, the start or end of the text, or one of `. , ; : ! ? ( ) [ ] { } " '`
     /// (and the typographic quotes `‘ ’ “ ” „` and `…`). Where matches overlap, the leftmost wins,
-    /// then the longest, so "c++" is the term `C++` and never `C`. `allow` vetoes a candidate
-    /// before that choice, so a shorter or later match can take its place.
+    /// then the longest, so "c++" is the term `C++` and never `C`. Never rules and `allow` veto a
+    /// candidate before that choice, so a shorter or later match can take its place.
     pub fn exact_matches(
         &self,
         text: &str,
         lang: &str,
-        allow: impl FnMut(Range<usize>) -> bool,
+        mut allow: impl FnMut(Range<usize>) -> bool,
     ) -> Vec<ExactMatch<'_>> {
-        self.exact.find(&self.terms, text, lang, allow)
+        self.exact.find(&self.terms, text, lang, |range, term| {
+            !self.vetoes(&term.id, &text[range.clone()]) && allow(range)
+        })
     }
 
     /// Things the file allows but probably doesn't intend (plan 7.1): a spelling that's a common
