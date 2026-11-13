@@ -12,9 +12,18 @@ psst = { version = "0.1.0", path = "../psst" }
 psst-server = { version = "0.1.0", path = "../psst-server" }
 
 [dev-dependencies]
+futures-util = "0.3.34"
+nix = { version = "0.31.3", features = ["signal", "user"] }
 psst-client = { path = "../psst-client" }
+psst-config = { path = "../psst-config" }
+psst-engine-proto = { path = "../psst-engine-proto" }
+psst-proto = { path = "../psst-proto" }
 psst-testkit = { path = "../psst-testkit" }
+serde_json = "1.0.154"
 tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "io-util"] }
+tokio-tungstenite = "0.29"
+uuid = { version = "1.29.0", features = ["v4"] }
 
 [[bin]]
 name = "psst-server-e2e"

@@ -993,11 +993,20 @@ dependencies = [
 name = "psst-e2e"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
+ "nix",
  "psst",
  "psst-client",
+ "psst-config",
+ "psst-engine-proto",
+ "psst-proto",
  "psst-server",
  "psst-testkit",
+ "serde_json",
  "tempfile",
+ "tokio",
+ "tokio-tungstenite",
+ "uuid",
 ]
 
 [[package]]
