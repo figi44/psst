@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Tests for scripts/gpu-session.sh, with a private cache directory, so the real GPU lock is never touched. No GPU
-# needed.
+# Tests for scripts/gpu-session.sh, with a private cache directory and a fake psst-server first on PATH, so the real
+# GPU lock and the real server's model are never touched. No GPU needed.
 #
 #   scripts/tests/gpu-session.sh
 # shellcheck disable=SC2016,SC2034 # checks are single-quoted on purpose and expanded by the eval in check()
@@ -10,6 +10,27 @@ T=$(mktemp -d "${TMPDIR:-/tmp}/psst-gpu-session-test.XXXXXX")
 trap 'rm -rf "$T"' EXIT
 export PSST_CACHE_DIR=$T/cache
 G=$REPO/scripts/gpu-session.sh
+# The fake psst-server: `model status --json`, `model unload` and `model load` against the model state in $T/psst
+# (no file: no server running). It logs each unload and load to $T/psst.log, and notes in $T/alive-at-load when a
+# `sleep 36` is still running as the model is loaded.
+mkdir -p "$T/bin"
+cat > "$T/bin/psst-server" <<'EOF'
+#!/usr/bin/env bash
+if [[ ! -e $T/psst ]]; then
+    echo "psst-server: cannot connect to /run/psst/client.sock (is psst-server running?)" >&2
+    exit 1
+fi
+case "$1 $2" in
+    "model status") printf '{\n  "name": "large-v3-turbo",\n  "state": "%s"\n}\n' "$(cat "$T/psst")" ;;
+    "model unload") echo unloaded > "$T/psst"; echo unload >> "$T/psst.log" ;;
+    "model load")
+        if pgrep -f "^sleep 36$" >/dev/null; then echo alive >> "$T/alive-at-load"; fi
+        echo loaded > "$T/psst"; echo load >> "$T/psst.log" ;;
+    *) exit 64 ;;
+esac
+EOF
+chmod +x "$T/bin/psst-server"
+export PATH=$T/bin:$PATH T
 pass=0 fail=0
 check() { if eval "$2"; then echo "ok   $1"; pass=$((pass+1)); else echo "FAIL $1"; fail=$((fail+1)); fi; }
 
@@ -49,33 +70,42 @@ check "worker under a wrapper stopped on SIGTERM" '! pgrep -f "^sleep 34$" >/dev
 # 6. nested call runs directly
 out=$($G bash -c "$G echo nested" 2>/dev/null)
 check "nested call does not deadlock" '[[ $out == nested ]]'
-# 7. psst restore and repair, with the hooks wired to a fake psst-server (state file)
-P=$T/gpu-session-psst.sh
-sed -e 's|^psst_model_loaded() { return 1; }|psst_model_loaded() { [[ $(cat "$T/psst") == loaded ]]; }|' \
-    -e 's|^psst_model_unload() { return 0; }|psst_model_unload() { echo unloaded > "$T/psst"; echo unload >> "$T/psst.log"; }|' \
-    -e 's|^psst_model_load() { return 0; }|psst_model_load() { echo loaded > "$T/psst"; echo load >> "$T/psst.log"; }|' "$G" > "$P"
-chmod +x "$P"; export T
+# 7. the psst server's model (the fake psst-server): which states are unloaded, restore, repair
+for state in loading downloading; do
+    echo $state > "$T/psst"
+    $G bash -c '[[ $(cat "$T/psst") == unloaded ]]' 2>/dev/null; rc=$?
+    check "model $state: unloaded during the command, loaded after" '[[ $rc == 0 && $(cat "$T/psst") == loaded ]]'
+done
+for state in unloaded failed; do
+    echo $state > "$T/psst"
+    $G bash -c '[[ $(cat "$T/psst") == $1 ]]' _ $state 2>/dev/null; rc=$?
+    check "model $state: left as it is" '[[ $rc == 0 && $(cat "$T/psst") == $state ]]'
+done
+rm "$T/psst"
+out=$($G echo ran 2>"$T/err7"); rc=$?
+check "without a server the command runs" '[[ $rc == 0 && $out == ran ]]'
+check "without a server it warns" 'grep -q "warning: couldn.t ask psst-server" "$T/err7"'
+: > "$T/psst.log"
 echo loaded > "$T/psst"
-$P bash -c '[[ $(cat "$T/psst") == unloaded ]]' 2>/dev/null; rc=$?
+$G bash -c '[[ $(cat "$T/psst") == unloaded ]]' 2>/dev/null; rc=$?
 check "psst unloaded during the command" '[[ $rc == 0 ]]'
 check "psst loaded again after" '[[ $(cat "$T/psst") == loaded ]]'
-$P sleep 32 2>/dev/null & A=$!
+$G sleep 32 2>/dev/null & A=$!
 sleep 0.5; s0=$SECONDS; kill -INT $A; wait $A
 check "psst Ctrl-C handled at once" '[[ $((SECONDS-s0)) -le 2 ]]'
 check "psst loaded again after Ctrl-C" '[[ $(cat "$T/psst") == loaded ]]'
 # The psst model is loaded again only once the worker under a wrapper is gone.
-sed -i 's|^psst_model_load() {|&  pgrep -f "^sleep 36$" >/dev/null \&\& echo alive >> "$T/alive-at-load";|' "$P"
-$P bash -c 'sleep 36; true' 2>/dev/null & A=$!
+$G bash -c 'sleep 36; true' 2>/dev/null & A=$!
 sleep 0.5; kill -INT $A; wait $A
 check "worker stopped before the psst model is loaded" '[[ ! -e $T/alive-at-load ]] && ! pgrep -f "^sleep 36$" >/dev/null'
 # SIGKILL the script: the command keeps the lock until it ends; the next run repairs from the marker
-$P sleep 3 2>/dev/null & A=$!
+$G sleep 3 2>/dev/null & A=$!
 sleep 0.5; kill -KILL $A; wait $A 2>/dev/null
 check "psst still unloaded after SIGKILL" '[[ $(cat "$T/psst") == unloaded ]]'
 check "marker left behind" 'grep -q "^psst=unloaded" "$PSST_CACHE_DIR/gpu-session.marker"'
-PSST_GPU_LOCK_TIMEOUT=0.3 $P true 2>/dev/null; rc=$?
+PSST_GPU_LOCK_TIMEOUT=0.3 $G true 2>/dev/null; rc=$?
 check "orphaned command still holds the lock" '[[ $rc == 75 ]]'
-$P bash -c '[[ $(cat "$T/psst") == unloaded ]]' 2>"$T/err7"; rc=$?
+$G bash -c '[[ $(cat "$T/psst") == unloaded ]]' 2>"$T/err7"; rc=$?
 check "repair message" 'grep -q "repairing" "$T/err7"'
 check "carried-over unload kept during next command" '[[ $rc == 0 ]]'
 check "psst restored by the next run" '[[ $(cat "$T/psst") == loaded ]]'

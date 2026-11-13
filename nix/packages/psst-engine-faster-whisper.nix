@@ -9,8 +9,10 @@
   cudaSupport ? config.cudaSupport,
 }:
 let
-  # ctranslate2 with CUDA. With the pinned nixpkgs and `allowUnfree`, it's the derivation the
-  # Flox cache serves, so it is substituted rather than compiled.
+  # ctranslate2 with CUDA. With `allowUnfree`, its C++ library is the derivation the NixOS CUDA
+  # cache and Flox's cache serve for the nixpkgs they've built (the flake's pin included), so it
+  # is substituted rather than compiled. Its Python bindings build locally: the caches build them
+  # with `cudaSupport`, which puts CUDA torch in their test inputs and so changes their hash.
   python = python3.override {
     packageOverrides =
       final: prev:

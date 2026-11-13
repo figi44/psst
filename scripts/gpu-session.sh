@@ -4,8 +4,8 @@
 #   scripts/gpu-session.sh <command> [args...]
 #
 # - Takes an exclusive lock on ~/.cache/psst/gpu.lock, so GPU jobs from parallel worktrees run one at a time.
-# - Unloads a psst server's model if one is loaded, and loads it again when the command ends, also on Ctrl-C,
-#   SIGTERM or SIGHUP. On a signal, the command and every process under it are stopped first.
+# - Unloads this machine's psst server's model if it's loaded (or on its way), and loads it again when the command
+#   ends, also on Ctrl-C, SIGTERM or SIGHUP. On a signal, the command and every process under it are stopped first.
 # - Records what it unloaded in a marker file next to the lock. A run that was killed outright is repaired by the next
 #   one, from the marker.
 # - Exits with the command's status. A nested call (from inside a session) just runs the command.
@@ -35,13 +35,22 @@ lock_file=$cache_dir/gpu.lock
 marker=$cache_dir/gpu-session.marker
 
 # --- psst-server --------------------------------------------------------------------------------------------------
-# Not wired to psst-server yet, so no psst model is ever unloaded and these hooks do nothing. Everything around them
-# (marker, restore on exit, repair) is in place: wire them to `psst-server model status`, `model unload` and
-# `model load` and the rest works unchanged.
+# The server on this machine, through `psst-server model` on its socket, which needs this user in its local_users. A
+# model that's loaded, loading or downloading holds the GPU or soon will, so it's unloaded. One that's unloaded (by
+# gaming mode, say) or failed is left alone, and isn't loaded afterwards. Without psst-server on PATH there's nothing
+# to unload; when the server can't be asked, the command runs anyway, with a warning.
 
-psst_model_loaded() { return 1; }
-psst_model_unload() { return 0; }
-psst_model_load() { return 0; }
+psst_model_loaded() {
+    command -v psst-server >/dev/null || return 1
+    local status holds='"state": *"(loaded|loading|downloading)"'
+    if ! status=$(psst-server model status --json 2>&1); then
+        log "warning: couldn't ask psst-server about its model, so it stays as it is: $status"
+        return 1
+    fi
+    [[ $status =~ $holds ]]
+}
+psst_model_unload() { psst-server model unload >/dev/null; }
+psst_model_load() { psst-server model load >/dev/null; }
 
 # --- marker -------------------------------------------------------------------------------------------------------
 
