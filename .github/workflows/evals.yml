@@ -1,0 +1,86 @@
+# The replay eval and the stress test (plan 7.3, docs/evals.md), gated against main's
+# evals/baseline.json. Runs only when something the evals read changes, and again when the
+# `baseline-change` label is added or removed. Both run in one job, so the dev shell and the
+# build are paid for once.
+name: Evals
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    paths:
+      - evals/**
+      - crates/psst-eval/**
+      - crates/psst-pipeline/**
+      - crates/psst-dict/**
+      - crates/psst-config/**
+      - crates/psst-proto/**
+      - crates/psst-engine-proto/**
+      - Cargo.toml
+      - Cargo.lock
+      - flake.nix
+      - flake.lock
+      - .github/workflows/evals.yml
+  push:
+    branches: [main]
+    paths:
+      - evals/**
+      - crates/psst-eval/**
+      - crates/psst-pipeline/**
+      - crates/psst-dict/**
+      - crates/psst-config/**
+      - crates/psst-proto/**
+      - crates/psst-engine-proto/**
+      - Cargo.toml
+      - Cargo.lock
+      - flake.nix
+      - flake.lock
+      - .github/workflows/evals.yml
+
+permissions:
+  contents: read
+
+jobs:
+  evals:
+    name: Replay and stress
+    # Other labels change nothing here, so they don't start (or cancel) a run.
+    if: >-
+      github.event_name == 'push'
+      || (github.event.action != 'labeled' && github.event.action != 'unlabeled')
+      || github.event.label.name == 'baseline-change'
+    concurrency:
+      group: evals-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+      - name: Enter the dev shell
+        uses: nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a # v1.2.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Build psst-eval
+        id: build
+        run: cargo build -p psst-eval --locked
+      # The gate compares with main's baseline, not the copy in the pull request (plan 7.3).
+      - name: Fetch main's baseline
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags --depth=1 origin main
+          if git cat-file -e FETCH_HEAD:evals/baseline.json 2>/dev/null; then
+            git show FETCH_HEAD:evals/baseline.json > "$RUNNER_TEMP/main-baseline.json"
+          else
+            echo "::notice::main has no evals/baseline.json yet, so there's nothing to gate against"
+          fi
+      # --check: the committed baseline.json is this replay's. The event carries the labels.
+      - name: Replay
+        run: |
+          args=(--check --event "$GITHUB_EVENT_PATH")
+          if [[ -f $RUNNER_TEMP/main-baseline.json ]]; then args+=(--against "$RUNNER_TEMP/main-baseline.json"); fi
+          target/debug/psst-eval replay "${args[@]}"
+      # Also after a failed replay, so one run shows both.
+      - name: Stress
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          args=(--check --event "$GITHUB_EVENT_PATH")
+          if [[ -f $RUNNER_TEMP/main-baseline.json ]]; then args+=(--against "$RUNNER_TEMP/main-baseline.json"); fi
+          target/debug/psst-eval stress "${args[@]}"
