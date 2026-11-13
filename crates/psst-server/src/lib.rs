@@ -428,9 +428,15 @@ fn check_config(dir: &Path) -> ExitCode {
     for warning in files.warnings() {
         eprintln!("{warning}");
     }
-    if let Err(err) = Dictionary::from_file(&files.dictionary) {
-        eprintln!("dictionary.toml: {err}");
-        return ExitCode::FAILURE;
+    let dictionary = match Dictionary::from_file(&files.dictionary) {
+        Ok(dictionary) => dictionary,
+        Err(err) => {
+            eprintln!("dictionary.toml: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    for warning in dictionary.warnings() {
+        eprintln!("{warning}");
     }
     println!("{}: config is valid", dir.display());
     ExitCode::SUCCESS
