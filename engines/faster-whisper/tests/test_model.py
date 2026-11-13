@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from fake_tokenizer import fake_encode
-from fake_whisper import REMOTE, FakeWhisper, default_segment, snapshot_dir
+from fake_whisper import INVALID_DEVICE, OUT_OF_MEMORY, REMOTE, FakeWhisper, default_segment, snapshot_dir
 from psst_engine_faster_whisper.engine import Engine, Fatal
 from psst_engine_faster_whisper.model import FasterWhisperModel
 from psst_engine_faster_whisper.protocol import parse_header, read_frame, write_frame
@@ -320,11 +320,20 @@ def test_unknown_options_are_ignored():
     assert "temperature" not in fake.runs[0][1]
 
 
-def test_running_out_of_gpu_memory_is_an_oom_error_and_the_engine_keeps_serving():
-    fake = FakeWhisper(fail_next=RuntimeError("CUDA failed with error out of memory"))
-    replies = loaded(fake, transcribe(1), transcribe(2, batch_size=1))
-    assert replies[0] == {"type": "error", "id": 1, "code": "oom", "message": "CUDA failed with error out of memory", "retryable": True}
-    assert replies[1]["type"] == "result" and replies[1]["id"] == 2
+def test_after_running_out_of_gpu_memory_the_engine_replies_oom_and_the_retry_works():
+    # The fake fails the first call after an out-of-memory error, as CTranslate2 does.
+    fake = FakeWhisper(fail_next=OUT_OF_MEMORY)
+    replies = loaded(fake, transcribe(1, batch_size=8), transcribe(2, batch_size=1), transcribe(3))
+    assert replies[0] == {"type": "error", "id": 1, "code": "oom", "message": str(OUT_OF_MEMORY), "retryable": True}
+    assert [(r["type"], r["id"]) for r in replies[1:]] == [("result", 2), ("result", 3)]
+    assert [kwargs["batch_size"] for _, kwargs in fake.runs] == [8, 1, 8]
+
+
+def test_an_engine_whose_model_still_fails_after_running_out_of_gpu_memory_exits_without_replying():
+    fake = FakeWhisper(cached={TURBO}, fail_next=OUT_OF_MEMORY, after_oom=[INVALID_DEVICE, INVALID_DEVICE])
+    replies, fatal = run(fake, LOAD, transcribe(1), transcribe(2))
+    assert "cudaErrorInvalidDevice" in str(fatal)
+    assert [r["type"] for r in replies] == ["hello", "progress", "loaded"]
 
 
 def test_other_cuda_errors_end_the_engine_without_a_reply():

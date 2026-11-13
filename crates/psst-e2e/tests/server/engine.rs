@@ -56,20 +56,29 @@ async fn a_request_that_runs_out_of_its_budget_twice_fails_with_timeout() {
     wait_model(&server, ModelState::Loaded).await;
 }
 
+/// An engine that replies `oom` has made sure it can run again (docs/protocol.md), so the retry
+/// goes to the same process.
 #[tokio::test]
-async fn out_of_memory_gets_one_more_attempt_with_batch_size_one() {
-    let server = server(script(vec![oom(), result("fits now", 0), oom(), oom()]), |_| {});
+async fn out_of_memory_gets_one_more_attempt_in_the_same_engine_with_batch_size_one() {
+    let server = server(script(vec![oom(), result("fits now", 0), oom(), oom(), oom(), oom()]), |_| {});
     let mut client = Client::connect(&server).await;
     client.upload(SessionId::new_v4(), SECOND).await;
     let fin = client.final_msg().await;
     assert_eq!((fin.r#final.raw_text.as_str(), fin.timings.attempts), ("fits now", 2));
     let batch_sizes: Vec<_> = transcribes(&server).iter().map(|r| r.header["options"]["batch_size"].clone()).collect();
-    assert_eq!(batch_sizes, [8, 1]);
+    assert_eq!(batch_sizes, [8, 1], "the configured batch size, then 1");
 
+    // Running out on both attempts is an `oom` error and never a crash: four in a row leave the
+    // model loaded in the first engine.
+    for _ in 0..2 {
+        client.upload(SessionId::new_v4(), SECOND).await;
+        let err = client.error().await;
+        assert_eq!((err.code, err.retryable), (ErrorCode::Oom, true));
+    }
+    assert_eq!(model_status(&server).state, ModelState::Loaded);
     client.upload(SessionId::new_v4(), SECOND).await;
-    let err = client.error().await;
-    assert_eq!((err.code, err.retryable), (ErrorCode::Oom, true));
-    assert_eq!(requests_of(&server, "load").len(), 1, "oom is not a crash");
+    client.final_msg().await;
+    assert_eq!(requests_of(&server, "load").len(), 1, "the engine was never restarted");
 }
 
 #[tokio::test]

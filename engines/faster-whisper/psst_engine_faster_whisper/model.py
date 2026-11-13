@@ -36,6 +36,9 @@ every length (docs/decisions/engine.md)."""
 DEFAULT_BATCH_SIZE = 8
 """Batch size when ``options.batch_size`` is unset, as in docs/config.md."""
 
+RECOVERY_RUNS = 2
+"""Throwaway runs after the GPU ran out of memory, until one works (``FasterWhisperModel._recover``)."""
+
 
 @dataclass(frozen=True)
 class Options:
@@ -234,6 +237,7 @@ class FasterWhisperModel:
         except RuntimeError as err:
             kind = gpu_error(err)
             if kind == "oom":
+                self._recover(backend, model, err)
                 raise OutOfMemory(str(err)) from None
             if kind == "gpu":
                 raise Fatal(f"CUDA error: {err}") from None
@@ -252,6 +256,25 @@ class FasterWhisperModel:
             bias_terms_used=rendered.terms_used,
             prompt_truncated=rendered.truncated,
         )
+
+    def _recover(self, backend: Backend, model: Any, oom: RuntimeError) -> None:
+        """Makes sure the model can run again after the GPU ran out of memory, so that the server's
+        retry (with ``batch_size = 1``) doesn't fail for this run's sake.
+
+        After CTranslate2 runs out of memory, its next call fails with ``cudaErrorInvalidDevice``
+        and the one after works (docs/decisions/engine.md). The warm-up's second of silence is
+        that next call: it runs until it works, at most ``RECOVERY_RUNS`` times. Raises ``Fatal``
+        when none works, so the engine exits as for any other CUDA error.
+        """
+        failures = []
+        for _ in range(RECOVERY_RUNS):
+            try:
+                backend.warm_up(model)
+                return
+            except Exception as err:
+                failures.append(f"{type(err).__name__}: {err}")
+        log(f"ran out of GPU memory ({oom}), and the throwaway runs after it failed: {'; '.join(failures)}")
+        raise Fatal(f"the model doesn't run after running out of GPU memory: {failures[-1]}")
 
     def _get_backend(self) -> Backend:
         if self._backend is None:
