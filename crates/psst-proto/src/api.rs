@@ -38,6 +38,21 @@ pub mod routes {
     /// Singular, so that every name (`export` too) has a path.
     pub const PROFILE: &str = "/api/profile/{name}";
     pub const PROFILE_RESET: &str = "/api/profile/{name}/reset";
+    /// The server's settings: server.toml with the web UI's changes.
+    pub const SETTINGS: &str = "/api/settings";
+    pub const SETTINGS_EXPORT: &str = "/api/settings/export";
+    /// Singular, as [`PROFILE`] is. `PUT` takes a [`SettingChange`](super::SettingChange).
+    pub const SETTING: &str = "/api/setting/{key}";
+    pub const SETTING_RESET: &str = "/api/setting/{key}/reset";
+    /// A device's settings: its client.toml with the web UI's changes.
+    pub const DEVICE_SETTINGS: &str = "/api/devices/{id}/settings";
+    pub const DEVICE_SETTINGS_EXPORT: &str = "/api/devices/{id}/settings/export";
+    pub const DEVICE_SETTING: &str = "/api/devices/{id}/setting/{key}";
+    pub const DEVICE_SETTING_RESET: &str = "/api/devices/{id}/setting/{key}/reset";
+    /// A paste rule, by Wayland app id. `PUT` takes an [`AppRuleView`](super::AppRuleView);
+    /// `DELETE` hides the file's rule, or removes one added here.
+    pub const DEVICE_APP: &str = "/api/devices/{id}/app/{app}";
+    pub const DEVICE_APP_RESET: &str = "/api/devices/{id}/app/{app}/reset";
     /// Over the socket or with a device token, not a browser session.
     pub const LOGIN_LINK: &str = "/api/login/link";
     /// A browser form with `token`, not JSON.
@@ -49,6 +64,11 @@ pub mod routes {
 
     pub fn with_name(template: &str, name: &str) -> String {
         template.replace("{name}", &super::encode_segment(name))
+    }
+
+    /// Fills in `{placeholder}` with `value`, encoded.
+    pub fn with(template: &str, placeholder: &str, value: &str) -> String {
+        template.replace(&format!("{{{placeholder}}}"), &super::encode_segment(value))
     }
 }
 
@@ -122,6 +142,17 @@ pub struct ModelStatus {
     pub progress: Option<DownloadProgress>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// A change of model from the web UI, waiting for the dictations in progress to finish.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reload: Option<ModelReload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelReload {
+    /// The model it switches to.
+    pub model: String,
+    /// Dictations still in progress; the switch starts once there are none.
+    pub waiting_for: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -150,6 +181,12 @@ pub struct Device {
     pub created_at: Timestamp,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seen: Option<Timestamp>,
+    /// Connected now.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub online: bool,
+    /// The device sent its config file when it last connected, so its settings can be edited.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub reports_config: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -415,4 +452,155 @@ pub struct ProfilesExport {
 pub struct LoginLink {
     pub url: String,
     pub expires_at: Timestamp,
+}
+
+/// Server or device settings, grouped as the web UI shows them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SettingsView {
+    pub groups: Vec<SettingsGroup>,
+    /// Settings changed here, which the file doesn't have yet.
+    pub changes: usize,
+}
+
+impl SettingsView {
+    pub fn field(&self, key: &str) -> Option<&Setting> {
+        self.groups.iter().flat_map(|group| &group.fields).find(|field| field.key == key)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SettingsGroup {
+    pub id: String,
+    pub title: String,
+    pub fields: Vec<Setting>,
+}
+
+/// Values are JSON as the file's TOML has them, except a choice, which is always its `value`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Setting {
+    /// Stable: the key's dotted path in the file, such as `limits.max_recording_s`.
+    pub key: String,
+    pub label: String,
+    pub help: String,
+    pub kind: SettingKind,
+    /// In effect now; `null` for an optional key that's unset.
+    pub value: serde_json::Value,
+    /// The file's value, when it sets one other than the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<serde_json::Value>,
+    pub default: serde_json::Value,
+    /// The web UI changed it, so `value` is its change, unless `problem` says why not.
+    pub changed_here: bool,
+    pub access: SettingAccess,
+    pub applies: Applies,
+    /// Why the change made here is left out, so the file's value holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SettingKind {
+    Bool,
+    Int {
+        min: u64,
+        max: u64,
+        /// `s`, `ms`, `px`, `days`, or empty.
+        unit: String,
+    },
+    Choice {
+        options: Vec<SettingOption>,
+    },
+    /// An optional one is unset when empty.
+    Text {
+        optional: bool,
+    },
+    /// `#rrggbb` or `#rrggbbaa`.
+    Color,
+    /// One item per line.
+    List,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettingOption {
+    pub value: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SettingAccess {
+    Editable,
+    /// Shown, never changed from the web UI.
+    ReadOnly {
+        reason: String,
+    },
+}
+
+/// When a change takes effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Applies {
+    Now,
+    NextDictation,
+    /// When the device next connects; a connected one gets it now.
+    NextConnect,
+    /// The model reloads once no dictation is in progress.
+    ModelReload,
+    /// When psst-server next starts.
+    NextStart,
+}
+
+/// The body of a setting's `PUT`: the value as a form field has it, parsed by the setting's kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettingChange {
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettingsExport {
+    /// The file with the web UI's changes in place: only the keys either sets.
+    pub toml: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeviceSettingsView {
+    pub device: Device,
+    /// What the device calls itself, as `name version`, when it last sent its config.
+    pub client: String,
+    pub reported_at: Timestamp,
+    pub settings: SettingsView,
+    /// Paste rules, by Wayland app id, sorted.
+    pub apps: Vec<AppEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppEntry {
+    pub app: String,
+    pub layer: AppLayer,
+    /// In effect: the changed one, or the file's; absent for a hidden rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<AppRuleView>,
+    /// The file's, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<AppRuleView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppLayer {
+    File,
+    Replaced,
+    Added,
+    Hidden,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppRuleView {
+    /// `auto` (ctrl+shift+v in known terminals, else ctrl+v), `ctrl+v`, `ctrl+shift+v`, or `copy`
+    /// to leave the text on the clipboard.
+    pub paste: String,
+    pub paste_delay_ms: u32,
 }

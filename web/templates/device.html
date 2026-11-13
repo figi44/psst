@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{%- from "icons.html" import icon %}
+{%- from "rows.html" import groups as setting_groups %}
+{% block title %}{{ device.name }} · psst{% endblock %}
+
+{% block main %}
+<div class="page settings">
+  <div class="head">
+    <a class="back" href="/devices">{{ icon("back") }}Devices</a>
+    <h1><i class="status{% if device.online %} on{% endif %}" aria-hidden="true"></i>{{ device.name }}</h1>
+    <p class="sub">{% if client %}{{ client }} · {% endif %}{{ device.seen }}</p>
+  </div>
+  {%- if unshared %}
+  <div class="callout"><p>{{ unshared }}</p><p class="hint">The Android app keeps its settings on the phone.</p></div>
+  {%- else %}
+  {%- if error %}
+  <div class="notice" role="alert">{{ error }}</div>
+  {%- endif %}
+  {{ setting_groups(groups) }}
+
+  <section class="sgroup" id="apps" aria-labelledby="g-apps">
+    <h2 class="group-h" id="g-apps">Pasting into apps</h2>
+    <p class="hint">By Wayland app id. Without a rule, psst pastes with Ctrl+Shift+V in terminals and Ctrl+V elsewhere.</p>
+    <div class="srows">
+      {%- for a in apps %}
+      <form class="srow rule{% if a.layer != "file" %} changed{% endif %}" id="{{ a.id }}" method="post" action="{{ a.action }}"
+            hx-post="{{ a.action }}" hx-trigger="change, submit" hx-target="#apps" hx-select="#apps" hx-select-oob="#changes" hx-swap="outerHTML">
+        <input type="hidden" name="app" value="{{ a.app }}">
+        <div class="s-text">
+          <span class="s-label"><code>{{ a.app }}</code></span>
+          {%- if a.error %}<p class="err" role="alert">{{ a.error }}</p>{% elif a.problem %}<p class="err">{{ a.problem }}</p>{% endif %}
+          <p class="s-note"><span>{% if a.layer == "file" %}From its client.toml.{% elif a.layer == "added" %}Added here.{% elif a.layer == "hidden" %}Turned off here; its client.toml has {{ a.file }}.{% else %}Changed here; its client.toml has {{ a.file }}.{% endif %}</span>
+            {%- if a.layer == "replaced" or a.layer == "hidden" %}
+            <button class="linkbtn" type="submit" formaction="{{ a.reset }}" hx-post="{{ a.reset }}" hx-target="#apps" hx-select="#apps" hx-select-oob="#changes" hx-swap="outerHTML">{% if a.layer == "hidden" %}Use it again{% else %}Use that{% endif %}</button>
+            {%- endif %}</p>
+        </div>
+        {%- if a.layer != "hidden" %}
+        <div class="s-control">
+          <label class="sr" for="p-{{ a.id }}">Paste {{ a.app }} with</label>
+          <select class="input" id="p-{{ a.id }}" name="paste">{% for o in a.paste %}<option value="{{ o.value }}"{% if o.selected %} selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
+          <span class="s-num"><label class="sr" for="d-{{ a.id }}">Wait before pasting into {{ a.app }}</label><input class="input" type="number" inputmode="numeric" min="0" id="d-{{ a.id }}" name="paste_delay_ms" value="{{ a.delay }}"{% if a.error %} aria-invalid="true"{% endif %}><span class="unit">ms</span></span>
+          <button class="btn sm s-save" type="submit">Save</button>
+          <button class="iconbtn" type="submit" formaction="{{ a.remove }}" hx-post="{{ a.remove }}" hx-target="#apps" hx-select="#apps" hx-select-oob="#changes" hx-swap="outerHTML" aria-label="{% if a.layer == "added" %}Remove{% else %}Turn off{% endif %} the rule for {{ a.app }}" title="{% if a.layer == "added" %}Remove{% else %}Turn off{% endif %}">{{ icon("close") }}</button>
+        </div>
+        {%- endif %}
+      </form>
+      {%- endfor %}
+      <form class="srow rule add" method="post" action="{{ base }}/app" hx-post="{{ base }}/app" hx-target="#apps" hx-select="#apps" hx-select-oob="#changes" hx-swap="outerHTML">
+        <div class="s-text">
+          <label class="s-label" for="new-app">Add a rule</label>
+          <input class="input" id="new-app" name="app" placeholder="App id, like org.mozilla.firefox" autocomplete="off" spellcheck="false">
+          {%- if added %}<p class="err" role="alert">{{ added.error }}</p>{% endif %}
+        </div>
+        <div class="s-control">
+          <label class="sr" for="new-paste">Paste with</label>
+          <select class="input" id="new-paste" name="paste">{% for o in paste %}<option value="{{ o.value }}"{% if o.selected %} selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
+          <span class="s-num"><label class="sr" for="new-delay">Wait before pasting</label><input class="input" type="number" inputmode="numeric" min="0" id="new-delay" name="paste_delay_ms" value="0"><span class="unit">ms</span></span>
+          <button class="btn" type="submit">{{ icon("plus") }}Add</button>
+        </div>
+      </form>
+    </div>
+  </section>
+
+  <div id="changes">
+  {%- if changes %}
+  <p class="foot"><span>{{ changes }} setting{% if changes == 1 %} was{% else %}s were{% endif %} changed here and {% if changes == 1 %}isn't{% else %}aren't{% endif %} in its client.toml yet.</span>
+    <a href="{{ base }}/client.toml" download hx-boost="false">Download client.toml</a></p>
+  {%- endif %}
+  </div>
+  {%- endif %}
+</div>
+{% endblock %}

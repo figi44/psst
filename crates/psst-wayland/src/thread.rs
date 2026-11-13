@@ -352,6 +352,7 @@ impl State {
         match cmd {
             WaylandCmd::Overlay(state) => self.set_overlay(state),
             WaylandCmd::Menu(spec) => self.set_menu(spec),
+            WaylandCmd::Configure(overlay) => self.configure_overlay(overlay),
             WaylandCmd::SnapshotClipboard { generation } => {
                 if self.clipboard_ready(false).is_ok() {
                     self.feed(Input::SnapshotRequested { generation });

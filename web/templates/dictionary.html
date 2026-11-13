@@ -1,28 +1,21 @@
 {% extends "base.html" %}
+{%- from "icons.html" import icon %}
 {% block title %}Dictionary · psst{% endblock %}
 
 {%- macro keep_query(q) %}{% if q %}<input type="hidden" name="q" value="{{ q }}">{% endif %}{% endmacro %}
-{%- macro chevron() -%}<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>{%- endmacro %}
-{%- macro alert() -%}<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4 2.8 19.5h18.4L12 4Z"/><path d="M12 10v4.5M12 17.2v.3"/></svg>{%- endmacro %}
-{%- macro close_icon() -%}<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>{%- endmacro %}
 {%- macro pill(spelling) -%}
-<li class="pill"><label><input type="checkbox" name="sounds_like" value="{{ spelling }}" checked><span>{{ spelling }}</span></label><button class="pill-x" type="button" aria-label="Remove “{{ spelling }}”">{{ close_icon() }}</button></li>
+<li class="pill"><label><input type="checkbox" name="sounds_like" value="{{ spelling }}" checked><span>{{ spelling }}</span></label><button class="pill-x" type="button" aria-label="Remove “{{ spelling }}”">{{ icon("close") }}</button></li>
 {%- endmacro %}
-{%- macro word_link(w, q) -%}
-<li><a class="word{% if w.hidden %} off{% endif %}" href="/dictionary?word={{ w.id|segment }}{% if q %}&amp;q={{ q|segment }}{% endif %}">{{ w.text }}{% if w.problem %}{{ alert() }}<span class="state">not in use</span>{% endif %}</a></li>
+{%- macro word_link(w, q, current) -%}
+<li><a class="word{% if w.hidden %} off{% endif %}" href="/dictionary?word={{ w.id|segment }}{% if q %}&amp;q={{ q|segment }}{% endif %}"{% if current == w.id %} aria-current="true"{% endif %}>{% if w.problem %}<i class="ring" aria-hidden="true"></i>{% endif %}{{ w.text }}{% if w.problem %}<span class="state">Not in use</span>{% endif %}</a></li>
 {%- endmacro %}
 
 {% block main %}
+{%- set current = panel.id if panel and not panel.new else "" %}
 <div class="page">
   <div class="head">
-    <div class="head-row">
-      <h1>Dictionary</h1>
-      <a class="btn" href="/dictionary?new=1{% if q %}&amp;q={{ q|segment }}{% endif %}">Add a word</a>
-    </div>
+    <h1>Dictionary</h1>
     <p class="sub">{{ total }} word{% if total != 1 %}s{% endif %} psst spells your way.</p>
-    {%- if attention %}
-    <p><a class="warnlink" href="/dictionary?word={{ attention|segment }}">{{ alert() }}{{ attention_count }} need{% if attention_count == 1 %}s{% endif %} attention</a></p>
-    {%- endif %}
   </div>
   {%- if error %}
   <div class="notice" role="alert">{{ error }}</div>
@@ -31,19 +24,25 @@
   <div class="notice warning"><ul>{% for warning in warnings %}<li>{{ warning }}</li>{% endfor %}</ul></div>
   {%- endif %}
 
-  <form class="search" method="get" action="/dictionary" role="search">
-    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
-    <label class="sr" for="q">Find a word</label>
-    <input class="input" type="search" id="q" name="q" value="{{ q }}" placeholder="Find a word" autocomplete="off" spellcheck="false"
-           hx-get="/dictionary" hx-trigger="input changed delay:250ms, search" hx-target="#words" hx-select="#words" hx-swap="outerHTML" hx-push-url="true">
-  </form>
+  <div class="tools">
+    <form class="search" method="get" action="/dictionary" role="search">
+      {{ icon("search") }}
+      <label class="sr" for="q">Find a word</label>
+      <input class="input" type="search" id="q" name="q" value="{{ q }}" placeholder="Find a word" autocomplete="off" spellcheck="false"
+             hx-get="/dictionary" hx-trigger="input changed delay:250ms, search" hx-target="#words" hx-select="#words" hx-swap="outerHTML" hx-push-url="true">
+    </form>
+    <a class="btn primary" href="/dictionary?new=1{% if q %}&amp;q={{ q|segment }}{% endif %}">{{ icon("plus") }}Add a word</a>
+  </div>
 
   <div id="words">
+    {%- if attention %}
+    <p class="counts"><a class="warnlink" href="/dictionary?word={{ attention|segment }}"><i class="ring" aria-hidden="true"></i>{{ attention_count }} need{% if attention_count == 1 %}s{% endif %} attention</a></p>
+    {%- endif %}
     {%- if words %}
-    <ul class="words">{% for w in words %}{{ word_link(w, q) }}{% endfor %}</ul>
+    <ul class="words">{% for w in words %}{{ word_link(w, q, current) }}{% endfor %}</ul>
     {%- endif %}
     {%- if offer_add %}
-    <p class="nomatch">{% if not words %}No word matches “{{ q }}”.{% endif %} <a class="btn" href="/dictionary?new=1&amp;text={{ q|segment }}&amp;q={{ q|segment }}">Add “{{ q }}”</a></p>
+    <p class="nomatch">{% if not words %}No word matches “{{ q }}”.{% endif %} <a class="btn" href="/dictionary?new=1&amp;text={{ q|segment }}&amp;q={{ q|segment }}">{{ icon("plus") }}Add “{{ q }}”</a></p>
     {%- elif not words and not q %}
     <p class="sub">No words yet. Add one here, or fix a word from History.</p>
     {%- endif %}
@@ -51,13 +50,13 @@
     <section class="group" aria-labelledby="built-in-h">
       <h2 class="group-h" id="built-in-h">Built into psst</h2>
       <p class="hint">Every psst server knows these. Open one to change or hide it.</p>
-      <ul class="words">{% for w in built_in %}{{ word_link(w, q) }}{% endfor %}</ul>
+      <ul class="words">{% for w in built_in %}{{ word_link(w, q, current) }}{% endfor %}</ul>
     </section>
     {%- endif %}
     {%- if hidden %}
     <details class="adv hidden-words"{% if q %} open{% endif %}>
-      <summary>{{ chevron() }}Hidden ({{ hidden|length }})</summary>
-      <ul class="words">{% for w in hidden %}{{ word_link(w, q) }}{% endfor %}</ul>
+      <summary>{{ icon("chevron") }}Hidden ({{ hidden|length }})</summary>
+      <ul class="words">{% for w in hidden %}{{ word_link(w, q, current) }}{% endfor %}</ul>
     </details>
     {%- endif %}
   </div>
@@ -75,7 +74,7 @@
   <form method="post" action="/dictionary/terms{% if not panel.new %}/{{ panel.id|segment }}{% endif %}" id="word-form" class="panel-form">
     <div class="p-head">
       <div><h2 id="p-title">{{ panel.title }}</h2>{% if panel.sub %}<p class="sub">{{ panel.sub }}</p>{% endif %}</div>
-      <a class="iconbtn" href="/dictionary{{ back }}" data-close aria-label="Close">{{ close_icon() }}</a>
+      <a class="iconbtn" href="/dictionary{{ back }}" data-close aria-label="Close">{{ icon("close") }}</a>
     </div>
     <div class="p-body">
       {%- if panel.error %}<div class="notice" role="alert">{{ panel.error }}</div>{% endif %}
@@ -106,7 +105,7 @@
         {%- endif %}
       </div>
       <details class="adv"{% if panel.never_error %} open{% endif %}>
-        <summary>{{ chevron() }}Advanced</summary>
+        <summary>{{ icon("chevron") }}Advanced</summary>
         <div class="adv-body">
           <div class="field">
             <label for="w-lang">Language</label>
@@ -125,7 +124,7 @@
             <span class="label">Never change</span>
             <p class="hint">psst leaves these alone, even when they sound like {{ panel.title }}.</p>
             {%- if panel.never %}
-            <ul class="chips-list">{% for rule in panel.never %}<li class="chip">{{ rule.span }}{% if not rule.active %} (inactive){% endif %}<button type="submit" form="never-x-{{ rule.id }}" aria-label="Allow {{ rule.span }} again">{{ close_icon() }}</button></li>{% endfor %}</ul>
+            <ul class="chips-list">{% for rule in panel.never %}<li class="chip">{{ rule.span }}{% if not rule.active %} (inactive){% endif %}<button type="submit" form="never-x-{{ rule.id }}" aria-label="Allow {{ rule.span }} again">{{ icon("close") }}</button></li>{% endfor %}</ul>
             {%- endif %}
             <div class="inline-add">
               <label class="sr" for="w-never">A phrase psst should leave alone</label>
@@ -158,7 +157,7 @@
       {%- if panel.layer == "added" %}
       <button class="btn danger" type="submit" form="word-hide">Remove word</button>
       {%- else %}
-      <button class="btn" type="submit" form="word-hide" aria-describedby="hide-hint">Hide word</button>
+      <button class="btn quiet" type="submit" form="word-hide" aria-describedby="hide-hint">Hide word</button>
       <span class="hint" id="hide-hint">{% if panel.built_in %}It's built into psst.{% else %}It stays in your Nix config.{% endif %}</span>
       {%- endif %}
       {%- endif %}

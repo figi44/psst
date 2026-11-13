@@ -229,6 +229,36 @@ fn a_recording_interrupted_by_a_crash_survives_for_retry() {
 }
 
 #[test]
+fn settings_changed_in_the_web_ui_reach_the_running_daemon() {
+    use psst_client::api::{ApiClient, Method};
+    use psst_proto::api::routes;
+
+    let server = Server::start(&[], false);
+    let client = Client::start(server.endpoint());
+    client
+        .wait_for("the connection", |c| c.status()["connection"].as_str().is_some_and(|s| s.starts_with("connected")));
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let api = ApiClient::new(server.endpoint(), None);
+    let devices: Vec<Value> = runtime.block_on(api.call(Method::Get, routes::DEVICES, None::<&()>)).unwrap();
+    let device = devices.iter().find(|d| d["reports_config"] == true).expect("the daemon sent its client.toml");
+    let id = device["id"].as_str().unwrap();
+    let view: psst_proto::api::DeviceSettingsView =
+        runtime.block_on(api.call(Method::Get, &routes::with_id(routes::DEVICE_SETTINGS, id), None::<&()>)).unwrap();
+    assert_eq!(view.settings.field("sounds").unwrap().file, Some("off".into()), "the daemon's own client.toml");
+
+    let set = |key: &str, value: &str| {
+        let path = routes::with(&routes::with_id(routes::DEVICE_SETTING, id), "key", key);
+        runtime.block_on(api.call::<Value>(Method::Put, &path, Some(&serde_json::json!({"value": value})))).unwrap();
+    };
+    set("post_processing", "light");
+    set("overlay.accent", "#00ff00");
+    client.wait_for("the new post-processing", |c| c.status()["post_processing"] == "light");
+    client.wait_for("the new overlay", |c| {
+        c.commands().iter().any(|cmd| cmd["cmd"] == "configure" && cmd["overlay"]["accent"] == "#00ff00ff")
+    });
+}
+
+#[test]
 fn pairing_stores_a_private_token_that_the_daemon_uses_over_tcp() {
     let server = Server::start(&["Over TCP."], true);
     let tcp = server.0.tcp_endpoint().unwrap();

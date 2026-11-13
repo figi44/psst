@@ -169,12 +169,13 @@ impl Socket {
         Socket { ws }
     }
 
-    pub async fn hello_with(mut self, protocol: u32) -> Result<Client, ErrorMsg> {
-        let hello = ClientMsg::Hello(HelloMsg {
-            protocol,
-            client: ClientInfo { name: "psst-e2e".into(), version: "0".into() },
-        });
-        send_json(&mut self.ws, &hello).await;
+    pub async fn hello_with(self, protocol: u32) -> Result<Client, ErrorMsg> {
+        let client = ClientInfo { name: "psst-e2e".into(), version: "0".into() };
+        self.hello_msg(HelloMsg { protocol, client, accepts: Vec::new(), config: None }).await
+    }
+
+    pub async fn hello_msg(mut self, hello: HelloMsg) -> Result<Client, ErrorMsg> {
+        send_json(&mut self.ws, &ClientMsg::Hello(hello)).await;
         let mut client = Client { ws: self.ws, welcome: None };
         match client.recv().await {
             ServerMsg::Welcome(welcome) => {

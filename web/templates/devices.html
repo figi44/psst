@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{%- from "icons.html" import icon %}
+{% block title %}Devices · psst{% endblock %}
+
+{% block main %}
+<div class="page">
+  <div class="head">
+    <h1>Devices</h1>
+    <p class="sub">Everything that dictates to this server. A desktop's settings live here: change them and it picks them up at once.</p>
+  </div>
+  {%- if devices %}
+  <ul class="plist devices">
+    {%- for d in devices %}
+    <li><a class="prow" href="{{ d.href }}"><span class="pname"><i class="status{% if d.online %} on{% endif %}" aria-hidden="true"></i>{{ d.name }}</span><span class="pdesc">{{ d.seen }} · {{ d.how }}</span>{{ icon("chevron") }}</a></li>
+    {%- endfor %}
+  </ul>
+  {%- else %}
+  <p class="sub">No devices yet. Pair one with <code>psst-server pair</code>.</p>
+  {%- endif %}
+</div>
+{% endblock %}

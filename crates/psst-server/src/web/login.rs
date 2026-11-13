@@ -122,7 +122,7 @@ pub async fn logout(viewer: Viewer, State(state): State<AppRef>) -> Response {
 }
 
 fn session_cookie(state: &AppState, value: &str, max_age_s: u64) -> String {
-    let secure = state.server.web_url.as_deref().is_some_and(|url| url.starts_with("https://"));
+    let secure = state.live.server().web_url.as_deref().is_some_and(|url| url.starts_with("https://"));
     format!(
         "{SESSION_COOKIE}={value}; Max-Age={max_age_s}; Path=/; HttpOnly; SameSite=Strict{}",
         if secure { "; Secure" } else { "" }

@@ -46,6 +46,8 @@ pub enum WaylandCmd {
         generation: u64,
         text: String,
     },
+    /// The overlay's size, place and colours from now on. One showing is made again with them.
+    Configure(OverlayConfig),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

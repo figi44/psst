@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{%- from "rows.html" import groups as setting_groups %}
+{% block title %}Settings · psst{% endblock %}
+
+{% block main %}
+<div class="page settings">
+  <div class="head">
+    <h1>Settings</h1>
+    <p class="sub">This server's settings. Most changes apply at once; a setting says when it doesn't.</p>
+  </div>
+  {%- if error %}
+  <div class="notice" role="alert">{{ error }}</div>
+  {%- endif %}
+  {{ setting_groups(groups) }}
+  <div id="changes">
+  {%- if changes %}
+  <p class="foot"><span>{{ changes }} setting{% if changes == 1 %} was{% else %}s were{% endif %} changed here and {% if changes == 1 %}isn't{% else %}aren't{% endif %} in your Nix config yet.</span>
+    <a href="/settings.toml" download hx-boost="false">Download server.toml</a></p>
+  {%- endif %}
+  </div>
+</div>
+{% endblock %}

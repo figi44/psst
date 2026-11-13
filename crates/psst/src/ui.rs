@@ -24,6 +24,9 @@ pub trait WaylandSink: Send {
 
 pub trait Wayland: Send {
     fn connect(&mut self, events: WaylandEvents) -> Result<Box<dyn WaylandSink>, String>;
+
+    /// The overlay's settings from now on, connected or not. Called only while it's hidden.
+    fn configure(&mut self, overlay: &psst_config::OverlayConfig);
 }
 
 pub fn overlay_config(cfg: &psst_config::OverlayConfig) -> OverlayConfig {
@@ -91,6 +94,16 @@ impl Wayland for DesktopWayland {
         *running.events.lock().unwrap_or_else(|e| e.into_inner()) = Some(events.clone());
         Ok(Box::new(DesktopSink { running, events, dead: false }))
     }
+
+    fn configure(&mut self, overlay: &psst_config::OverlayConfig) {
+        self.options.overlay = overlay_config(overlay);
+        if let Some(running) = &self.running
+            && running.thread.send(WaylandCmd::Configure(self.options.overlay.clone())).is_err()
+        {
+            // It starts again, with these options, on the next connect.
+            running.stopped.store(true, Ordering::Release);
+        }
+    }
 }
 
 struct DesktopSink {
@@ -103,7 +116,10 @@ impl WaylandSink for DesktopSink {
     fn send(&mut self, cmd: WaylandCmd) {
         let generation = match &cmd {
             WaylandCmd::Paste { generation, .. } | WaylandCmd::Copy { generation, .. } => Some(*generation),
-            WaylandCmd::Overlay(_) | WaylandCmd::Menu(_) | WaylandCmd::SnapshotClipboard { .. } => None,
+            WaylandCmd::Overlay(_)
+            | WaylandCmd::Menu(_)
+            | WaylandCmd::SnapshotClipboard { .. }
+            | WaylandCmd::Configure(_) => None,
         };
         if let Err(stopped) = self.running.thread.send(cmd) {
             self.running.stopped.store(true, Ordering::Release);
@@ -131,6 +147,15 @@ impl Wayland for RecordingWayland {
             .map_err(|e| format!("{}: {e}", self.path.display()))?;
         Ok(Box::new(RecordingSink { file, events, visible: false }))
     }
+
+    fn configure(&mut self, overlay: &psst_config::OverlayConfig) {
+        let mut line = record(&WaylandCmd::Configure(overlay_config(overlay))).to_string();
+        line.push('\n');
+        let appended = OpenOptions::new().create(true).append(true).open(&self.path);
+        if let Err(err) = appended.and_then(|mut file| file.write_all(line.as_bytes())) {
+            tracing::warn!("{}: {err}", self.path.display());
+        }
+    }
 }
 
 struct RecordingSink {
@@ -154,7 +179,7 @@ impl WaylandSink for RecordingSink {
                 self.visible = state.is_some();
                 None
             }
-            WaylandCmd::Menu(_) | WaylandCmd::SnapshotClipboard { .. } => None,
+            WaylandCmd::Menu(_) | WaylandCmd::SnapshotClipboard { .. } | WaylandCmd::Configure(_) => None,
             WaylandCmd::Paste { generation, .. } => Some(WaylandEvent::Pasted { generation }),
             WaylandCmd::Copy { generation, .. } => Some(WaylandEvent::Copied { generation }),
         };
@@ -175,7 +200,21 @@ pub fn record(cmd: &WaylandCmd) -> Value {
             "delay_ms": delay_ms,
         }),
         WaylandCmd::Copy { generation, text } => json!({"cmd": "copy", "generation": generation, "text": text}),
+        WaylandCmd::Configure(overlay) => json!({"cmd": "configure", "overlay": overlay_config_json(overlay)}),
     }
+}
+
+fn overlay_config_json(overlay: &OverlayConfig) -> Value {
+    let rgba = |c: Rgba| format!("#{:02x}{:02x}{:02x}{:02x}", c.r, c.g, c.b, c.a);
+    json!({
+        "anchor": match overlay.anchor { Anchor::Top => "top", Anchor::Bottom => "bottom" },
+        "margin": overlay.margin,
+        "width": overlay.width,
+        "height": overlay.height,
+        "background": rgba(overlay.style.background),
+        "foreground": rgba(overlay.style.foreground),
+        "accent": rgba(overlay.style.accent),
+    })
 }
 
 fn menu_json(spec: &MenuSpec) -> Value {

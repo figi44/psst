@@ -5,7 +5,6 @@ import android.content.res.ColorStateList
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
-import android.graphics.RectF
 import android.graphics.drawable.InsetDrawable
 import android.graphics.drawable.RippleDrawable
 import android.graphics.drawable.ShapeDrawable
@@ -60,23 +59,23 @@ class BubbleView(context: Context) : View(context) {
             invalidate()
         }
 
-    // Room around the circle for the level, the busy arc and the shadow.
+    // Room around the disc for the halo and the shadow.
     private val pad = dp(6f)
-    private val strong = context.getColor(R.color.ime_accent_strong)
-    private val surface = context.getColor(R.color.surface)
-    private val line = context.getColor(R.color.line)
+    private val bg = context.getColor(R.color.bg)
     private val accent = context.getColor(R.color.accent)
-    private val white = context.getColor(R.color.fg)
+    private val fg = context.getColor(R.color.fg)
     private val warn = context.getColor(R.color.warn)
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { setShadowLayer(dp(3f), 0f, dp(1f), SHADOW) }
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+
+    // Black like the overlay's pill, with its hairline, so that it reads on light keyboards and dark.
+    private val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeCap = Paint.Cap.ROUND
+        color = context.getColor(R.color.line)
+        strokeWidth = max(1f, dp(0.5f))
     }
-    private val icon = requireNotNull(context.getDrawable(R.drawable.ime_mic)).mutate()
-    private val square = RectF()
-    private val arc = RectF()
+    private val icon = requireNotNull(context.getDrawable(R.drawable.ime_mic)).mutate().apply { setTint(fg) }
+    private val well = Well(context)
     private val blob = Path()
     private var level = 0f
 
@@ -99,7 +98,11 @@ class BubbleView(context: Context) : View(context) {
         contentDescription = context.getString(R.string.bubble_start)
         setOnClickListener { actions?.onTap() }
         val inset = pad.roundToInt()
-        foreground = RippleDrawable(ColorStateList.valueOf(RIPPLE), null, InsetDrawable(ShapeDrawable(OvalShape()), inset))
+        foreground = RippleDrawable(
+            ColorStateList.valueOf(context.getColor(R.color.ripple)),
+            null,
+            InsetDrawable(ShapeDrawable(OvalShape()), inset),
+        )
     }
 
     /** The microphone's level, 0 to 1, while it records. */
@@ -115,10 +118,6 @@ class BubbleView(context: Context) : View(context) {
         val radius = min(w, h) / 2f - pad
         val half = radius * 0.5f
         icon.setBounds((cx - half).roundToInt(), (cy - half).roundToInt(), (cx + half).roundToInt(), (cy + half).roundToInt())
-        val side = radius * 0.3f
-        square.set(cx - side, cy - side, cx + side, cy + side)
-        val ring = radius + pad / 2
-        arc.set(cx - ring, cy - ring, cx + ring, cy + ring)
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -126,29 +125,18 @@ class BubbleView(context: Context) : View(context) {
         val cy = height / 2f
         val radius = min(width, height) / 2f - pad
         if (mode == Mode.STOP) drawHalo(canvas, cx, cy, radius)
-        fill.color = if (mode == Mode.BUSY) surface else strong
+        fill.color = bg
         canvas.drawCircle(cx, cy, radius, fill)
+        canvas.drawCircle(cx, cy, radius - edge.strokeWidth / 2, edge)
         when (mode) {
-            Mode.START, Mode.ALERT -> {
-                icon.setTint(white)
-                icon.draw(canvas)
-            }
+            Mode.START, Mode.ALERT -> icon.draw(canvas)
             Mode.STOP -> {
-                paint.color = white
-                canvas.drawRoundRect(square, dp(3f), dp(3f), paint)
+                well.recording(canvas, cx, cy, radius * Well.SIZE, accent, swell(level))
                 // Runs only while the bubble is shown and listening.
                 postInvalidateOnAnimation()
             }
             Mode.BUSY -> {
-                stroke.color = line
-                stroke.strokeWidth = dp(1.5f)
-                canvas.drawCircle(cx, cy, radius, stroke)
-                icon.setTint(context.getColor(R.color.muted))
-                icon.draw(canvas)
-                stroke.color = accent
-                stroke.strokeWidth = dp(3f)
-                val start = SystemClock.uptimeMillis() % SPIN_MS * 360f / SPIN_MS
-                canvas.drawArc(arc, start, 90f, false, stroke)
+                well.busy(canvas, cx, cy, radius * Well.SIZE)
                 // Runs only while the bubble is shown and the core is busy.
                 postInvalidateOnAnimation()
             }
@@ -156,7 +144,7 @@ class BubbleView(context: Context) : View(context) {
         if (mode == Mode.ALERT) {
             val x = cx + radius * 0.7f
             val y = cy - radius * 0.7f
-            paint.color = strong
+            paint.color = bg
             canvas.drawCircle(x, y, dp(6f), paint)
             paint.color = warn
             canvas.drawCircle(x, y, dp(4.5f), paint)
@@ -178,8 +166,8 @@ class BubbleView(context: Context) : View(context) {
         springVelocity += (SPRING * (max(level, breath) - spring) - DAMPING * springVelocity) * dt
         spring += springVelocity * dt
         val reach = max(0f, spring)
-        drawBlob(canvas, cx, cy, radius, t, reach, grow = 0.85f, wobble = 0.6f, alpha = 0.35f, phase = 1.3)
-        drawBlob(canvas, cx, cy, radius, t, reach, grow = 0.55f, wobble = 0.45f, alpha = 0.6f, phase = 0.0)
+        drawBlob(canvas, cx, cy, radius, t, reach, grow = 0.85f, wobble = 0.6f, alpha = 0.2f, phase = 1.3)
+        drawBlob(canvas, cx, cy, radius, t, reach, grow = 0.55f, wobble = 0.45f, alpha = 0.35f, phase = 0.0)
     }
 
     private fun drawBlob(
@@ -205,7 +193,7 @@ class BubbleView(context: Context) : View(context) {
             if (i == 0) blob.moveTo(x, y) else blob.lineTo(x, y)
         }
         blob.close()
-        paint.color = accent
+        paint.color = fg
         paint.alpha = (255 * alpha).roundToInt()
         canvas.drawPath(blob, paint)
     }
@@ -259,7 +247,6 @@ class BubbleView(context: Context) : View(context) {
     private fun dp(value: Float) = value * resources.displayMetrics.density
 }
 
-private const val RIPPLE = 0x33ffffff
 private const val SHADOW = 0x66000000
 private const val BREATH = 0.3f
 private const val BREATH_MS = 1400L
@@ -269,4 +256,3 @@ private const val DAMPING = 9f
 /** The longest step the spring takes at once, as after a pause in drawing. */
 private const val MAX_STEP_S = 0.05f
 private const val BLOB_POINTS = 72
-private const val SPIN_MS = 1000L

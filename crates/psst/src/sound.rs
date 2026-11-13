@@ -19,14 +19,14 @@ const VOICES: usize = 8;
 const TAIL: Duration = Duration::from_millis(150);
 
 /// The sound thread starts with the first sound.
-pub fn player(sounds: Sounds) -> impl Fn(Sound) + Send + Sync + 'static {
-    let queue: OnceLock<Option<mpsc::Sender<Sound>>> = OnceLock::new();
-    move |sound| {
+pub fn player() -> impl Fn(Sounds, Sound) + Send + Sync + 'static {
+    let queue: OnceLock<Option<mpsc::Sender<(Sounds, Sound)>>> = OnceLock::new();
+    move |sounds, sound| {
         let tx = queue.get_or_init(|| {
             let (tx, rx) = mpsc::channel();
             let spawned = thread::Builder::new().name("psst-sound".into()).spawn(move || {
                 while let Ok(first) = rx.recv() {
-                    if let Err(err) = burst(sounds, first, &rx) {
+                    if let Err(err) = burst(first, &rx) {
                         debug!("cannot play a sound: {err}");
                     }
                 }
@@ -34,21 +34,21 @@ pub fn player(sounds: Sounds) -> impl Fn(Sound) + Send + Sync + 'static {
             spawned.inspect_err(|err| debug!("cannot start the sound thread: {err}")).ok().map(|_| tx)
         });
         if let Some(tx) = tx {
-            let _ = tx.send(sound);
+            let _ = tx.send((sounds, sound));
         }
     }
 }
 
 /// Plays `first`, and whatever comes while it plays, on one stream, so a stop chime overlaps the
 /// start chime's ring instead of waiting for it. The stream closes after, so the device can sleep.
-fn burst(sounds: Sounds, first: Sound, rx: &mpsc::Receiver<Sound>) -> Result<(), String> {
+fn burst(first: (Sounds, Sound), rx: &mpsc::Receiver<(Sounds, Sound)>) -> Result<(), String> {
     let device = cpal::default_host().default_output_device().ok_or("no output device")?;
     let config = device.default_output_config().map_err(|e| e.to_string())?;
     let stream_config = config.config();
     let (producer, consumer) = rtrb::RingBuffer::new(VOICES);
     // Declared before the stream, so the stream stops before the samples it plays are freed.
     let rate = stream_config.sample_rate;
-    let mut voices = Voices { sounds, producer, rate, held: Vec::new(), ends: Instant::now(), last: None };
+    let mut voices = Voices { producer, rate, held: Vec::new(), ends: Instant::now(), last: None };
     let stream = match config.sample_format() {
         SampleFormat::F32 => build::<f32>(&device, stream_config, consumer, |s| s),
         SampleFormat::I16 => build::<i16>(&device, stream_config, consumer, |s| (s * 32767.0) as i16),
@@ -63,7 +63,6 @@ fn burst(sounds: Sounds, first: Sound, rx: &mpsc::Receiver<Sound>) -> Result<(),
 }
 
 struct Voices {
-    sounds: Sounds,
     producer: rtrb::Producer<Arc<[f32]>>,
     rate: u32,
     /// So the audio thread never frees a voice: it only lets go of its reference.
@@ -73,12 +72,12 @@ struct Voices {
 }
 
 impl Voices {
-    fn add(&mut self, sound: Sound) {
+    fn add(&mut self, (sounds, sound): (Sounds, Sound)) {
         // Two reports of one failure would play twice as loud.
         if self.last.is_some_and(|(last, at)| last == sound && at.elapsed() < Duration::from_millis(200)) {
             return;
         }
-        let samples: Arc<[f32]> = chime(self.sounds, sound, self.rate).into();
+        let samples: Arc<[f32]> = chime(sounds, sound, self.rate).into();
         let length = Duration::from_secs_f32(samples.len() as f32 / self.rate as f32);
         if self.producer.push(samples.clone()).is_ok() {
             let now = Instant::now();

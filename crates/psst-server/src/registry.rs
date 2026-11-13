@@ -5,7 +5,7 @@ use std::{
     collections::HashMap,
     sync::{
         Arc, Mutex, MutexGuard,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -16,7 +16,10 @@ use psst_proto::{
     ws::{ErrorMsg, FinalMsg, ServerMsg},
 };
 use serde_json::Value;
-use tokio::{sync::mpsc, time::Instant};
+use tokio::{
+    sync::{mpsc, watch},
+    time::Instant,
+};
 
 use crate::{
     db::Db,
@@ -110,16 +113,60 @@ pub enum Cancel {
 pub struct Registry {
     sessions: Mutex<HashMap<SessionKey, Entry>>,
     next_epoch: AtomicU64,
-    max_active: usize,
+    max_active: AtomicUsize,
+    active: watch::Sender<usize>,
+}
+
+/// Publishes the count of sessions not yet finished when dropped, so every change under the lock
+/// is counted.
+struct Sessions<'a> {
+    map: MutexGuard<'a, HashMap<SessionKey, Entry>>,
+    active: &'a watch::Sender<usize>,
+}
+
+impl std::ops::Deref for Sessions<'_> {
+    type Target = HashMap<SessionKey, Entry>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.map
+    }
+}
+
+impl std::ops::DerefMut for Sessions<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.map
+    }
+}
+
+impl Drop for Sessions<'_> {
+    fn drop(&mut self) {
+        let count = count_active(&self.map);
+        self.active.send_if_modified(|active| std::mem::replace(active, count) != count);
+    }
 }
 
 impl Registry {
     pub fn new(max_active: usize) -> Arc<Registry> {
-        Arc::new(Registry { sessions: Mutex::default(), next_epoch: AtomicU64::new(1), max_active })
+        Arc::new(Registry {
+            sessions: Mutex::default(),
+            next_epoch: AtomicU64::new(1),
+            max_active: AtomicUsize::new(max_active),
+            active: watch::Sender::new(0),
+        })
     }
 
-    fn lock(&self) -> MutexGuard<'_, HashMap<SessionKey, Entry>> {
-        self.sessions.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    fn lock(&self) -> Sessions<'_> {
+        Sessions { map: self.sessions.lock().unwrap_or_else(|poisoned| poisoned.into_inner()), active: &self.active }
+    }
+
+    /// Sessions already admitted keep going.
+    pub fn set_max_active(&self, max_active: usize) {
+        self.max_active.store(max_active, Ordering::Relaxed);
+    }
+
+    /// Sessions recording or waiting for their outcome.
+    pub fn active(&self) -> watch::Receiver<usize> {
+        self.active.subscribe()
     }
 
     fn epoch(&self) -> u64 {
@@ -191,15 +238,16 @@ impl Registry {
         if let Err(rejection) = (req.admit)() {
             return Ok(Start::Rejected(rejection));
         }
-        if count_active(&sessions) >= self.max_active {
-            let message = format!("the server is busy with {} sessions", self.max_active);
+        let max_active = self.max_active.load(Ordering::Relaxed);
+        if count_active(&sessions) >= max_active {
+            let message = format!("the server is busy with {max_active} sessions");
             return Ok(Start::Rejected(Rejection::new(ErrorCode::Busy, message)));
         }
         let history_id = db.start_session(&req.key.device, req.key.session_id, req.profile)?;
         Ok(Start::Record { epoch: self.insert_recording(&mut sessions, req), history_id })
     }
 
-    fn insert_recording(&self, sessions: &mut HashMap<SessionKey, Entry>, req: StartRequest<'_>) -> u64 {
+    fn insert_recording(&self, sessions: &mut Sessions<'_>, req: StartRequest<'_>) -> u64 {
         let epoch = self.epoch();
         sessions.insert(req.key, Entry { epoch, state: State::Recording, attached: Some(req.conn) });
         epoch

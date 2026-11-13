@@ -174,7 +174,16 @@ pub(crate) fn describe_model(status: &ModelStatus) -> String {
         ModelState::Unloaded => "unloaded".into(),
         ModelState::Failed => format!("failed: {}", status.error.as_deref().unwrap_or("unknown error")),
     };
-    format!("{}: {state}", status.name)
+    match &status.reload {
+        Some(reload) => {
+            let waiting = match reload.waiting_for {
+                1 => "the dictation in progress finishes".to_owned(),
+                n => format!("the {n} dictations in progress finish"),
+            };
+            format!("{}: {state}; switching to {} once {waiting}", status.name, reload.model)
+        }
+        None => format!("{}: {state}", status.name),
+    }
 }
 
 fn describe_pairing(pairing: &Pairing) -> String {

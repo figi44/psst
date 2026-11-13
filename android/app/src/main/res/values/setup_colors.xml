@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- More of the web UI's palette (web/static/psst.css), for the setup screen's controls. -->
-<resources>
-    <color name="setup_accent_strong">#1f5eff</color>
-    <color name="setup_line_strong">#3d424c</color>
-    <color name="setup_field">#858e9c</color>
-</resources>

@@ -1,17 +1,15 @@
 {% extends "base.html" %}
+{%- from "icons.html" import icon %}
 {% block title %}Profiles · psst{% endblock %}
-
-{%- macro chevron() -%}<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>{%- endmacro %}
-{%- macro close_icon() -%}<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>{%- endmacro %}
 
 {% block main %}
 <div class="page">
   <div class="head">
     <div class="head-row">
       <h1>Profiles</h1>
-      <a class="btn" href="/profiles?new=1">New profile</a>
+      <a class="btn primary" href="/profiles?new=1">{{ icon("plus") }}New profile</a>
     </div>
-    <p class="sub">Dictation modes. Pick one with <code>psst toggle --profile name</code>. Changes apply to the next dictation.</p>
+    <p class="sub">Dictation modes. Pick one in the quick menu, or with <code>psst toggle --profile name</code>. Changes apply to the next dictation.</p>
   </div>
   {%- if error %}
   <div class="notice" role="alert">{{ error }}</div>
@@ -22,7 +20,7 @@
 
   <ul class="plist">
     {%- for p in profiles %}
-    <li><a class="prow" href="/profiles?profile={{ p.name|segment }}"><span class="pname">{{ p.name }}</span><span class="pdesc">{{ p.language }} · {% if p.style %}“{{ p.style }}”{% else %}No prompt style{% endif %}</span>{{ chevron() }}</a></li>
+    <li><a class="prow" href="/profiles?profile={{ p.name|segment }}"{% if panel and not panel.new and panel.name == p.name %} aria-current="true"{% endif %}><span class="pname">{{ p.name }}</span><span class="pdesc">{{ p.language }} · {% if p.style %}“{{ p.style }}”{% else %}No prompt style{% endif %}</span>{{ icon("chevron") }}</a></li>
     {%- endfor %}
   </ul>
 
@@ -38,7 +36,7 @@
   <form method="post" action="/profiles{% if not panel.new %}/{{ panel.name|segment }}{% endif %}" class="panel-form">
     <div class="p-head">
       <div><h2 id="p-title">{{ panel.title }}</h2>{% if panel.sub %}<p class="sub">{{ panel.sub }}</p>{% endif %}</div>
-      <a class="iconbtn" href="/profiles" data-close aria-label="Close">{{ close_icon() }}</a>
+      <a class="iconbtn" href="/profiles" data-close aria-label="Close">{{ icon("close") }}</a>
     </div>
     <div class="p-body">
       {%- if panel.error %}<div class="notice" role="alert">{{ panel.error }}</div>{% endif %}
@@ -68,7 +66,7 @@
         {%- endfor %}
       </div>
       <details class="adv">
-        <summary>{{ chevron() }}Advanced</summary>
+        <summary>{{ icon("chevron") }}Advanced</summary>
         <div class="adv-body">
           <div class="field">
             <label for="p-order">Clean-up order</label>

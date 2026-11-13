@@ -179,7 +179,7 @@
 
                     <Button
                         android:id="@+id/setup_bubble_app_info"
-                        style="@style/Setup.Button"
+                        style="@style/Setup.Button.Quiet"
                         android:text="@string/setup_bubble_app_info" />
                 </LinearLayout>
 

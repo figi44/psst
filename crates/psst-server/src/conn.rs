@@ -10,9 +10,9 @@ use psst_proto::{
     DeviceId, ErrorCode, FRAME_MS, FRAME_SAMPLES, HistoryId, PROTOCOL_VERSION, SAMPLE_RATE, ServerTimings,
     api::ModelState,
     ws::{
-        CancelMsg, CancelledMsg, ClientInfo, ClientMsg, Codec, ErrorMsg, FinalMsg, Mode, ProgressMsg, ProgressState,
-        ProtocolDetail, ReadyModelState, ReadyMsg, ReportMsg, ServerLimits, ServerMsg, StartMsg, StopMsg, Target,
-        WelcomeMsg,
+        CancelMsg, CancelledMsg, ClientInfo, ClientMsg, Codec, ErrorMsg, Feature, FinalMsg, HelloMsg, Mode,
+        ProgressMsg, ProgressState, ProtocolDetail, ReadyModelState, ReadyMsg, ReportMsg, ServerLimits, ServerMsg,
+        StartMsg, StopMsg, Target, WelcomeMsg,
     },
 };
 use serde_json::json;
@@ -53,8 +53,8 @@ pub async fn run(state: Arc<AppState>, mut ws: WebSocket, identity: Result<Ident
             return;
         }
     };
-    match hello {
-        Some(ClientMsg::Hello(hello)) if hello.protocol == PROTOCOL_VERSION => {}
+    let hello: HelloMsg = match hello {
+        Some(ClientMsg::Hello(hello)) if hello.protocol == PROTOCOL_VERSION => hello,
         Some(ClientMsg::Hello(hello)) => {
             let ClientInfo { name, version } = &hello.client;
             tracing::info!(
@@ -77,7 +77,7 @@ pub async fn run(state: Arc<AppState>, mut ws: WebSocket, identity: Result<Ident
             close(&mut ws, close_code::PROTOCOL, "expected hello").await;
             return;
         }
-    }
+    };
 
     let device = identity.device();
     let (tx, mut events) = mpsc::unbounded_channel();
@@ -102,15 +102,23 @@ pub async fn run(state: Arc<AppState>, mut ws: WebSocket, identity: Result<Ident
     if let Err(err) = recorded {
         tracing::error!("cannot record device {device}: {err:#}");
     }
+    if let Some(config) = &hello.config {
+        let ClientInfo { name, version } = &hello.client;
+        crate::settings::reported(&state, &device, config, &format!("{name} {version}"));
+    }
+    // Joined before reading what goes in `welcome`, so a change made meanwhile is sent after it.
+    state.conns.join(&attachment, &device, &hello.accepts);
     let welcome = WelcomeMsg {
         server_version: env!("CARGO_PKG_VERSION").into(),
         device: device.clone(),
-        limits: ServerLimits { max_recording_s: state.server.limits.max_recording_s },
+        limits: ServerLimits { max_recording_s: state.live.server().limits.max_recording_s },
         codecs: vec![Codec::PcmS16le, Codec::Opus],
+        settings: hello.accepts.contains(&Feature::Settings).then(|| crate::settings::overrides(&state, &device)),
     };
     tracing::debug!("connection {conn_id} from {device}");
     let mut conn = Conn { state: state.clone(), device, attachment, active: None };
     if !send(&mut ws, &ServerMsg::Welcome(welcome)).await {
+        conn.disconnected();
         return;
     }
 
@@ -174,6 +182,8 @@ struct Recording {
     target: Option<Target>,
     dictionary: Arc<Dictionary>,
     bias: bool,
+    /// As at `start`: a change during the recording doesn't cut it short.
+    max_recording_s: u32,
 }
 
 async fn stopped(shutdown: &mut tokio::sync::watch::Receiver<bool>) {
@@ -306,6 +316,7 @@ impl Conn {
                     target: start.target.clone(),
                     dictionary,
                     bias,
+                    max_recording_s: self.state.live.server().limits.max_recording_s,
                 };
                 self.active = Some(Active {
                     key,
@@ -350,11 +361,11 @@ impl Conn {
             }
         }
         recording.last_frame = Instant::now();
-        let limit_s = u64::from(self.state.server.limits.max_recording_s) + TOO_LONG_GRACE_S;
+        let limit_s = u64::from(recording.max_recording_s) + TOO_LONG_GRACE_S;
         if recording.pcm.len() as u64 / 2 > limit_s * u64::from(SAMPLE_RATE) {
             let message = format!(
                 "the recording is more than {TOO_LONG_GRACE_S} s past max_recording_s = {} s",
-                self.state.server.limits.max_recording_s
+                recording.max_recording_s
             );
             return self.end_recording(ws, &key, epoch, ErrorCode::TooLong, &message).await;
         }
@@ -529,6 +540,7 @@ impl Conn {
             self.state.registry.detach(&active.key, active.epoch, self.attachment.conn_id, last_frame);
         }
         self.state.conns.remove(&self.device, self.attachment.conn_id);
+        self.state.conns.leave(self.attachment.conn_id);
     }
 }
 

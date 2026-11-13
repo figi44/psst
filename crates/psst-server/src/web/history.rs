@@ -316,7 +316,7 @@ fn page(state: &AppState, viewer: &Viewer, query: &PageQuery, refusal: Option<Re
         more,
         all,
         known,
-        kept_days => state.server.history_days,
+        kept_days => state.live.server().history_days,
         ..chrome(state, viewer, "history")
     };
     render(status, "history.html", ctx)

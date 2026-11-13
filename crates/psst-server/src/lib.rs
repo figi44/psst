@@ -8,6 +8,7 @@ mod engine;
 mod listen;
 mod profiles;
 mod registry;
+mod settings;
 mod sleep;
 mod state;
 mod tailscale;
@@ -36,6 +37,7 @@ use crate::{
     listen::{Peer, TcpSocket, UnixSocket},
     profiles::ProfileLayers,
     registry::Registry,
+    settings::ServerLayers,
     state::{AppState, ConnTable, LiveConfig, LocalPolicy},
 };
 
@@ -68,7 +70,7 @@ impl ServerHandle {
     }
 
     pub fn reload(&self) {
-        self.state.live.reload(&self.state.server);
+        self.state.live.reload();
     }
 
     #[doc(hidden)]
@@ -107,11 +109,12 @@ async fn start(cfg: ServeConfig, systemd: Option<std::os::unix::net::UnixListene
     for warning in files.warnings() {
         tracing::warn!("{warning}");
     }
-    let server = files.server;
     for dir in [&cfg.state_dir, &cfg.cache_dir] {
         fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     }
     let db = Db::open(&cfg.state_dir.join("psst.db"))?;
+    let server_layers = ServerLayers::load(files.server, &db, cfg.cache_dir.clone())?;
+    let server = server_layers.effective();
     for (id, name) in db.revoke_tailnet_devices_except(&server.auto_pair)? {
         tracing::info!("revoked device {id}: auto_pair no longer lists {name}");
     }
@@ -167,13 +170,17 @@ async fn start(cfg: ServeConfig, systemd: Option<std::os::unix::net::UnixListene
     }
     let tcp_addrs = tcp.iter().map(TcpSocket::local_addr).collect::<Result<Vec<_>, _>>()?;
 
-    let engine =
-        Supervisor::start(EngineConfig::from_server(&server, cfg.cache_dir.clone()), server.model.preload && !unloaded);
+    let registry = Registry::new(server.limits.max_active_sessions as usize);
+    let engine = Supervisor::start(
+        EngineConfig::from_server(&server, cfg.cache_dir.clone()),
+        server.model.preload && !unloaded,
+        registry.active(),
+    );
     let (shutdown, shutdown_rx) = watch::channel(false);
     let state = Arc::new(AppState {
-        live: LiveConfig::new(cfg.config_dir.clone(), profile_layers, profiles, layered, dictionary),
+        live: LiveConfig::new(cfg.config_dir.clone(), server_layers, (profile_layers, profiles), (layered, dictionary)),
         db,
-        registry: Registry::new(server.limits.max_active_sessions as usize),
+        registry,
         engine,
         pairings: Default::default(),
         logins: Default::default(),
@@ -217,7 +224,7 @@ async fn start(cfg: ServeConfig, systemd: Option<std::os::unix::net::UnixListene
             maintenance.registry.sweep();
             ticks += 1;
             if ticks.is_multiple_of(720) {
-                if let Err(err) = maintenance.db.prune_history(maintenance.server.history_days) {
+                if let Err(err) = maintenance.db.prune_history(maintenance.live.server().history_days) {
                     tracing::warn!("cannot prune history: {err:#}");
                 }
                 if let Err(err) = maintenance.db.prune_web_sessions() {

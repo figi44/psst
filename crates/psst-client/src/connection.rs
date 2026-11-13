@@ -12,8 +12,12 @@ use std::{
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use psst_proto::{
     Endpoint, ErrorCode, PROTOCOL_VERSION, SessionId, Token,
-    ws::{AudioFormat, CancelMsg, ClientInfo, ClientMsg, ErrorMsg, HelloMsg, ReportMsg, ServerMsg, StartMsg, StopMsg},
+    ws::{
+        AudioFormat, CancelMsg, ClientInfo, ClientMsg, ErrorMsg, HelloMsg, ReportMsg, ServerLimits, ServerMsg,
+        StartMsg, StopMsg,
+    },
 };
+use serde_json::Value;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::{TcpStream, UnixStream},
@@ -28,7 +32,7 @@ use tokio_tungstenite::{
 use tracing::{debug, warn};
 
 use crate::{
-    AudioFrame, Client, ClientError, Incompatible, LostReason, PROGRESS_TIMEOUT, SessionEvent, StartOpts,
+    AudioFrame, Client, ClientError, Hello, Incompatible, LostReason, PROGRESS_TIMEOUT, SessionEvent, StartOpts,
     codec::Encoder,
 };
 
@@ -66,6 +70,8 @@ pub(crate) struct Shared {
     last_received: Mutex<Instant>,
     round_trips: Mutex<VecDeque<Duration>>,
     pub closed: watch::Sender<Option<String>>,
+    pub settings: watch::Sender<Option<Value>>,
+    pub limits: watch::Sender<ServerLimits>,
 }
 
 impl Shared {
@@ -133,7 +139,7 @@ impl AsyncWrite for Transport {
 
 type Ws = WebSocketStream<Transport>;
 
-pub(crate) async fn connect(ep: &Endpoint, token: Option<&Token>) -> Result<Client, ClientError> {
+pub(crate) async fn connect(ep: &Endpoint, token: Option<&Token>, extra: Hello) -> Result<Client, ClientError> {
     let connect_err = |source| ClientError::Connect { endpoint: ep.clone(), source };
     let (transport, authority) = match ep {
         Endpoint::Unix(path) => {
@@ -162,6 +168,8 @@ pub(crate) async fn connect(ep: &Endpoint, token: Option<&Token>) -> Result<Clie
     let hello = ClientMsg::Hello(HelloMsg {
         protocol: PROTOCOL_VERSION,
         client: ClientInfo { name: "psst".into(), version: env!("CARGO_PKG_VERSION").into() },
+        accepts: extra.accepts,
+        config: extra.config,
     });
     let hello_sent = Instant::now();
     ws.send(text(&hello)).await.map_err(ws_err)?;
@@ -187,6 +195,8 @@ pub(crate) async fn connect(ep: &Endpoint, token: Option<&Token>) -> Result<Clie
         last_received: Mutex::new(Instant::now()),
         round_trips: Mutex::new(VecDeque::from([hello_sent.elapsed()])),
         closed,
+        settings: watch::Sender::new(welcome.settings.clone()),
+        limits: watch::Sender::new(welcome.limits),
     });
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let (sink, mut stream) = ws.split();
@@ -499,6 +509,14 @@ impl Actor {
         };
         let session_id = match &msg {
             ServerMsg::Welcome(_) => return Flow::Continue,
+            ServerMsg::Settings(settings) => {
+                self.shared.settings.send_replace(Some(settings.overrides.clone()));
+                return Flow::Continue;
+            }
+            ServerMsg::Limits(limits) => {
+                self.shared.limits.send_replace(*limits);
+                return Flow::Continue;
+            }
             ServerMsg::Ready(m) => m.session_id,
             ServerMsg::Progress(m) => m.session_id,
             ServerMsg::Final(m) => m.session_id,
@@ -538,7 +556,7 @@ impl Actor {
             ServerMsg::Cancelled(_) => SessionEvent::Cancelled,
             ServerMsg::Error(err) if active.got_ready => SessionEvent::Error(err),
             ServerMsg::Error(err) => SessionEvent::Rejected(err),
-            ServerMsg::Welcome(_) => unreachable!("handled above"),
+            ServerMsg::Welcome(_) | ServerMsg::Settings(_) | ServerMsg::Limits(_) => unreachable!("handled above"),
         };
         let terminal = event.is_terminal();
         if !active.ended {

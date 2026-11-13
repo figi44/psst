@@ -5,6 +5,7 @@ mod history;
 mod login;
 mod pair;
 mod profiles;
+mod settings;
 mod tidy;
 
 use std::sync::{Arc, OnceLock};
@@ -38,6 +39,7 @@ type AppRef = Arc<AppState>;
 const CSP: &str = "default-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'";
 
 const TEMPLATES: &[(&str, &str)] = &[
+    ("icons.html", include_str!("../../../../web/templates/icons.html")),
     ("base.html", include_str!("../../../../web/templates/base.html")),
     ("message.html", include_str!("../../../../web/templates/message.html")),
     ("login.html", include_str!("../../../../web/templates/login.html")),
@@ -46,6 +48,10 @@ const TEMPLATES: &[(&str, &str)] = &[
     ("profiles.html", include_str!("../../../../web/templates/profiles.html")),
     ("history.html", include_str!("../../../../web/templates/history.html")),
     ("post-processing.html", include_str!("../../../../web/templates/post-processing.html")),
+    ("rows.html", include_str!("../../../../web/templates/rows.html")),
+    ("settings.html", include_str!("../../../../web/templates/settings.html")),
+    ("devices.html", include_str!("../../../../web/templates/devices.html")),
+    ("device.html", include_str!("../../../../web/templates/device.html")),
 ];
 
 const ASSETS: &[(&str, &str, &[u8])] = &[
@@ -53,6 +59,9 @@ const ASSETS: &[(&str, &str, &[u8])] = &[
     ("login.js", "text/javascript; charset=utf-8", include_bytes!("../../../../web/static/login.js")),
     ("psst.js", "text/javascript; charset=utf-8", include_bytes!("../../../../web/static/psst.js")),
     ("htmx.min.js", "text/javascript; charset=utf-8", include_bytes!("../../../../web/vendor/htmx/htmx.min.js")),
+    // The overlay's typeface, cut to Latin and Latin Extended-A. psst.css names it, so its file
+    // name carries the version instead of `?v=`.
+    ("inter-4.001-medium.woff2", "font/woff2", include_bytes!("../../../../web/vendor/inter/inter-4.001-medium.woff2")),
 ];
 
 pub fn router() -> Router<AppRef> {
@@ -87,6 +96,18 @@ pub fn router() -> Router<AppRef> {
         .route("/post-processing/runs/clear", post(tidy::clear))
         .route("/post-processing/eval", post(tidy::eval))
         .route("/post-processing/eval/models", get(tidy::eval_models))
+        .route("/settings", get(settings::show))
+        .route("/settings.toml", get(settings::export))
+        .route("/settings/{key}", post(settings::set))
+        .route("/settings/{key}/reset", post(settings::reset))
+        .route("/devices", get(settings::devices))
+        .route("/devices/{id}", get(settings::device))
+        .route("/devices/{id}/client.toml", get(settings::export_device))
+        .route("/devices/{id}/setting/{key}", post(settings::set_device))
+        .route("/devices/{id}/setting/{key}/reset", post(settings::reset_device))
+        .route("/devices/{id}/app", post(settings::set_app))
+        .route("/devices/{id}/app/{app}/remove", post(settings::remove_app))
+        .route("/devices/{id}/app/{app}/reset", post(settings::reset_app))
         .route("/static/{file}", get(asset))
 }
 
@@ -155,12 +176,26 @@ fn render(status: StatusCode, template: &str, ctx: Value) -> Response {
 }
 
 fn chrome(state: &AppState, viewer: &Viewer, page: &str) -> Value {
+    use psst_proto::api::ModelState;
     let model = state.engine.status();
+    let (label, tone) = match model.state {
+        ModelState::Loaded => ("Ready", ""),
+        ModelState::Downloading => ("Downloading", "busy"),
+        ModelState::Loading => ("Loading", "busy"),
+        ModelState::Unloaded => ("Unloaded", "warn"),
+        ModelState::Missing => ("Not downloaded", "warn"),
+        ModelState::Failed => ("Failed", "bad"),
+    };
     context! {
         page,
         signed_in => true,
         browser => viewer.session.is_some(),
-        model => crate::admin::describe_model(&model),
+        model => context! {
+            name => model.name.clone(),
+            state => label,
+            tone,
+            text => crate::admin::describe_model(&model),
+        },
         banner => banner(&model),
     }
 }
@@ -169,7 +204,14 @@ fn banner(model: &psst_proto::api::ModelStatus) -> Option<Value> {
     use psst_proto::api::ModelState;
     let load = Some("psst-server model load");
     let (tone, title, text, command) = match model.state {
-        ModelState::Loaded => return None,
+        ModelState::Loaded => {
+            let reload = model.reload.as_ref()?;
+            let waiting = match reload.waiting_for {
+                1 => "the dictation in progress finishes".to_owned(),
+                n => format!("the {n} dictations in progress finish"),
+            };
+            ("", format!("Switching to {}", reload.model), format!("once {waiting}."), None)
+        }
         ModelState::Downloading => (
             "",
             "Downloading the speech model.".to_owned(),

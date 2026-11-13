@@ -1,6 +1,7 @@
 mod follow;
 mod incompatible;
 mod menu;
+mod settings;
 mod slow_link;
 
 use std::{
@@ -19,7 +20,7 @@ use psst::{
     store::{Last, Meta, RecState, Store},
     ui::{Wayland, WaylandEvents, WaylandSink},
 };
-use psst_config::{AppRule, ClientConfig, MenuConfig, PasteAction, PostProcessingContext, Sounds};
+use psst_config::{AppRule, ClientConfig, MenuConfig, OverlayConfig, PasteAction, PostProcessingContext, Sounds};
 use psst_proto::{ErrorCode, SessionId, ws::Target};
 use psst_testkit::{
     fake_server::{FakeServer, FakeServerConfig, Outcome},
@@ -32,6 +33,7 @@ const WAIT: Duration = Duration::from_secs(10);
 #[derive(Clone, Default)]
 struct FakeWayland {
     cmds: Arc<Mutex<Vec<WaylandCmd>>>,
+    configured: Arc<Mutex<Vec<OverlayConfig>>>,
     /// The daemon's, for events the tests make up.
     events: Arc<Mutex<Option<WaylandEvents>>>,
     fail_inserts: Arc<AtomicBool>,
@@ -48,6 +50,10 @@ impl Wayland for FakeWayland {
     fn connect(&mut self, events: WaylandEvents) -> Result<Box<dyn WaylandSink>, String> {
         *self.events.lock().unwrap() = Some(events.clone());
         Ok(Box::new(FakeSink { wayland: self.clone(), events, visible: false }))
+    }
+
+    fn configure(&mut self, overlay: &OverlayConfig) {
+        self.configured.lock().unwrap().push(*overlay);
     }
 }
 
@@ -69,7 +75,7 @@ impl WaylandSink for FakeSink {
             }
             WaylandCmd::Paste { generation, .. } => Some(WaylandEvent::Pasted { generation }),
             WaylandCmd::Copy { generation, .. } => Some(WaylandEvent::Copied { generation }),
-            WaylandCmd::Menu(_) | WaylandCmd::SnapshotClipboard { .. } => None,
+            WaylandCmd::Menu(_) | WaylandCmd::SnapshotClipboard { .. } | WaylandCmd::Configure(_) => None,
         };
         let delay = Duration::from_millis(self.wayland.shown_after_ms.load(Ordering::SeqCst));
         match reply {
@@ -141,7 +147,7 @@ impl FakeWayland {
                         return false;
                     }
                 }
-                WaylandCmd::Overlay(_) | WaylandCmd::Menu(_) => {}
+                WaylandCmd::Overlay(_) | WaylandCmd::Menu(_) | WaylandCmd::Configure(_) => {}
             }
         }
         true
@@ -178,7 +184,7 @@ async fn daemon_in(root: &Path, server: &FakeServer, tweak: impl FnOnce(&mut Cli
     let mut deps = Deps {
         audio: Arc::new(FileSource { path: wav }),
         wayland: Box::new(wayland.clone()),
-        sound: Arc::new(move |sound| played.lock().unwrap().push(sound)),
+        sound: Arc::new(move |_, sound| played.lock().unwrap().push(sound)),
         niri_socket: None,
         // The outcome decides each chime the tests expect, never the wait running out on a slow machine.
         timing: Timing { stop_chime_wait: WAIT, ..Timing::default() },

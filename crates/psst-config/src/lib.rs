@@ -2,6 +2,7 @@
 
 mod client;
 mod dictionary;
+pub mod layers;
 mod profiles;
 mod server;
 
@@ -17,6 +18,7 @@ pub use client::{
     MenuConfig, OverlayConfig, PasteAction, PasteRule, PostProcessingContext, Sounds,
 };
 pub use dictionary::{DictionaryFile, TermLanguages, TermSpec};
+pub use layers::{KeyPath, Layerable, Layered, Problem};
 pub use profiles::{
     DEFAULT_PROFILE, PROMPT_STYLE_WARN_TOKENS, Profile, ProfileSpec, ProfilesFile, Rule, estimated_tokens,
 };

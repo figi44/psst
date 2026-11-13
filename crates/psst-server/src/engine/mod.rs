@@ -6,7 +6,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicU8, AtomicU64, Ordering},
+        atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -18,7 +18,7 @@ use psst_engine_proto::{
 };
 use psst_proto::{
     ErrorCode,
-    api::{DownloadProgress, ModelState, ModelStatus},
+    api::{DownloadProgress, ModelReload, ModelState, ModelStatus},
 };
 use serde_json::{Value, json};
 use tokio::{
@@ -53,6 +53,12 @@ pub struct EngineConfig {
 }
 
 impl EngineConfig {
+    /// What only a new engine process can change.
+    fn same_model(&self, other: &EngineConfig) -> bool {
+        (&self.engine, &self.command, &self.model, &self.revision, &self.device, &self.compute_type)
+            == (&other.engine, &other.command, &other.model, &other.revision, &other.device, &other.compute_type)
+    }
+
     pub fn from_server(cfg: &psst_config::ServerConfig, cache_dir: PathBuf) -> Self {
         let model = &cfg.model;
         Self {
@@ -169,6 +175,8 @@ pub struct Supervisor {
     commands: mpsc::UnboundedSender<Command>,
     status: watch::Receiver<ModelStatus>,
     next_job: Arc<AtomicU64>,
+    /// The latest engine's, 0 before one said.
+    max_audio_s: Arc<AtomicU32>,
 }
 
 #[derive(Debug)]
@@ -181,11 +189,13 @@ enum Command {
     Append(JobId, Vec<u8>),
     Discard(JobId),
     Resume,
+    Reconfigure(Box<EngineConfig>),
     Shutdown(oneshot::Sender<()>),
 }
 
 impl Supervisor {
-    pub fn start(cfg: EngineConfig, load: bool) -> Supervisor {
+    /// `active` counts the sessions in progress: a change of model waits until there are none.
+    pub fn start(cfg: EngineConfig, load: bool, active: watch::Receiver<usize>) -> Supervisor {
         let (commands, command_rx) = mpsc::unbounded_channel();
         let (events, event_rx) = mpsc::unbounded_channel();
         let target = if load { Target::Loaded } else { Target::Unloaded };
@@ -195,8 +205,10 @@ impl Supervisor {
             revision: None,
             progress: None,
             error: None,
+            reload: None,
         };
         let (status_tx, status) = watch::channel(initial);
+        let max_audio_s = Arc::new(AtomicU32::new(0));
         let actor = Actor {
             cfg,
             commands: command_rx,
@@ -215,9 +227,24 @@ impl Supervisor {
             shutting_down: false,
             streams_supported: false,
             streams: HashMap::new(),
+            pending: None,
+            active,
+            active_open: true,
+            max_audio_s: max_audio_s.clone(),
         };
         tokio::spawn(actor.run());
-        Supervisor { commands, status, next_job: Arc::new(AtomicU64::new(1)) }
+        Supervisor { commands, status, next_job: Arc::new(AtomicU64::new(1)), max_audio_s }
+    }
+
+    /// The longest recording the engine takes, once one has started.
+    pub fn max_audio_s(&self) -> Option<u32> {
+        Some(self.max_audio_s.load(Ordering::Relaxed)).filter(|max| *max > 0)
+    }
+
+    /// Options, limits and the load deadline apply to the next request. A different model waits
+    /// until no session is in progress, then the engine restarts with it, as `model load` does.
+    pub fn reconfigure(&self, cfg: EngineConfig) {
+        let _ = self.commands.send(Command::Reconfigure(Box::new(cfg)));
     }
 
     pub fn status(&self) -> ModelStatus {
@@ -393,6 +420,11 @@ struct Actor {
     shutting_down: bool,
     streams_supported: bool,
     streams: HashMap<JobId, u64>,
+    /// A change of model, waiting for the sessions in progress.
+    pending: Option<EngineConfig>,
+    active: watch::Receiver<usize>,
+    active_open: bool,
+    max_audio_s: Arc<AtomicU32>,
 }
 
 fn ms(duration: Duration) -> u32 {
@@ -409,6 +441,7 @@ impl Actor {
         loop {
             let now = Instant::now();
             self.on_timers(now);
+            self.reload_when_idle(now);
             self.drive(now);
             self.update_wait_clocks(now);
             self.publish();
@@ -425,6 +458,7 @@ impl Actor {
                     None => self.begin_shutdown(Instant::now()),
                 },
                 Some((generation, event)) = self.event_rx.recv() => self.on_event(generation, event),
+                changed = self.active.changed(), if self.active_open => self.active_open = changed.is_ok(),
                 _ = sleep_until(wake) => {}
             }
         }
@@ -501,9 +535,49 @@ impl Actor {
                     self.restart_after_resume();
                 }
             }
+            Command::Reconfigure(cfg) => {
+                self.cfg.options = cfg.options;
+                self.cfg.max_recording_s = cfg.max_recording_s;
+                self.cfg.load_deadline = cfg.load_deadline;
+                if !self.cfg.same_model(&cfg) {
+                    tracing::info!("the model changes to {} once no dictation is in progress", cfg.model);
+                    self.pending = Some(*cfg);
+                } else if self.pending.take().is_some() {
+                    tracing::info!("the model stays {}: the change was undone", self.cfg.model);
+                }
+            }
             Command::Shutdown(reply) => {
                 self.shutdown_waiters.push(reply);
                 self.begin_shutdown(now);
+            }
+        }
+    }
+
+    /// A model that isn't loading or loaded switches at once.
+    fn reload_when_idle(&mut self, now: Instant) {
+        if self.pending.is_none() || self.shutting_down {
+            return;
+        }
+        let in_progress =
+            *self.active.borrow() > 0 || !self.queue.is_empty() || matches!(self.phase, Phase::Busy { .. });
+        if in_progress && self.target == Target::Loaded {
+            return;
+        }
+        let cfg = self.pending.take().expect("checked above");
+        tracing::info!("switching the model to {}", cfg.model);
+        self.cfg = cfg;
+        self.revision = None;
+        self.download = None;
+        self.crash_streak = 0;
+        match self.target {
+            Target::Unloaded => {}
+            Target::Loaded | Target::Failed(_) => {
+                self.target = Target::Loaded;
+                match self.phase {
+                    Phase::Backoff(_) => self.phase = Phase::Backoff(now),
+                    Phase::Idle => {}
+                    _ => self.stop_engine(now, false),
+                }
             }
         }
     }
@@ -531,6 +605,9 @@ impl Actor {
         match (msg, mem::replace(&mut self.phase, Phase::Idle)) {
             (FromEngine::Hello(hello), Phase::Starting { proc, silent_until }) => {
                 self.phase = Phase::Starting { proc, silent_until };
+                if hello.protocol == PROTOCOL_VERSION {
+                    self.max_audio_s.store(hello.capabilities.max_audio_s, Ordering::Relaxed);
+                }
                 if hello.protocol != PROTOCOL_VERSION {
                     let error = format!(
                         "the engine speaks protocol {}, but the server speaks {PROTOCOL_VERSION}",
@@ -955,6 +1032,10 @@ impl Actor {
             revision: if state == ModelState::Loaded { self.revision.clone() } else { None },
             progress: if state == ModelState::Downloading { self.download } else { None },
             error,
+            reload: self.pending.as_ref().map(|cfg| ModelReload {
+                model: cfg.model.clone(),
+                waiting_for: u32::try_from(*self.active.borrow()).unwrap_or(u32::MAX),
+            }),
         }
     }
 

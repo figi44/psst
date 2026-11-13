@@ -1,10 +1,13 @@
+{%- from "icons.html" import icon, bars -%}
 <!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#000000">
 <title>{% block title %}psst{% endblock %}</title>
+<link rel="preload" href="/static/inter-4.001-medium.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/static/psst.css?v={{ assets }}">
 {%- if signed_in %}
 <meta name="htmx-config" content='{"includeIndicatorStyles": false, "allowEval": false, "scrollIntoViewOnBoost": false, "responseHandling": [{"code": "204", "swap": false}, {"code": "[23]..", "swap": true}, {"code": "422", "swap": true}, {"code": "[45]..", "swap": false, "error": true}]}'>
@@ -14,41 +17,43 @@
 </head>
 <body{% if signed_in %} hx-boost="true"{% endif %}>
 {%- if signed_in %}
-<header class="top"><div class="top-in">
+<div class="app">
+<header class="side">
   <a class="brand" href="/history">psst<i aria-hidden="true"></i></a>
-  <nav class="tabs" aria-label="Pages">
-    <a href="/history"{% if page == "history" %} aria-current="page"{% endif %}>History</a>
-    <a href="/dictionary"{% if page == "dictionary" %} aria-current="page"{% endif %}>Dictionary</a>
-    <a href="/profiles"{% if page == "profiles" %} aria-current="page"{% endif %}>Profiles</a>
-    <a href="/post-processing"{% if page == "post-processing" %} aria-current="page"{% endif %}>Post-processing</a>
+  <nav class="nav" aria-label="Pages">
+    {%- for item in [("history", "History"), ("dictionary", "Dictionary"), ("profiles", "Profiles"), ("post-processing", "Post-processing"), ("devices", "Devices"), ("settings", "Settings")] %}
+    <a href="/{{ item[0] }}"{% if page == item[0] %} aria-current="page"{% endif %}>{{ icon(item[0]) }}<span>{{ item[1] }}</span></a>
+    {%- endfor %}
   </nav>
-  <div class="top-end">
+  <div class="side-end">
+    <p class="model {{ model.tone }}" title="Speech model: {{ model.text }}">{{ bars() }}<span class="model-name">{{ model.name }}</span><span class="model-state">{{ model.state }}</span></p>
     <details class="menu">
-      <summary aria-label="More"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="19" cy="12" r="1.6" fill="currentColor"/></svg></summary>
+      <summary aria-label="More">{{ icon("more") }}</summary>
       <div class="menu-pop">
-        <p class="mi">Speech model: {{ model }}</p>
+        <p class="mi">Speech model: {{ model.text }}</p>
         <hr>
-        <a href="/dictionary.toml" download hx-boost="false">Download dictionary.toml</a>
-        <a href="/profiles.toml" download hx-boost="false">Download profiles.toml</a>
+        <a href="/dictionary.toml" download hx-boost="false">{{ icon("download") }}Download dictionary.toml</a>
+        <a href="/profiles.toml" download hx-boost="false">{{ icon("download") }}Download profiles.toml</a>
         {%- if browser %}
         <hr>
-        <form method="post" action="/logout"><button type="submit">Log out</button></form>
+        <form method="post" action="/logout"><button type="submit">{{ icon("logout") }}Log out</button></form>
         {%- endif %}
       </div>
     </details>
   </div>
-</div></header>
+</header>
+<main id="main">
 {%- if banner %}
-<div class="banner {{ banner.tone }}" role="status"><div class="banner-in">
+<div class="banner {{ banner.tone }}" role="status">
   <p><strong>{{ banner.title }}</strong> {{ banner.text }}{% if banner.command %} Run <code>{{ banner.command }}</code> on the server.{% endif %}</p>
   {%- if banner.progress %}
   <progress class="meter" max="{{ banner.progress.total }}" value="{{ banner.progress.bytes }}" aria-label="Download progress"></progress>
   {%- endif %}
-</div></div>
+</div>
 {%- endif %}
-<main id="main">
 {% block main %}{% endblock %}
 </main>
+</div>
 {%- else %}
 {% block solo %}{% endblock %}
 {%- endif %}

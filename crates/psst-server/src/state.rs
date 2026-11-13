@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::SocketAddr,
     path::PathBuf,
     sync::{
@@ -11,8 +11,12 @@ use std::{
 use nix::unistd::{Uid, User};
 use psst_config::{ConfigFile, DEFAULT_PROFILE, DictionaryFile, Profile, ProfilesFile, ServerConfig};
 use psst_dict::Dictionary;
-use psst_proto::{DeviceId, api::ModelState};
-use tokio::sync::watch;
+use psst_proto::{
+    DeviceId,
+    api::ModelState,
+    ws::{Feature, ServerLimits, ServerMsg, SettingsMsg},
+};
+use tokio::sync::{mpsc, watch};
 
 use crate::{
     auth::{Identity, LoginLinks, Pairings, Refusal},
@@ -21,10 +25,13 @@ use crate::{
     engine::Supervisor,
     profiles::ProfileLayers,
     registry::{Attachment, ConnEvent, Registry},
+    settings::ServerLayers,
 };
 
 #[derive(Debug)]
 pub struct AppState {
+    /// As the server started. Only the keys the web UI can't change stay so: the others are live
+    /// in [`LiveConfig::server`].
     pub server: ServerConfig,
     pub live: LiveConfig,
     pub db: Db,
@@ -78,6 +85,11 @@ impl LocalPolicy {
 #[derive(Debug)]
 pub struct LiveConfig {
     dir: PathBuf,
+    server: RwLock<Arc<ServerConfig>>,
+    /// Held until the new settings are swapped in, so changes happen one at a time.
+    server_layers: Mutex<ServerLayers>,
+    /// Likewise for every device's settings.
+    device_settings: Mutex<()>,
     profiles: RwLock<Arc<ProfilesFile>>,
     /// Held until the new profiles are swapped in, so changes and reloads happen one at a time.
     profile_layers: Mutex<ProfileLayers>,
@@ -89,18 +101,37 @@ pub struct LiveConfig {
 impl LiveConfig {
     pub fn new(
         dir: PathBuf,
-        profile_layers: ProfileLayers,
-        profiles: ProfilesFile,
-        layered: Layered,
-        dictionary: Dictionary,
+        server_layers: ServerLayers,
+        (profile_layers, profiles): (ProfileLayers, ProfilesFile),
+        (layered, dictionary): (Layered, Dictionary),
     ) -> Self {
         Self {
             dir,
+            server: RwLock::new(Arc::new(server_layers.effective())),
+            server_layers: Mutex::new(server_layers),
+            device_settings: Mutex::new(()),
             profiles: RwLock::new(Arc::new(profiles)),
             profile_layers: Mutex::new(profile_layers),
             dictionary: RwLock::new(Arc::new(dictionary)),
             layered: Mutex::new(layered),
         }
+    }
+
+    /// server.toml with the web UI's changes.
+    pub fn server(&self) -> Arc<ServerConfig> {
+        self.server.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn server_layers(&self) -> MutexGuard<'_, ServerLayers> {
+        self.server_layers.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn set_server(&self, server: ServerConfig) {
+        *self.server.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(server);
+    }
+
+    pub fn device_settings(&self) -> MutexGuard<'_, ()> {
+        self.device_settings.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn profile(&self, name: &str) -> Option<Profile> {
@@ -137,7 +168,7 @@ impl LiveConfig {
         *self.dictionary.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(dictionary);
     }
 
-    pub fn reload(&self, server: &ServerConfig) {
+    pub fn reload(&self) {
         let mut profile_layers = self.profile_layers();
         match ProfilesFile::load_or_default(&self.dir.join(ProfilesFile::FILE_NAME)) {
             Ok(file) => {
@@ -155,7 +186,7 @@ impl LiveConfig {
         }
         drop(layered);
         match ServerConfig::load_or_default(&self.dir.join(ServerConfig::FILE_NAME)) {
-            Ok(current) if current != *server => {
+            Ok(current) if current != *self.server_layers().file() => {
                 tracing::warn!("{} changed; restart psst-server to apply it", ServerConfig::FILE_NAME);
             }
             _ => {}
@@ -166,7 +197,17 @@ impl LiveConfig {
 #[derive(Debug, Default)]
 pub struct ConnTable {
     next_id: AtomicU64,
+    /// Token devices' connections: one each.
     by_device: Mutex<HashMap<DeviceId, Attachment>>,
+    /// Every connection past `hello`, by id.
+    joined: Mutex<HashMap<u64, Joined>>,
+}
+
+#[derive(Debug)]
+struct Joined {
+    device: DeviceId,
+    tx: mpsc::UnboundedSender<ConnEvent>,
+    accepts: Vec<Feature>,
 }
 
 impl ConnTable {
@@ -186,6 +227,35 @@ impl ConnTable {
         if conns.get(device).is_some_and(|conn| conn.conn_id == conn_id) {
             conns.remove(device);
         }
+    }
+
+    pub fn join(&self, conn: &Attachment, device: &DeviceId, accepts: &[Feature]) {
+        let joined = Joined { device: device.clone(), tx: conn.tx.clone(), accepts: accepts.to_vec() };
+        self.joined.lock().unwrap_or_else(|e| e.into_inner()).insert(conn.conn_id, joined);
+    }
+
+    pub fn leave(&self, conn_id: u64) {
+        self.joined.lock().unwrap_or_else(|e| e.into_inner()).remove(&conn_id);
+    }
+
+    pub fn online(&self) -> HashSet<DeviceId> {
+        self.joined.lock().unwrap_or_else(|e| e.into_inner()).values().map(|j| j.device.clone()).collect()
+    }
+
+    fn send(&self, feature: Feature, to: impl Fn(&DeviceId) -> bool, msg: ServerMsg) -> usize {
+        let joined = self.joined.lock().unwrap_or_else(|e| e.into_inner());
+        let targets = joined.values().filter(|j| to(&j.device) && j.accepts.contains(&feature));
+        targets.filter(|j| j.tx.send(ConnEvent::Msg(msg.clone())).is_ok()).count()
+    }
+
+    /// To the device's connections that accept settings; how many there were.
+    pub fn push_settings(&self, device: &DeviceId, overrides: &serde_json::Value) -> usize {
+        let msg = ServerMsg::Settings(SettingsMsg { overrides: overrides.clone() });
+        self.send(Feature::Settings, |d| d == device, msg)
+    }
+
+    pub fn push_limits(&self, limits: ServerLimits) -> usize {
+        self.send(Feature::Limits, |_| true, ServerMsg::Limits(limits))
     }
 
     pub fn close(&self, device: &DeviceId, reason: &str) {

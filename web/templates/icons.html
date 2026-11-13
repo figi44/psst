@@ -1,0 +1,29 @@
+{#- Every icon is a 24-unit stroke drawing in currentColor, sized by CSS. -#}
+{%- macro icon(name) -%}
+<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+{%- if name == "history" %}<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>
+{%- elif name == "dictionary" %}<path d="M6 4.5h10.5A1.5 1.5 0 0 1 18 6v14H8a2 2 0 0 1-2-2V4.5Z"/><path d="M6 18a2 2 0 0 1 2-2h10M10 8.5h4.5"/>
+{%- elif name == "profiles" %}<path d="M5 7h8M17 7h2M5 17h2M11 17h8"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>
+{%- elif name == "post-processing" %}<path d="M12 4.5 13.6 9a2 2 0 0 0 1.4 1.4l4.5 1.6-4.5 1.6a2 2 0 0 0-1.4 1.4L12 19.5l-1.6-4.5A2 2 0 0 0 9 13.6L4.5 12 9 10.4A2 2 0 0 0 10.4 9L12 4.5Z"/>
+{%- elif name == "devices" %}<rect x="3.5" y="5.5" width="12" height="9" rx="1.5"/><path d="M2 18h15"/><rect x="16.5" y="9.5" width="5" height="9" rx="1.2"/>
+{%- elif name == "settings" %}<circle cx="12" cy="12" r="2.6"/><path d="M12 3.5v2.2M12 18.3v2.2M20.5 12h-2.2M5.7 12H3.5M18 6l-1.6 1.6M7.6 16.4 6 18M18 18l-1.6-1.6M7.6 7.6 6 6"/>
+{%- elif name == "more" %}<circle cx="5.5" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.2" fill="currentColor" stroke="none"/>
+{%- elif name == "chevron" %}<path d="m9.5 6 6 6-6 6"/>
+{%- elif name == "back" %}<path d="m14.5 6-6 6 6 6"/>
+{%- elif name == "close" %}<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>
+{%- elif name == "plus" %}<path d="M12 5.5v13M5.5 12h13"/>
+{%- elif name == "search" %}<circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/>
+{%- elif name == "pencil" %}<path d="M4 20h4L19 9l-4-4L4 16v4Z"/><path d="m13.5 6.5 4 4"/>
+{%- elif name == "check" %}<path d="m5 12.5 4.5 4.5L19 7.5"/>
+{%- elif name == "alert" %}<path d="M12 4 2.8 19.5h18.4L12 4Z"/><path d="M12 10v4.5M12 17.2v.3"/>
+{%- elif name == "download" %}<path d="M12 4.5v10M7.5 10.5 12 15l4.5-4.5M5 19.5h14"/>
+{%- elif name == "lock" %}<rect x="5.5" y="10.5" width="13" height="9" rx="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/>
+{%- elif name == "logout" %}<path d="M14 4.5H6.5a1 1 0 0 0-1 1v13a1 1 0 0 0 1 1H14M10 12h10M16.5 8.5 20 12l-3.5 3.5"/>
+{%- endif -%}
+</svg>
+{%- endmacro %}
+
+{#- The overlay's waveform, still: the speech model's status mark. -#}
+{%- macro bars() -%}
+<span class="bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+{%- endmacro %}

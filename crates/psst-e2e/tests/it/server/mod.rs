@@ -13,5 +13,7 @@ mod phone_pairing;
 mod profiles;
 mod reload;
 mod sessions;
+mod settings;
+mod settings_pages;
 mod streams;
 mod ui_cli;

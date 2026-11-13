@@ -1,8 +1,7 @@
 {% extends "base.html" %}
+{%- from "icons.html" import icon %}
 {% block title %}Post-processing · psst{% endblock %}
 
-{%- macro chevron() -%}<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>{%- endmacro %}
-{%- macro plus() -%}<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>{%- endmacro %}
 
 {% block main %}
 <div class="page lab">
@@ -43,7 +42,7 @@
         {%- endfor %}
       </nav>
       <details class="pp-new">
-        <summary class="btn sm quiet">{{ plus() }}New style</summary>
+        <summary class="btn sm quiet">{{ icon("plus") }}New style</summary>
         <form method="post" action="/post-processing/styles" class="pp-new-form">
           <input type="hidden" name="from" value="{{ style.id }}">
           <input class="input" name="name" placeholder="Name, like Email" required maxlength="32" autocomplete="off" aria-label="New style's name">
@@ -64,7 +63,7 @@
       <div class="field">
         <label for="pp-prompt">Prompt</label>
         <textarea class="input lab-prompt" id="pp-prompt" name="prompt" rows="16" spellcheck="false">{{ style.prompt }}</textarea>
-        <p class="hint">Sent as the model's instructions, followed by your {{ words }} dictionary words so it keeps their spelling, and by the app the dictation goes into when <code>post_processing_context</code> in client.toml sends it. The transcript goes as the message.</p>
+        <p class="hint">Sent as the model's instructions, followed by your {{ words }} dictionary words so it keeps their spelling, and by the app the dictation goes into when the device's <a href="/devices">settings</a> send it. The transcript goes as the message.</p>
       </div>
       <div class="lab-knobs">
         <div class="field">
@@ -120,7 +119,7 @@
           </div>
           {%- if recent %}
           <details class="adv">
-            <summary>{{ chevron() }}Your recent dictations</summary>
+            <summary>{{ icon("chevron") }}Your recent dictations</summary>
             <div class="adv-body">
               <ul class="lab-recent">
                 {%- for r in recent %}
@@ -166,7 +165,7 @@
         <div class="notice" role="alert">{{ run.error }}{% if run.usage_limit %} <a href="{{ manage_usage }}" target="_blank" rel="noopener">Manage usage</a>{% endif %}</div>
         {%- endif %}
         <details class="adv">
-          <summary>{{ chevron() }}Details</summary>
+          <summary>{{ icon("chevron") }}Details</summary>
           <div class="adv-body source">
             <span class="label">Transcript</span>
             <pre>{{ run.input }}</pre>

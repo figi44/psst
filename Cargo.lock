@@ -2027,6 +2027,7 @@ dependencies = [
  "psst-server",
  "psst-testkit",
  "psst-wayland",
+ "rusqlite",
  "rustix",
  "serde_json",
  "smithay-client-toolkit",

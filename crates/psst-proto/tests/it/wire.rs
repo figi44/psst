@@ -8,9 +8,9 @@ use psst_proto::{
         PairRedeemed, Pairing, Percentiles, Stats, Term, routes,
     },
     ws::{
-        AudioFormat, CancelMsg, CancelledMsg, ClientInfo, ClientMsg, Codec, ErrorMsg, EvalOpts, FinalMsg, HelloMsg,
-        Mode, ProgressMsg, ProgressState, ProtocolDetail, ReadyModelState, ReadyMsg, ReportMsg, ServerLimits,
-        ServerMsg, StartMsg, StopMsg, Target, WelcomeMsg,
+        AudioFormat, CancelMsg, CancelledMsg, ClientInfo, ClientMsg, Codec, ErrorMsg, EvalOpts, Feature, FinalMsg,
+        HelloMsg, Mode, ProgressMsg, ProgressState, ProtocolDetail, ReadyModelState, ReadyMsg, ReportMsg, ServerLimits,
+        ServerMsg, SettingsMsg, StartMsg, StopMsg, Target, WelcomeMsg,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -67,6 +67,8 @@ fn hello_and_welcome() {
         &ClientMsg::Hello(HelloMsg {
             protocol: 1,
             client: ClientInfo { name: "psst".into(), version: "0.1.0".into() },
+            accepts: Vec::new(),
+            config: None,
         }),
         json!({"type": "hello", "protocol": 1, "client": {"name": "psst", "version": "0.1.0"}}),
     );
@@ -76,9 +78,41 @@ fn hello_and_welcome() {
             device: "local:alice".into(),
             limits: ServerLimits { max_recording_s: 600 },
             codecs: vec![Codec::PcmS16le, Codec::Opus],
+            settings: None,
         }),
         json!({"type": "welcome", "server_version": "0.1.0", "device": "local:alice",
                "limits": {"max_recording_s": 600}, "codecs": ["pcm_s16le", "opus"]}),
+    );
+}
+
+#[test]
+fn clients_that_accept_settings_get_them_in_welcome_and_when_they_change() {
+    assert_wire(
+        &ClientMsg::Hello(HelloMsg {
+            protocol: 1,
+            client: ClientInfo { name: "psst".into(), version: "0.2.0".into() },
+            accepts: vec![Feature::Settings, Feature::Limits],
+            config: Some(json!({"sounds": "glass"})),
+        }),
+        json!({"type": "hello", "protocol": 1, "client": {"name": "psst", "version": "0.2.0"},
+               "accepts": ["settings", "limits"], "config": {"sounds": "glass"}}),
+    );
+    let hello = json!({"type": "hello", "protocol": 1, "client": {"name": "psst", "version": "9"},
+                       "accepts": ["settings", "telepathy"]});
+    let ClientMsg::Hello(hello) = serde_json::from_value(hello).unwrap() else { panic!("a hello") };
+    assert_eq!(hello.accepts, [Feature::Settings, Feature::Unknown], "a newer client's features are skipped");
+
+    let welcome = json!({"type": "welcome", "server_version": "0.2.0", "device": "local:alice",
+                         "limits": {"max_recording_s": 600}, "settings": {"overlay": {"width": 300}}});
+    let ServerMsg::Welcome(welcome) = serde_json::from_value(welcome).unwrap() else { panic!("a welcome") };
+    assert_eq!(welcome.settings, Some(json!({"overlay": {"width": 300}})));
+    assert_wire(
+        &ServerMsg::Settings(SettingsMsg { overrides: json!({"apps": {"org.gnome.Ptyxis": null}}) }),
+        json!({"type": "settings", "overrides": {"apps": {"org.gnome.Ptyxis": null}}}),
+    );
+    assert_wire(
+        &ServerMsg::Limits(ServerLimits { max_recording_s: 120 }),
+        json!({"type": "limits", "max_recording_s": 120}),
     );
 }
 
@@ -311,6 +345,7 @@ fn api_bodies() {
             revision: None,
             progress: Some(DownloadProgress { bytes: 1024, total: Some(4096) }),
             error: None,
+            reload: None,
         },
         json!({"name": "large-v3-turbo", "state": "downloading", "progress": {"bytes": 1024, "total": 4096}}),
     );
@@ -321,6 +356,8 @@ fn api_bodies() {
             kind: DeviceKind::Local,
             created_at: "2026-11-06T10:00:00Z".parse().unwrap(),
             last_seen: None,
+            online: false,
+            reports_config: false,
         },
         json!({"id": "local:alice", "name": "alice", "kind": "local", "created_at": "2026-11-06T10:00:00Z"}),
     );

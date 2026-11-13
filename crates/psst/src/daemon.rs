@@ -7,21 +7,22 @@ use std::{
 
 use jiff::{Timestamp, Zoned};
 use psst_client::{
-    AudioCodec, AudioFrame, Client, ClientError, FRAME_BUFFER, FrameSender, OpusSettings, Outdated, Session,
+    AudioCodec, AudioFrame, Client, ClientError, FRAME_BUFFER, FrameSender, Hello, OpusSettings, Outdated, Session,
     SessionEvent, StartOpts, TrySendError,
     api::{ApiCallError, ApiClient, Method},
     upload_file,
 };
-use psst_config::{ClientConfig, PasteAction, PostProcessingContext, Sounds};
+use psst_config::{ClientConfig, PasteAction, PostProcessingContext, Sounds, layers};
 use psst_proto::{
     ClientTimings, DeviceId, Endpoint, ErrorCode, FRAME_MS, SessionId, Token,
     api::{HistoryRow, PairRedeemed, routes},
-    ws::{FinalMsg, Mode, ProgressState, Target},
+    ws::{Feature, FinalMsg, Mode, ProgressState, Target},
 };
 use psst_wayland::{
     Chord, HistoryEntry, Listing, MenuAction, MenuOutcome, MenuSpec, ModelChoice, OverlayState, WaylandCmd,
     WaylandEvent, post_processing_label,
 };
+use serde_json::{Value, json};
 use tokio::{
     net::UnixListener,
     sync::{mpsc, oneshot, watch},
@@ -31,7 +32,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     audio::{
-        AudioSource,
+        self, AudioSource,
         recorder::{self, RecEvent, Recorder},
     },
     ipc::{ActiveInfo, Request, Response, RetainedInfo, Status},
@@ -94,10 +95,13 @@ pub enum Sound {
     Error,
 }
 
+/// Built for the config the daemon is given: when the server changes its settings, the daemon
+/// replaces `audio` and reconfigures `wayland` itself.
 pub struct Deps {
     pub audio: Arc<dyn AudioSource>,
     pub wayland: Box<dyn Wayland>,
-    pub sound: Arc<dyn Fn(Sound) + Send + Sync>,
+    /// Plays a sound of the set it's given.
+    pub sound: Arc<dyn Fn(Sounds, Sound) + Send + Sync>,
     pub niri_socket: Option<PathBuf>,
     pub timing: Timing,
 }
@@ -134,10 +138,27 @@ impl DaemonHandle {
     }
 }
 
-pub async fn spawn(cfg: ClientConfig, paths: Paths, deps: Deps) -> anyhow::Result<DaemonHandle> {
+/// The settings the server last sent, so a daemon that starts while it's unreachable has them.
+const SETTINGS_FILE: &str = "settings.json";
+
+/// `file` is client.toml's, which the server's settings for this device go over.
+pub async fn spawn(file: ClientConfig, paths: Paths, mut deps: Deps) -> anyhow::Result<DaemonHandle> {
     // The socket first: it's what proves no other daemon is using the recordings.
     let listener = bind_socket(&paths.socket)?;
     let store = Store::open(&paths.state_dir)?;
+    let overrides = match store::read_json::<Value>(&paths.state_dir.join(SETTINGS_FILE)) {
+        Ok(overrides) => overrides,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(err) => {
+            warn!("ignoring the server's saved settings: {err}");
+            json!({})
+        }
+    };
+    let settings = Settings::new(file, overrides);
+    let cfg = settings.effective.clone();
+    if cfg.audio.input != settings.file.audio.input {
+        deps.audio = audio::source_for(&cfg.audio.input);
+    }
     let profile = menu::load_profile(&paths.state_dir, &cfg.profile).unwrap_or_else(|| cfg.profile.clone());
     let post_processing = menu::load_post_processing(&paths.state_dir, &cfg.post_processing)
         .unwrap_or_else(|| cfg.post_processing.clone());
@@ -166,7 +187,7 @@ pub async fn spawn(cfg: ClientConfig, paths: Paths, deps: Deps) -> anyhow::Resul
             }
         }
     });
-    let mut core = Core::new(cfg, (profile, post_processing), store, deps, (tx.clone(), wayland_tx), paths);
+    let mut core = Core::new(settings, (profile, post_processing), store, deps, (tx.clone(), wayland_tx), paths);
     core.connect(core.t.resume_budget, AttemptKind::Connect);
     let task = tokio::spawn(core.run(rx, wayland_rx));
     Ok(DaemonHandle { tx, task, listener })
@@ -286,6 +307,12 @@ enum Input {
     },
     MenuFact(menu::Fact),
     MenuDone(menu::Done),
+    /// The server's settings for this device, or its limits, changed.
+    Pushed {
+        epoch: u64,
+        settings: Option<Value>,
+        max_recording_s: Option<u32>,
+    },
     Resumed,
     Follow(oneshot::Sender<watch::Receiver<Status>>),
     Shutdown(oneshot::Sender<()>),
@@ -321,9 +348,9 @@ fn unauthorized(err: &ClientError) -> bool {
 /// budget.
 async fn connect_or_pair(
     endpoint: &Endpoint,
-    saved: Option<Token>,
-    refused_before: bool,
+    (saved, refused_before): (Option<Token>, bool),
     credentials: &Path,
+    hello: Hello,
     on_refused: impl FnOnce(Token),
 ) -> Result<Client, ConnFailure> {
     let mut token = saved.clone();
@@ -334,7 +361,7 @@ async fn connect_or_pair(
             Err(err) => pairing = Some(err),
         }
     }
-    let mut result = Client::connect(endpoint, token.as_ref()).await;
+    let mut result = Client::connect_with(endpoint, token.as_ref(), hello.clone()).await;
     if let (Some(saved), Err(err)) = (saved, &result)
         && token.as_ref() == Some(&saved)
         && unauthorized(err)
@@ -342,7 +369,7 @@ async fn connect_or_pair(
         on_refused(saved);
         if !refused_before {
             match pair_itself(endpoint, credentials).await {
-                Ok(paired) => result = Client::connect(endpoint, Some(&paired)).await,
+                Ok(paired) => result = Client::connect_with(endpoint, Some(&paired), hello).await,
                 Err(err) => pairing = Some(err),
             }
         }
@@ -543,8 +570,41 @@ struct MenuState {
     history: Listing<HistoryRow>,
 }
 
+/// client.toml and the server's settings over it.
+struct Settings {
+    file: ClientConfig,
+    overrides: Value,
+    effective: ClientConfig,
+    /// The server's settings left out, and why.
+    problems: Vec<String>,
+}
+
+impl Settings {
+    fn new(file: ClientConfig, overrides: Value) -> Settings {
+        let layered = layers::layer(&file, &overrides);
+        let problems: Vec<String> = layered.problems.iter().map(|p| format!("{}: {}", p.key, p.message)).collect();
+        for problem in &problems {
+            warn!("keeping client.toml's value of the server's setting {problem}");
+        }
+        Settings { file, overrides, effective: layered.config, problems }
+    }
+
+    /// What `hello` reports: the file's keys, without the test seam.
+    fn report(&self) -> Value {
+        let mut keys = layers::sparse(&self.file);
+        if let Some(keys) = keys.as_object_mut() {
+            keys.remove("insert");
+        }
+        keys
+    }
+}
+
 struct Core {
+    /// client.toml's, with the server's settings for this device.
     cfg: ClientConfig,
+    settings: Settings,
+    /// As the Wayland side was last given it.
+    overlay_config: psst_config::OverlayConfig,
     /// The one new dictations use: client.toml's, or the one chosen in the menu since.
     profile: String,
     /// Likewise.
@@ -605,7 +665,7 @@ struct Core {
 
 impl Core {
     fn new(
-        cfg: ClientConfig,
+        settings: Settings,
         (profile, post_processing): (String, String),
         store: Store,
         deps: Deps,
@@ -614,7 +674,9 @@ impl Core {
     ) -> Core {
         let t = deps.timing.clone();
         Core {
-            cfg,
+            cfg: settings.effective.clone(),
+            overlay_config: settings.file.overlay,
+            settings,
             profile,
             post_processing,
             menu: MenuState {
@@ -712,6 +774,16 @@ impl Core {
             Input::Focus { generation, app_id } => self.on_focus(generation, app_id),
             Input::Target { id, window } => self.on_target(id, window),
             Input::MenuFact(fact) => self.on_menu_fact(fact),
+            Input::Pushed { epoch, settings, max_recording_s } if epoch == self.epoch => {
+                if let Some(settings) = settings {
+                    self.apply_settings(settings);
+                }
+                if let Some(max_recording_s) = max_recording_s {
+                    info!("the server's longest recording is now {max_recording_s} s");
+                    self.max_recording_s = max_recording_s;
+                }
+            }
+            Input::Pushed { .. } => {}
             Input::MenuDone(done) => self.on_menu_done(done),
             Input::Resumed => {
                 self.resumed_at = Some(Instant::now());
@@ -1257,7 +1329,12 @@ impl Core {
             recording: self.recording.as_ref().map(info),
             finishing: self.pipeline.iter().map(info).collect(),
             retained: Vec::new(),
-            warnings: self.incompatible.map(|o| vec![update_prompt(o).to_string()]).unwrap_or_default(),
+            warnings: self
+                .incompatible
+                .map(|o| update_prompt(o).to_string())
+                .into_iter()
+                .chain(self.settings.problems.iter().map(|problem| format!("server setting ignored: {problem}")))
+                .collect(),
             last_timings: self.last_timings,
         }
     }
@@ -1363,6 +1440,7 @@ impl Core {
         let current = if kind == AttemptKind::Check { self.client.clone() } else { None };
         let pong = self.pong_budget().min(budget);
         let tx = self.tx.clone();
+        let hello = Hello { accepts: vec![Feature::Settings, Feature::Limits], config: Some(self.settings.report()) };
         tokio::spawn(async move {
             let work = async {
                 if let Some(mut client) = current {
@@ -1377,9 +1455,11 @@ impl Core {
                 let result = match &credentials {
                     Some(credentials) => {
                         let refused = |token| drop(refused_tx.send(Input::TokenRefused(token)));
-                        connect_or_pair(&endpoint, token, refused_before, credentials, refused).await
+                        connect_or_pair(&endpoint, (token, refused_before), credentials, hello, refused).await
                     }
-                    None => Client::connect(&endpoint, None).await.map_err(|err| ConnFailure::new(err, None)),
+                    None => {
+                        Client::connect_with(&endpoint, None, hello).await.map_err(|err| ConnFailure::new(err, None))
+                    }
                 };
                 (result, true)
             };
@@ -1407,11 +1487,26 @@ impl Core {
                     }
                     self.epoch += 1;
                     let epoch = self.epoch;
-                    self.max_recording_s = client.welcome().limits.max_recording_s;
+                    let (mut settings, mut limits) = (client.settings(), client.limits());
+                    self.max_recording_s = limits.borrow_and_update().max_recording_s;
+                    // A server from before settings keeps none for this device.
+                    self.apply_settings(settings.borrow_and_update().clone().unwrap_or_else(|| json!({})));
                     let watcher = client.clone();
                     let tx = self.tx.clone();
                     tokio::spawn(async move {
-                        let reason = watcher.closed().await;
+                        let pushed = |settings, max_recording_s| Input::Pushed { epoch, settings, max_recording_s };
+                        let reason = loop {
+                            tokio::select! {
+                                reason = watcher.closed() => break reason,
+                                Ok(()) = settings.changed() => {
+                                    let _ = tx.send(pushed(settings.borrow_and_update().clone(), None));
+                                }
+                                Ok(()) = limits.changed() => {
+                                    let max = limits.borrow_and_update().max_recording_s;
+                                    let _ = tx.send(pushed(None, Some(max)));
+                                }
+                            }
+                        };
                         let _ = tx.send(Input::ConnClosed { epoch, reason });
                     });
                     info!(
@@ -1575,7 +1670,7 @@ impl Core {
         });
         let ctl = self.spawn_session(id, session);
         let rec = self.recording.as_mut().expect("checked");
-        rec.max_recording_s = client.welcome().limits.max_recording_s;
+        rec.max_recording_s = client.limits().borrow().max_recording_s;
         rec.net = Net::Live { ready: false, since: Instant::now() };
         // Frames captured so far go first; the session's buffer holds them until `ready`.
         let backlog = std::mem::take(&mut rec.backlog);
@@ -2151,7 +2246,7 @@ impl Core {
             self.stop_chime = None;
         }
         if self.cfg.sounds != Sounds::Off {
-            (self.deps.sound)(sound);
+            (self.deps.sound)(self.cfg.sounds, sound);
         }
     }
 
@@ -2352,6 +2447,50 @@ impl Core {
         self.refresh_menu();
         self.deliver_next();
         self.refresh_overlay();
+        self.configure_overlay();
+    }
+
+    /// The server's settings for this device: each applies from the next dictation, chime or
+    /// paste on, never to one in progress.
+    fn apply_settings(&mut self, overrides: Value) {
+        if overrides == self.settings.overrides {
+            return;
+        }
+        let path = self.store.state_dir().join(SETTINGS_FILE);
+        if let Err(err) = store::write_json_atomic(&path, &overrides, 0o600) {
+            warn!("cannot save the server's settings for when it's unreachable: {err}");
+        }
+        let file = self.settings.file.clone();
+        self.settings = Settings::new(file, overrides);
+        let old = std::mem::replace(&mut self.cfg, self.settings.effective.clone());
+        info!("settings from the server: {}", self.settings.overrides);
+        let state_dir = self.store.state_dir().to_path_buf();
+        // As when client.toml changes: the menu's choice gives way to the new one.
+        if old.profile != self.cfg.profile {
+            self.profile =
+                menu::load_profile(&state_dir, &self.cfg.profile).unwrap_or_else(|| self.cfg.profile.clone());
+        }
+        if old.post_processing != self.cfg.post_processing {
+            self.post_processing = menu::load_post_processing(&state_dir, &self.cfg.post_processing)
+                .unwrap_or_else(|| self.cfg.post_processing.clone());
+        }
+        // A recording keeps the source it started with.
+        if old.audio.input != self.cfg.audio.input {
+            self.deps.audio = audio::source_for(&self.cfg.audio.input);
+        }
+    }
+
+    /// Only while nothing shows, so the pill never jumps or changes colour under the user.
+    fn configure_overlay(&mut self) {
+        let idle = self.recording.is_none()
+            && self.pipeline.is_empty()
+            && self.inserting.is_none()
+            && !self.overlay_visible()
+            && self.menu.shown.is_none();
+        if idle && self.cfg.overlay != self.overlay_config {
+            self.overlay_config = self.cfg.overlay;
+            self.deps.wayland.configure(&self.overlay_config);
+        }
     }
 
     fn next_generation(&mut self) -> u64 {

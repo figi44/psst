@@ -164,10 +164,11 @@ class BubbleService : AccessibilityService(), BubbleView.Actions, Recording.List
         val note = note ?: TextView(ContextThemeWrapper(this, R.style.Theme_Psst)).also {
             it.textSize = 14f
             it.setTextColor(getColor(R.color.fg))
-            it.setPadding(px(12), px(8), px(12), px(8))
+            it.setPadding(px(16), px(10), px(16), px(10))
+            // The overlay's flash: black, with its hairline.
             it.background = GradientDrawable().apply {
-                cornerRadius = px(16).toFloat()
-                setColor(getColor(R.color.surface))
+                cornerRadius = px(20).toFloat()
+                setColor(getColor(R.color.bg))
                 setStroke(px(1), getColor(R.color.line))
             }
             note = it

@@ -161,6 +161,16 @@ private fun loudness(chunk: ShortArray, count: Int): Float {
     return ((db - FLOOR_DB) / (CEILING_DB - FLOOR_DB)).toFloat().coerceIn(0f, 1f)
 }
 
+/**
+ * How much a [Recorder.Events.onLevel] level should swell the recording visuals, 0 to 1, as the
+ * desktop overlay's do: not at all for room noise, under about −52 dBFS, and fully at −16.
+ */
+fun swell(level: Float): Float {
+    val db = FLOOR_DB + level * (CEILING_DB - FLOOR_DB)
+    val t = ((db - QUIET_DB) / (LOUD_DB - QUIET_DB)).toFloat().coerceIn(0f, 1f)
+    return t * t * (3 - 2 * t)
+}
+
 private const val TAG = "psst"
 private const val SAMPLE_RATE = 16_000
 
@@ -172,6 +182,8 @@ private const val BUFFER_BYTES = SAMPLE_RATE
 private const val MAX_DRAIN = BUFFER_BYTES / 2 / CHUNK + 1
 private const val FLOOR_DB = -60.0
 private const val CEILING_DB = -15.0
+private const val QUIET_DB = -52.0
+private const val LOUD_DB = -16.0
 
 // Per chunk: the meter jumps up with the voice and settles back slowly.
 private const val ATTACK = 0.5f

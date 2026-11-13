@@ -181,6 +181,15 @@ impl State {
         self.show();
     }
 
+    /// The surface takes its size and anchor when it's made, so a showing one is made again.
+    pub(crate) fn configure_overlay(&mut self, overlay: crate::OverlayConfig) {
+        self.opts.overlay = overlay;
+        if self.overlay.surface.is_some() {
+            self.drop_surface();
+            self.show();
+        }
+    }
+
     pub(crate) fn overlay_hide(&mut self) {
         self.overlay.desired = None;
         self.overlay.menu = None;

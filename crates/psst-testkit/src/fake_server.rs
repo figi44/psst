@@ -12,8 +12,9 @@ use psst_proto::{
     Endpoint, ErrorCode, FRAME_SAMPLES, Final, HistoryId, PROTOCOL_VERSION, ServerTimings, SessionId,
     api::{ApiError, ApiErrorCode, HistoryRow, PairRedeem, PairRedeemed},
     ws::{
-        CancelledMsg, ClientMsg, Codec, ErrorMsg, FinalMsg, ProgressMsg, ProgressState, ProtocolDetail,
-        ReadyModelState, ReadyMsg, ReportMsg, ServerLimits, ServerMsg, StartMsg, WelcomeMsg,
+        CancelledMsg, ClientMsg, Codec, ErrorMsg, Feature, FinalMsg, HelloMsg, ProgressMsg, ProgressState,
+        ProtocolDetail, ReadyModelState, ReadyMsg, ReportMsg, ServerLimits, ServerMsg, SettingsMsg, StartMsg,
+        WelcomeMsg,
     },
 };
 use tokio::{
@@ -100,6 +101,10 @@ struct State {
     next_history: HistoryId,
     history: Vec<HistoryRow>,
     history_requests: Vec<String>,
+    hellos: Vec<HelloMsg>,
+    settings: Option<serde_json::Value>,
+    settings_rev: u64,
+    limits: Option<(u64, ServerLimits)>,
 }
 
 impl State {
@@ -236,6 +241,26 @@ impl FakeServer {
 
     pub fn connections(&self) -> u64 {
         self.inner.state().connections
+    }
+
+    /// Every `hello`, oldest first.
+    pub fn hellos(&self) -> Vec<HelloMsg> {
+        self.inner.state().hellos.clone()
+    }
+
+    /// The device's settings, for clients that accept them: in `welcome`, and sent at once to the
+    /// connected ones. `None`, the default, is a server from before settings.
+    pub fn set_settings(&self, overrides: Option<serde_json::Value>) {
+        let mut state = self.inner.state();
+        state.settings = overrides;
+        state.settings_rev += 1;
+    }
+
+    /// Sent at once to connected clients that accept limits; `welcome` keeps the config's.
+    pub fn push_limits(&self, limits: ServerLimits) {
+        let mut state = self.inner.state();
+        let rev = state.limits.map_or(1, |(rev, _)| rev + 1);
+        state.limits = Some((rev, limits));
     }
 
     pub fn wait_until(&self, timeout: Duration, mut check: impl FnMut(&FakeServer) -> bool) -> bool {
@@ -383,12 +408,20 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(inner: Arc<Inner>, mut st
         return;
     }
     let device: String = if tcp { "fake-device".into() } else { "local:test".into() };
+    let takes_settings = hello.accepts.contains(&Feature::Settings);
+    let takes_limits = hello.accepts.contains(&Feature::Limits);
+    let (settings, mut settings_rev, mut limits_rev) = {
+        let mut state = inner.state();
+        state.hellos.push(hello);
+        (state.settings.clone(), state.settings_rev, state.limits.map_or(0, |(rev, _)| rev))
+    };
     let welcome = WelcomeMsg {
         server_version: "fake".into(),
         device: device.clone(),
         limits: ServerLimits { max_recording_s: inner.cfg.max_recording_s },
         // Like servers before Opus, so `SeenSession::audio` is exactly what the client sent.
         codecs: vec![Codec::PcmS16le],
+        settings: settings.filter(|_| takes_settings),
     };
     if ws.send(send(&ServerMsg::Welcome(welcome))).await.is_err() {
         return;
@@ -418,6 +451,21 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(inner: Arc<Inner>, mut st
             _ => None,
         });
         let mut out = Vec::new();
+        {
+            let state = inner.state();
+            if takes_settings && state.settings_rev != settings_rev {
+                settings_rev = state.settings_rev;
+                let overrides = state.settings.clone().unwrap_or_else(|| serde_json::json!({}));
+                out.push(ServerMsg::Settings(SettingsMsg { overrides }));
+            }
+            if let Some((rev, limits)) = state.limits
+                && takes_limits
+                && rev != limits_rev
+            {
+                limits_rev = rev;
+                out.push(ServerMsg::Limits(limits));
+            }
+        }
         tokio::select! {
             // In order, so a disconnect wins over a message that arrived with it: under load this
             // task may first run after both, and after `set_listening(false)` no `start` may get in.

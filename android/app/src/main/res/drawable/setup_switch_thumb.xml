@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A ring in the track's colour sets the knob in from the track's edge. A transparent inset would
+     not: Switch reads it as optical insets and shrinks the track to the knob. -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_checked="true">
+        <shape android:shape="oval">
+            <solid android:color="@color/bg" />
+            <stroke
+                android:width="4dp"
+                android:color="@color/fg" />
+            <size
+                android:width="28dp"
+                android:height="28dp" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="oval">
+            <solid android:color="@color/muted" />
+            <stroke
+                android:width="4dp"
+                android:color="@color/line_strong" />
+            <size
+                android:width="28dp"
+                android:height="28dp" />
+        </shape>
+    </item>
+</selector>

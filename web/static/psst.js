@@ -321,6 +321,12 @@
   });
 
   function arrive() {
+    // On a phone the pages are a row of pills wider than the screen: keep this page's in view.
+    var tab = $(".nav [aria-current]"), nav = tab && tab.parentElement;
+    if (nav && nav.scrollWidth > nav.clientWidth) {
+      var t = tab.getBoundingClientRect(), n = nav.getBoundingClientRect();
+      nav.scrollLeft += t.left + t.width / 2 - (n.left + n.width / 2);
+    }
     var id = location.hash.slice(1);
     var row = id && document.getElementById(id);
     var done = row && $(".done-h", row);

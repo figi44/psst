@@ -16,10 +16,11 @@ use psst_pipeline::PipelineOptions;
 use psst_proto::{
     ClientTimings, DeviceId, Endpoint, EngineResult, EngineTrace, Final, Segment, ServerTimings, Token,
     api::{
-        ApiError, ApiErrorCode, Device, DictionaryExport, DictionaryTest, DictionaryView, Health, HistoryQuery,
-        HistoryRow, LoginLink, ModelStatus, NeverRule, NeverRuleId, NewNeverRule, PairRedeem, PairRedeemed, Pairing,
-        PairingRequest, Percentiles, PostProcessingView, Profile, ProfileChange, ProfilesExport, ProfilesView, Stats,
-        Term, TermChange, routes,
+        ApiError, ApiErrorCode, AppEntry, AppRuleView, Device, DeviceSettingsView, DictionaryExport, DictionaryTest,
+        DictionaryView, Health, HistoryQuery, HistoryRow, LoginLink, ModelStatus, NeverRule, NeverRuleId, NewNeverRule,
+        PairRedeem, PairRedeemed, Pairing, PairingRequest, Percentiles, PostProcessingView, Profile, ProfileChange,
+        ProfilesExport, ProfilesView, Setting, SettingChange, SettingsExport, SettingsView, Stats, Term, TermChange,
+        routes,
     },
 };
 use serde::de::DeserializeOwned;
@@ -31,7 +32,7 @@ use crate::{
     db::{Revoke, TailnetPairing, UNLOADED_BOOT_ID},
     dictionary::{self, Change},
     listen::Peer,
-    profiles,
+    profiles, settings,
     state::AppState,
     tailscale,
 };
@@ -69,6 +70,16 @@ pub fn router(state: AppRef) -> Router {
         .route(routes::PROFILE, put(put_profile))
         .route(routes::PROFILE_RESET, post(reset_profile))
         .route(routes::LOGIN_LINK, post(login_link))
+        .route(routes::SETTINGS, get(settings_view))
+        .route(routes::SETTINGS_EXPORT, get(export_settings))
+        .route(routes::SETTING, put(put_setting))
+        .route(routes::SETTING_RESET, post(reset_setting))
+        .route(routes::DEVICE_SETTINGS, get(device_settings_view))
+        .route(routes::DEVICE_SETTINGS_EXPORT, get(export_device_settings))
+        .route(routes::DEVICE_SETTING, put(put_device_setting))
+        .route(routes::DEVICE_SETTING_RESET, post(reset_device_setting))
+        .route(routes::DEVICE_APP, put(put_device_app).delete(remove_device_app))
+        .route(routes::DEVICE_APP_RESET, post(reset_device_app))
         .merge(crate::web::router())
         .fallback(not_found)
         .with_state(state)
@@ -241,8 +252,9 @@ pub(crate) fn same_origin(state: &AppState, headers: &HeaderMap) -> bool {
     let authority = origin.strip_prefix("http://").or_else(|| origin.strip_prefix("https://"));
     let host = header(HOST);
     let same_host = authority.zip(host).is_some_and(|(authority, host)| authority.eq_ignore_ascii_case(host));
-    let web_url = state.server.web_url.as_deref().and_then(psst_config::web_origin);
-    same_host || web_url.is_some_and(|url| url.eq_ignore_ascii_case(origin))
+    let web_url = state.live.server().web_url.clone();
+    same_host
+        || web_url.as_deref().and_then(psst_config::web_origin).is_some_and(|url| url.eq_ignore_ascii_case(origin))
 }
 
 /// Every authenticated caller is an admin: local users, paired devices and their browsers.
@@ -373,7 +385,7 @@ async fn login_link(
 }
 
 fn link_base(state: &AppState, peer: &Peer, headers: &HeaderMap) -> Result<String, ApiErr> {
-    if let Some(url) = state.server.web_url.as_deref().and_then(psst_config::web_origin) {
+    if let Some(url) = state.live.server().web_url.as_deref().and_then(psst_config::web_origin) {
         return Ok(url.to_owned());
     }
     if let Peer::Tcp(_) = peer {
@@ -453,7 +465,7 @@ fn host_name() -> Option<String> {
 }
 
 async fn devices(_: Admin, State(state): State<AppRef>) -> Result<Json<Vec<Device>>, ApiErr> {
-    Ok(Json(state.db.devices()?))
+    Ok(Json(settings::devices(&state)?))
 }
 
 async fn revoke(_: Admin, State(state): State<AppRef>, Path(id): Path<String>) -> Result<StatusCode, ApiErr> {
@@ -580,6 +592,86 @@ async fn reset_profile(
     Id(name): Id<String>,
 ) -> Result<Json<ProfileChange>, ApiErr> {
     profiles::change(&state.live, &state.db, &name, None).map(Json)
+}
+
+async fn settings_view(_: Admin, State(state): State<AppRef>) -> Json<SettingsView> {
+    Json(settings::server(&state).view())
+}
+
+async fn export_settings(_: Admin, State(state): State<AppRef>) -> Json<SettingsExport> {
+    Json(SettingsExport { toml: settings::server(&state).export() })
+}
+
+async fn put_setting(
+    _: Admin,
+    State(state): State<AppRef>,
+    Id(key): Id<String>,
+    Body(change): Body<SettingChange>,
+) -> Result<Json<Setting>, ApiErr> {
+    settings::server(&state).set(&key, &change.value).map(Json)
+}
+
+async fn reset_setting(_: Admin, State(state): State<AppRef>, Id(key): Id<String>) -> Result<Json<Setting>, ApiErr> {
+    settings::server(&state).reset(&key).map(Json)
+}
+
+async fn device_settings_view(
+    _: Admin,
+    State(state): State<AppRef>,
+    Id(id): Id<String>,
+) -> Result<Json<DeviceSettingsView>, ApiErr> {
+    settings::device(&state, &id)?.view().map(Json)
+}
+
+async fn export_device_settings(
+    _: Admin,
+    State(state): State<AppRef>,
+    Id(id): Id<String>,
+) -> Result<Json<SettingsExport>, ApiErr> {
+    Ok(Json(SettingsExport { toml: settings::device(&state, &id)?.export()? }))
+}
+
+async fn put_device_setting(
+    _: Admin,
+    State(state): State<AppRef>,
+    Id((id, key)): Id<(String, String)>,
+    Body(change): Body<SettingChange>,
+) -> Result<Json<Setting>, ApiErr> {
+    settings::device(&state, &id)?.set(&key, &change.value).map(Json)
+}
+
+async fn reset_device_setting(
+    _: Admin,
+    State(state): State<AppRef>,
+    Id((id, key)): Id<(String, String)>,
+) -> Result<Json<Setting>, ApiErr> {
+    settings::device(&state, &id)?.reset(&key).map(Json)
+}
+
+async fn put_device_app(
+    _: Admin,
+    State(state): State<AppRef>,
+    Id((id, app)): Id<(String, String)>,
+    Body(rule): Body<AppRuleView>,
+) -> Result<Json<AppEntry>, ApiErr> {
+    settings::device(&state, &id)?.set_app(&app, &rule).map(Json)
+}
+
+/// The rule as it is now: `null` once neither the file nor the web UI has one.
+async fn remove_device_app(
+    _: Admin,
+    State(state): State<AppRef>,
+    Id((id, app)): Id<(String, String)>,
+) -> Result<Json<Option<AppEntry>>, ApiErr> {
+    settings::device(&state, &id)?.remove_app(&app).map(Json)
+}
+
+async fn reset_device_app(
+    _: Admin,
+    State(state): State<AppRef>,
+    Id((id, app)): Id<(String, String)>,
+) -> Result<Json<Option<AppEntry>>, ApiErr> {
+    settings::device(&state, &id)?.reset_app(&app).map(Json)
 }
 
 pub fn compute_stats(rows: &[(ServerTimings, Option<ClientTimings>)]) -> Stats {

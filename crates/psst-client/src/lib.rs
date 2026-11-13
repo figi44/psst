@@ -12,8 +12,8 @@ use std::{fmt, io, path::Path, sync::Arc, time::Duration};
 use psst_proto::{
     ClientTimings, ErrorCode, FRAME_SAMPLES, HistoryId, PROTOCOL_VERSION, SessionId,
     ws::{
-        Codec, ErrorMsg, EvalOpts, FinalMsg, Mode, ProgressState, ProtocolDetail, ReadyModelState, ReportMsg, Target,
-        WelcomeMsg,
+        Codec, ErrorMsg, EvalOpts, Feature, FinalMsg, Mode, ProgressState, ProtocolDetail, ReadyModelState, ReportMsg,
+        ServerLimits, Target, WelcomeMsg,
     },
 };
 pub use psst_proto::{Endpoint, Token};
@@ -92,6 +92,13 @@ impl Incompatible {
     }
 }
 
+/// What `hello` says beyond the protocol: see [`psst_proto::ws::HelloMsg`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Hello {
+    pub accepts: Vec<Feature>,
+    pub config: Option<serde_json::Value>,
+}
+
 /// Clones share the connection, which stays open while any handle, session or queued audio needs
 /// it, or until [`Client::close`].
 #[derive(Clone)]
@@ -111,11 +118,25 @@ impl fmt::Debug for Client {
 impl Client {
     /// No built-in time limit; callers wrap this in their own budget.
     pub async fn connect(ep: &Endpoint, token: Option<&Token>) -> Result<Client, ClientError> {
-        connection::connect(ep, token).await
+        connection::connect(ep, token, Hello::default()).await
+    }
+
+    pub async fn connect_with(ep: &Endpoint, token: Option<&Token>, hello: Hello) -> Result<Client, ClientError> {
+        connection::connect(ep, token, hello).await
     }
 
     pub fn welcome(&self) -> &WelcomeMsg {
         &self.welcome
+    }
+
+    /// `welcome.settings`, then each `settings` the server sends: only with [`Feature::Settings`].
+    pub fn settings(&self) -> watch::Receiver<Option<serde_json::Value>> {
+        self.shared.settings.subscribe()
+    }
+
+    /// `welcome.limits`, then each `limits` the server sends: only with [`Feature::Limits`].
+    pub fn limits(&self) -> watch::Receiver<ServerLimits> {
+        self.shared.limits.subscribe()
     }
 
     pub fn endpoint(&self) -> &Endpoint {

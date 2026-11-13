@@ -74,6 +74,20 @@ CREATE TABLE IF NOT EXISTS web_sessions (
     expires_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS web_sessions_device ON web_sessions (device);
+-- Changes the web UI made to server.toml (scope `server`) or to a device's client.toml
+-- (`device:<id>`): JSON shaped like the file, with only the changed keys.
+CREATE TABLE IF NOT EXISTS settings (
+    scope TEXT PRIMARY KEY,
+    overrides TEXT NOT NULL,
+    updated_ms INTEGER NOT NULL
+);
+-- The client.toml each device sent when it last connected, as JSON with only the keys it sets.
+CREATE TABLE IF NOT EXISTS device_configs (
+    device TEXT PRIMARY KEY,
+    config TEXT NOT NULL,
+    client TEXT NOT NULL,
+    reported_ms INTEGER NOT NULL
+);
 -- Devices that paired themselves through `auto_pair`.
 CREATE TABLE IF NOT EXISTS tailnet_devices (
     device TEXT PRIMARY KEY,
@@ -130,7 +144,22 @@ pub enum Revoke {
 fn revoke_device(conn: &Connection, id: &str) -> Result<()> {
     conn.execute("UPDATE devices SET revoked_ms = ?2 WHERE id = ?1", params![id, now_ms()])?;
     conn.execute("DELETE FROM web_sessions WHERE device = ?1", params![id])?;
+    conn.execute("DELETE FROM settings WHERE scope = ?1", params![device_scope(id)])?;
+    conn.execute("DELETE FROM device_configs WHERE device = ?1", params![id])?;
     Ok(())
+}
+
+pub const SERVER_SCOPE: &str = "server";
+
+pub fn device_scope(device: &str) -> String {
+    format!("device:{device}")
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeviceConfig {
+    pub config: serde_json::Value,
+    pub client: String,
+    pub reported_at: Timestamp,
 }
 
 fn insert_token_device(conn: &Connection, name: &str, token_hash: &str) -> Result<String> {
@@ -287,11 +316,13 @@ impl Db {
         Ok(())
     }
 
+    /// `online` is left for the caller, which knows the connections.
     pub fn devices(&self) -> Result<Vec<Device>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, name, kind, created_ms, last_seen_ms FROM devices WHERE revoked_ms IS NULL
-             ORDER BY created_ms, id",
+            "SELECT d.id, d.name, d.kind, d.created_ms, d.last_seen_ms, c.device IS NOT NULL
+             FROM devices d LEFT JOIN device_configs c ON c.device = d.id
+             WHERE d.revoked_ms IS NULL ORDER BY d.created_ms, d.id",
         )?;
         let rows = stmt.query_map([], |row| {
             let kind: String = row.get(2)?;
@@ -301,9 +332,67 @@ impl Db {
                 kind: if kind == "local" { DeviceKind::Local } else { DeviceKind::Token },
                 created_at: timestamp(row.get(3)?),
                 last_seen: row.get::<_, Option<i64>>(4)?.map(timestamp),
+                online: false,
+                reports_config: row.get(5)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// An empty table when nothing was changed, or what's stored can't be read.
+    pub fn settings(&self, scope: &str) -> Result<serde_json::Value> {
+        let stored: Option<String> = self
+            .conn()
+            .query_row("SELECT overrides FROM settings WHERE scope = ?1", params![scope], |row| row.get(0))
+            .optional()?;
+        let empty = || serde_json::Value::Object(Default::default());
+        Ok(match stored.map(|text| serde_json::from_str::<serde_json::Value>(&text)) {
+            None => empty(),
+            Some(Ok(value)) if value.is_object() => value,
+            Some(_) => {
+                tracing::warn!("ignoring the stored settings of {scope}, which can't be read");
+                empty()
+            }
+        })
+    }
+
+    pub fn put_settings(&self, scope: &str, overrides: &serde_json::Value) -> Result<()> {
+        let conn = self.conn();
+        if overrides.as_object().is_none_or(|map| map.is_empty()) {
+            conn.execute("DELETE FROM settings WHERE scope = ?1", params![scope])?;
+        } else {
+            conn.execute(
+                "INSERT INTO settings (scope, overrides, updated_ms) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (scope) DO UPDATE SET overrides = excluded.overrides, updated_ms = excluded.updated_ms",
+                params![scope, json(overrides), now_ms()],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn device_config(&self, device: &str) -> Result<Option<DeviceConfig>> {
+        let row: Option<(String, String, i64)> = self
+            .conn()
+            .query_row(
+                "SELECT config, client, reported_ms FROM device_configs WHERE device = ?1",
+                params![device],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        Ok(row.and_then(|(config, client, reported_ms)| {
+            let config = serde_json::from_str(&config).ok().filter(serde_json::Value::is_object)?;
+            Some(DeviceConfig { config, client, reported_at: timestamp(reported_ms) })
+        }))
+    }
+
+    pub fn put_device_config(&self, device: &str, config: &serde_json::Value, client: &str) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO device_configs (device, config, client, reported_ms) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (device) DO UPDATE SET config = excluded.config, client = excluded.client,
+                                                reported_ms = excluded.reported_ms",
+            params![device, json(config), client, now_ms()],
+        )?;
+        Ok(())
     }
 
     pub fn revoke(&self, id: &str) -> Result<Revoke> {

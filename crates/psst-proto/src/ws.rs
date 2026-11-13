@@ -32,6 +32,10 @@ pub enum ServerMsg {
     Final(Box<FinalMsg>),
     Error(ErrorMsg),
     Cancelled(CancelledMsg),
+    /// Only to clients whose `hello` accepts [`Feature::Settings`].
+    Settings(SettingsMsg),
+    /// The server's limits changed. Only to clients whose `hello` accepts [`Feature::Limits`].
+    Limits(ServerLimits),
 }
 
 /// First message on every connection. A server that doesn't speak `protocol` answers with
@@ -40,6 +44,27 @@ pub enum ServerMsg {
 pub struct HelloMsg {
     pub protocol: u32,
     pub client: ClientInfo,
+    /// Server messages the client takes beyond those every client does. A server sends them only
+    /// to clients that list them, so older clients never see a message they can't read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accepts: Vec<Feature>,
+    /// The client's own config file, as JSON: only the keys it sets differently from the default.
+    /// The server's web UI shows it beside the device's settings, and edits the device's settings
+    /// only for clients that sent one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Feature {
+    /// `welcome.settings`, and `settings` whenever they change.
+    Settings,
+    /// `limits` whenever they change.
+    Limits,
+    /// One from a newer client.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,6 +89,10 @@ pub struct WelcomeMsg {
     /// with `error bad_request` without a `session_id`, so send Opus only when it's listed.
     #[serde(default = "pcm_only")]
     pub codecs: Vec<Codec>,
+    /// The device's settings from the server's web UI, for clients that accept
+    /// [`Feature::Settings`]: as [`SettingsMsg::overrides`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<Value>,
 }
 
 fn pcm_only() -> Vec<Codec> {
@@ -227,6 +256,15 @@ impl ErrorMsg {
     pub fn new(session_id: Option<SessionId>, code: ErrorCode, message: impl Into<String>) -> Self {
         Self { session_id, code, message: message.into(), detail: None, retryable: code.retryable() }
     }
+}
+
+/// The device's settings, as changed in the server's web UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettingsMsg {
+    /// Shaped like the client's config file, with only the keys the web UI changed; `null`
+    /// removes the file's key. The client applies each one it can and keeps the file's value for
+    /// the others.
+    pub overrides: Value,
 }
 
 /// Terminal.

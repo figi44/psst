@@ -1,0 +1,59 @@
+{%- from "icons.html" import icon %}
+
+{#- One setting. Each row is a form of its own: with JavaScript it saves as the value changes, without
+    it by its Save button. -#}
+{%- macro row(f) -%}
+{%- if f.readonly %}
+<div class="srow ro" id="{{ f.id }}">
+  <div class="s-text">
+    <span class="s-label">{{ f.label }}</span>
+    <p class="s-help">{{ f.help }}</p>
+    <p class="s-note locked">{{ icon("lock") }}<span>{{ f.readonly }}</span></p>
+  </div>
+  <div class="s-value">{% if f.shown %}<code>{{ f.shown }}</code>{% else %}<span class="s-none">None</span>{% endif %}</div>
+</div>
+{%- else %}
+<form class="srow{% if f.changed %} changed{% endif %}" id="{{ f.id }}" method="post" action="{{ f.action }}"
+      hx-post="{{ f.action }}" hx-trigger="change, submit" hx-target="this" hx-select="#{{ f.id }}" hx-select-oob="#changes" hx-swap="outerHTML">
+  <div class="s-text">
+    <label class="s-label" for="i-{{ f.id }}">{{ f.label }}</label>
+    <p class="s-help">{{ f.help }}{% if f.applies %} <span class="s-when">{{ f.applies }}</span>{% endif %}</p>
+    {%- if f.error %}
+    <p class="err" role="alert">{{ f.error }}</p>
+    {%- elif f.problem %}
+    <p class="err">{{ f.problem }} The file's value holds.</p>
+    {%- endif %}
+    {%- if f.changed or f.problem %}
+    <p class="s-note"><span>Changed here; {{ f.source }} {% if f.file %}has {{ f.file }}{% else %}leaves it at {{ f.default or "unset" }}{% endif %}.</span>
+      <button class="linkbtn" type="submit" formaction="{{ f.action }}/reset" hx-post="{{ f.action }}/reset" hx-target="closest .srow" hx-select="#{{ f.id }}" hx-swap="outerHTML">Use that</button></p>
+    {%- endif %}
+  </div>
+  <div class="s-control">
+    {%- if f.kind == "bool" %}
+    <input class="switch" type="checkbox" id="i-{{ f.id }}" name="value" value="on"{% if f.checked %} checked{% endif %}>
+    {%- elif f.kind == "int" %}
+    <span class="s-num"><input class="input" type="number" inputmode="numeric" id="i-{{ f.id }}" name="value" value="{{ f.value }}" min="{{ f.min }}" max="{{ f.max }}"{% if f.error %} aria-invalid="true"{% endif %}><span class="unit">{{ f.unit }}</span></span>
+    {%- elif f.kind == "choice" %}
+    <select class="input" id="i-{{ f.id }}" name="value">{% for o in f.options %}<option value="{{ o.value }}"{% if o.selected %} selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
+    {%- elif f.kind == "color" %}
+    <span class="s-color"><svg class="swatch" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="9" fill="{{ f.value }}"/></svg><input class="input" id="i-{{ f.id }}" name="value" value="{{ f.value }}" autocomplete="off" spellcheck="false"{% if f.error %} aria-invalid="true"{% endif %}></span>
+    {%- elif f.kind == "list" %}
+    <textarea class="input" id="i-{{ f.id }}" name="value" rows="3" spellcheck="false">{{ f.value }}</textarea>
+    {%- else %}
+    <input class="input" id="i-{{ f.id }}" name="value" value="{{ f.value }}" autocomplete="off" spellcheck="false"{% if f.optional %} placeholder="Not set"{% endif %}{% if f.error %} aria-invalid="true"{% endif %}>
+    {%- endif %}
+    <button class="btn sm s-save" type="submit">Save</button>
+    {%- if f.saved %}<span class="s-saved" role="status">{{ icon("check") }}Saved</span>{% endif %}
+  </div>
+</form>
+{%- endif %}
+{%- endmacro %}
+
+{%- macro groups(gs) -%}
+{%- for g in gs %}
+<section class="sgroup" aria-labelledby="g-{{ g.id }}">
+  <h2 class="group-h" id="g-{{ g.id }}">{{ g.title }}</h2>
+  <div class="srows">{% for f in g.fields %}{{ row(f) }}{% endfor %}</div>
+</section>
+{%- endfor %}
+{%- endmacro %}
