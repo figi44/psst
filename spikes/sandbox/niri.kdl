@@ -1,0 +1,25 @@
+// Minimal config for the nested test niri: spawns nothing, no XWayland,
+// no animations, no binds. Layout 0 is English (US), 1 is Czech (QWERTY),
+// matching the owner's setup; tests switch with `niri msg action switch-layout`.
+input {
+    keyboard {
+        xkb {
+            layout "us,cz"
+            variant ",qwerty"
+        }
+    }
+}
+
+hotkey-overlay {
+    skip-at-startup
+}
+
+xwayland-satellite {
+    off
+}
+
+animations {
+    off
+}
+
+screenshot-path null
