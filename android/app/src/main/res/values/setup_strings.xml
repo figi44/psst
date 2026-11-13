@@ -14,6 +14,7 @@
     <string name="setup_server_offline">Not connected to the server.</string>
     <string name="setup_pair_label">Pairing code</string>
     <string name="setup_pair_where">Run <tt>psst-server pair --name phone</tt> on the server machine, then scan its QR code or enter the code it prints within 5 minutes.</string>
+    <string name="setup_pair_link">The link pairs psst with %1$s. Pair if that\'s your server.</string>
     <string name="setup_pair_switch">The link pairs psst with %1$s, in place of %2$s.</string>
     <string name="setup_pair">Pair</string>
     <string name="setup_pair_checking">Checking the code…</string>

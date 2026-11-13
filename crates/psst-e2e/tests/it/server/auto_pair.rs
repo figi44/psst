@@ -12,7 +12,7 @@ use psst_testkit::{
 };
 use serde_json::Value;
 
-use super::harness::*;
+use super::{browser::request, harness::*};
 
 /// Every test connection reaches the server from here, so it's the calling machine's tailnet address.
 const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -118,4 +118,24 @@ async fn a_machine_dropped_from_auto_pair_is_revoked_at_the_next_start() {
     assert_eq!(err.code, ErrorCode::Unauthorized);
     let (status, _) = auto_pair(&server).await;
     assert_eq!(status, 403, "nor does it pair again");
+}
+
+#[tokio::test]
+async fn a_web_page_cannot_collect_a_token() {
+    let (server, tailscale) = tailnet_server(&["thinkpad"]);
+    tailscale.add(LOOPBACK, "nThinkpadCNTRL", &format!("thinkpad.{TAILNET}"));
+    let addr = server.tcp_addr().unwrap();
+    let origin = [("Origin", "http://rebound.example".to_owned())];
+    let refused = request(addr, "POST", "/api/pair/auto", &origin, None).await;
+    assert_eq!((refused.status, refused.json()["code"].as_str()), (403, Some("forbidden")), "{}", refused.body);
+
+    let code = admin_json(&server, &["pair", "--name", "phone"])["code"].as_str().unwrap().to_owned();
+    let body = serde_json::json!({"code": code, "name": "phone"}).to_string();
+    let refused = request(addr, "POST", "/api/pair/redeem", &origin, Some(("application/json", body))).await;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+
+    paired(&server).await;
+    let (status, body) =
+        http(addr, "POST", "/api/pair/redeem", None, Some(serde_json::json!({"code": code, "name": "phone"}))).await;
+    assert_eq!(status, 200, "the app can still use the code: {body}");
 }

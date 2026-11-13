@@ -32,6 +32,7 @@
     <string name="ime_sending">Sending…</string>
     <string name="ime_waiting">Waiting for the server…</string>
     <string name="ime_nothing_heard">Nothing heard</string>
+    <string name="ime_no_passwords">psst doesn\'t dictate passwords</string>
     <string name="ime_mic_unavailable">Could not open the microphone. Tap to try again.</string>
     <string name="ime_unconfigured">psst is not connected to a server yet.</string>
     <string name="ime_no_mic">psst needs the microphone to hear you.</string>

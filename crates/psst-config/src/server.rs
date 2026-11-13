@@ -1,7 +1,12 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::{
+    fmt,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    path::PathBuf,
+    str::FromStr,
+};
 
 use psst_proto::DEFAULT_SOCKET;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::ConfigFile;
 
@@ -10,6 +15,9 @@ use crate::ConfigFile;
 #[serde(default, deny_unknown_fields)]
 pub struct ServerConfig {
     pub listen: Vec<SocketAddr>,
+    /// Where TCP connections may come from. psst has no TLS, so beyond this machine and its
+    /// tailnet, anyone on the network could read tokens and dictations.
+    pub allow_from: Vec<Network>,
     /// Ignored when systemd passes the socket in.
     pub socket: PathBuf,
     /// Socket users, as admins. When empty, `serve` without systemd accepts its own user.
@@ -40,6 +48,7 @@ impl Default for ServerConfig {
                 SocketAddr::from(([0, 0, 0, 0], psst_proto::DEFAULT_PORT)),
                 SocketAddr::from(([0u16; 8], psst_proto::DEFAULT_PORT)),
             ],
+            allow_from: Network::LOCAL_AND_TAILNET.to_vec(),
             socket: PathBuf::from(DEFAULT_SOCKET),
             local_users: Vec::new(),
             auto_pair: Vec::new(),
@@ -182,6 +191,76 @@ impl ConfigFile for ServerConfig {
             return Err("model.options.vad_filter must be true: the batched path requires it".into());
         }
         Ok(())
+    }
+}
+
+/// An IP network, written `192.168.1.0/24`, or a single address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Network {
+    addr: IpAddr,
+    prefix: u8,
+}
+
+impl Network {
+    /// This machine, and the addresses Tailscale gives a tailnet's machines.
+    pub const LOCAL_AND_TAILNET: [Network; 4] = [
+        Network { addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 0)), prefix: 8 },
+        Network { addr: IpAddr::V6(Ipv6Addr::LOCALHOST), prefix: 128 },
+        Network { addr: IpAddr::V4(Ipv4Addr::new(100, 64, 0, 0)), prefix: 10 },
+        Network { addr: IpAddr::V6(Ipv6Addr::new(0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0, 0)), prefix: 48 },
+    ];
+
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        let differ = match (self.addr, ip.to_canonical()) {
+            (IpAddr::V4(net), IpAddr::V4(ip)) => u128::from(net.to_bits() ^ ip.to_bits()) << 96,
+            (IpAddr::V6(net), IpAddr::V6(ip)) => net.to_bits() ^ ip.to_bits(),
+            _ => return false,
+        };
+        differ.checked_shr(128 - u32::from(self.prefix)).unwrap_or(0) == 0
+    }
+
+    pub fn covers(&self, other: &Network) -> bool {
+        self.prefix <= other.prefix && self.contains(other.addr)
+    }
+}
+
+impl FromStr for Network {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, String> {
+        let wrong = || format!("expected a network such as 192.168.1.0/24, not `{text}`");
+        let (addr, prefix) = text.split_once('/').map_or((text, None), |(addr, prefix)| (addr, Some(prefix)));
+        let addr: IpAddr = addr.parse().map_err(|_| wrong())?;
+        let max = if addr.is_ipv4() { 32 } else { 128 };
+        let prefix: u8 = match prefix {
+            None => max,
+            Some(prefix) => prefix.parse().ok().filter(|prefix| *prefix <= max).ok_or_else(wrong)?,
+        };
+        match addr.to_canonical() {
+            // An IPv4-mapped network is the IPv4 network it maps, with its prefix counted in IPv4 bits.
+            IpAddr::V4(v4) if addr.is_ipv6() => {
+                Ok(Network { addr: IpAddr::V4(v4), prefix: prefix.checked_sub(96).ok_or_else(wrong)? })
+            }
+            addr => Ok(Network { addr, prefix }),
+        }
+    }
+}
+
+impl fmt::Display for Network {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.addr, self.prefix)
+    }
+}
+
+impl Serialize for Network {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for Network {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer)?.parse().map_err(serde::de::Error::custom)
     }
 }
 

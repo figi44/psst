@@ -18,6 +18,7 @@ mod web;
 use std::{
     fs,
     net::SocketAddr,
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::ExitCode,
     sync::Arc,
@@ -26,7 +27,7 @@ use std::{
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use psst_config::ServerFiles;
+use psst_config::{Network, ServerFiles};
 use psst_dict::Dictionary;
 use tokio::{sync::watch, task::JoinHandle};
 
@@ -34,7 +35,7 @@ use crate::{
     db::{Db, UNLOADED_BOOT_ID},
     dictionary::Layered,
     engine::{EngineConfig, Supervisor},
-    listen::{Peer, TcpSocket, UnixSocket},
+    listen::{TcpSocket, UnixSocket},
     profiles::ProfileLayers,
     registry::Registry,
     settings::ServerLayers,
@@ -112,9 +113,17 @@ async fn start(cfg: ServeConfig, systemd: Option<std::os::unix::net::UnixListene
     for dir in [&cfg.state_dir, &cfg.cache_dir] {
         fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     }
+    // History and the ChatGPT sign-in live there, and the umask would leave them readable to all.
+    if let Err(err) = fs::set_permissions(&cfg.state_dir, fs::Permissions::from_mode(0o700)) {
+        tracing::warn!("cannot make {} private, so other users may read its history: {err}", cfg.state_dir.display());
+    }
     let db = Db::open(&cfg.state_dir.join("psst.db"))?;
     let server_layers = ServerLayers::load(files.server, &db, cfg.cache_dir.clone())?;
     let server = server_layers.effective();
+    let trusted = |network: &Network| Network::LOCAL_AND_TAILNET.iter().any(|safe| safe.covers(network));
+    for network in server.allow_from.iter().filter(|network| !trusted(network)) {
+        tracing::warn!("allow_from lets in {network}: psst has no TLS, so anyone there can read tokens and dictations");
+    }
     for (id, name) in db.revoke_tailnet_devices_except(&server.auto_pair)? {
         tracing::info!("revoked device {id}: auto_pair no longer lists {name}");
     }
@@ -144,6 +153,13 @@ async fn start(cfg: ServeConfig, systemd: Option<std::os::unix::net::UnixListene
         tracing::info!("model.preload is off; the model stays unloaded until `psst-server model load`");
     }
 
+    // Before the socket, so whoever waits for the socket to accept can reach TCP too.
+    let mut tcp = Vec::new();
+    for addr in &server.listen {
+        tcp.push(listen::bind_tcp(*addr).with_context(|| format!("cannot listen on {addr}"))?);
+    }
+    let tcp_addrs = tcp.iter().map(TcpSocket::local_addr).collect::<Result<Vec<_>, _>>()?;
+
     let systemd_mode = systemd.is_some();
     let (unix, socket) = match systemd {
         Some(listener) => {
@@ -164,11 +180,6 @@ async fn start(cfg: ServeConfig, systemd: Option<std::os::unix::net::UnixListene
     if systemd_mode && server.local_users.is_empty() {
         tracing::warn!("local_users is empty, so nobody can use the socket");
     }
-    let mut tcp = Vec::new();
-    for addr in &server.listen {
-        tcp.push(listen::bind_tcp(*addr).with_context(|| format!("cannot listen on {addr}"))?);
-    }
-    let tcp_addrs = tcp.iter().map(TcpSocket::local_addr).collect::<Result<Vec<_>, _>>()?;
 
     let registry = Registry::new(server.limits.max_active_sessions as usize);
     let engine = Supervisor::start(
@@ -193,25 +204,9 @@ async fn start(cfg: ServeConfig, systemd: Option<std::os::unix::net::UnixListene
     });
 
     let app = api::router(state.clone());
-    let stopped = |mut rx: watch::Receiver<bool>| async move {
-        let _ = rx.wait_for(|stop| *stop).await;
-    };
-    let mut listeners = Vec::new();
-    let service = app.clone().into_make_service_with_connect_info::<Peer>();
-    let serve = axum::serve(unix, service).with_graceful_shutdown(stopped(shutdown_rx.clone()));
-    listeners.push(tokio::spawn(async move {
-        if let Err(err) = serve.await {
-            tracing::error!("the socket listener failed: {err}");
-        }
-    }));
+    let mut listeners = vec![tokio::spawn(listen::serve(unix, app.clone(), shutdown_rx.clone()))];
     for listener in tcp {
-        let service = app.clone().into_make_service_with_connect_info::<Peer>();
-        let serve = axum::serve(listener, service).with_graceful_shutdown(stopped(shutdown_rx.clone()));
-        listeners.push(tokio::spawn(async move {
-            if let Err(err) = serve.await {
-                tracing::error!("a TCP listener failed: {err}");
-            }
-        }));
+        listeners.push(tokio::spawn(listen::serve(listener, app.clone(), shutdown_rx.clone())));
     }
 
     let mut background = vec![tokio::spawn(sleep::watch_resume(state.engine.clone(), shutdown_rx.clone()))];
@@ -405,10 +400,26 @@ fn device_address(text: &str) -> Result<psst_proto::Endpoint, String> {
     }
 }
 
+/// systemd's soft limit, 1024 files, is a few hundred idle connections; its hard limit is far
+/// higher, and only a soft limit under it is the program's to raise.
+fn raise_open_files() {
+    use nix::sys::resource::{Resource, getrlimit, setrlimit};
+    match getrlimit(Resource::RLIMIT_NOFILE) {
+        Ok((soft, hard)) if soft < hard => {
+            if let Err(err) = setrlimit(Resource::RLIMIT_NOFILE, hard, hard) {
+                tracing::warn!("cannot raise the open file limit from {soft} to {hard}: {err}");
+            }
+        }
+        Ok(_) => {}
+        Err(err) => tracing::warn!("cannot read the open file limit: {err}"),
+    }
+}
+
 fn serve(cfg: ServeConfig) -> ExitCode {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,zbus=warn"));
     tracing_subscriber::fmt().with_env_filter(filter).with_writer(std::io::stderr).init();
+    raise_open_files();
     let systemd = listen::systemd_socket();
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(runtime) => runtime,

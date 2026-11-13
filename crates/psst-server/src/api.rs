@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, net::IpAddr, sync::Arc};
 
 use axum::{
     Json, Router,
@@ -8,6 +8,7 @@ use axum::{
         header::{AUTHORIZATION, COOKIE, HOST, ORIGIN},
         request::Parts,
     },
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{delete, get, post, put},
 };
@@ -82,7 +83,39 @@ pub fn router(state: AppRef) -> Router {
         .route(routes::DEVICE_APP_RESET, post(reset_device_app))
         .merge(crate::web::router())
         .fallback(not_found)
+        .layer(middleware::from_fn_with_state(state.clone(), allowed_network))
         .with_state(state)
+}
+
+/// psst has no TLS, so it answers a network it may not trust with nothing but this refusal. The
+/// client socket refuses in its answer to `hello` instead, as it does everything else.
+async fn allowed_network(State(state): State<AppRef>, request: Request, next: Next) -> Response {
+    let peer = request.extensions().get::<ConnectInfo<Peer>>().map(|info| info.0.clone());
+    if let Some(Peer::Tcp(addr)) = peer
+        && request.uri().path() != routes::CLIENT
+        && !allowed(&state, addr.ip())
+    {
+        let text = outside_allow_from(addr.ip());
+        let path = request.uri().path();
+        return if path.starts_with("/api/") || path.starts_with("/v1/") {
+            ApiErr::new(ApiErrorCode::Forbidden, text).into_response()
+        } else {
+            crate::web::message(StatusCode::FORBIDDEN, "Not from this network", &text, None)
+        };
+    }
+    next.run(request).await
+}
+
+fn allowed(state: &AppState, ip: IpAddr) -> bool {
+    state.server.allow_from.iter().any(|network| network.contains(ip))
+}
+
+fn outside_allow_from(ip: IpAddr) -> String {
+    format!(
+        "this server takes connections only from the networks in its allow_from, and {ip} isn't on one. If you \
+         trust its network, add it to allow_from in server.toml: psst has no TLS, so anyone on that network could \
+         read your token and dictations."
+    )
 }
 
 async fn not_found(uri: axum::http::Uri) -> Response {
@@ -258,7 +291,7 @@ pub(crate) fn same_origin(state: &AppState, headers: &HeaderMap) -> bool {
 }
 
 /// Every authenticated caller is an admin: local users, paired devices and their browsers.
-struct Admin(#[allow(dead_code)] Caller);
+struct Admin(Caller);
 
 impl FromRequestParts<AppRef> for Admin {
     type Rejection = ApiErr;
@@ -277,7 +310,17 @@ fn refused(refusal: Refusal) -> ApiErr {
         Refusal::CrossSite => {
             ApiErr::new(ApiErrorCode::Forbidden, "cross-site request refused: it must come from the web UI")
         }
+        Refusal::Network => ApiErr::new(ApiErrorCode::Forbidden, "this network isn't in the server's allow_from"),
     }
+}
+
+/// Pairing answers with a token, which no web page may read: browsers send `Origin` with every
+/// POST, even a page that DNS rebinding pointed at the server, and psst's clients never do.
+fn refuse_browsers(headers: &HeaderMap) -> Result<(), ApiErr> {
+    if headers.contains_key(ORIGIN) {
+        return Err(ApiErr::new(ApiErrorCode::Forbidden, "pairing is for psst's apps, not for web pages"));
+    }
+    Ok(())
 }
 
 async fn health() -> Json<Health> {
@@ -290,15 +333,22 @@ async fn client(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
-    let identity = identify(&state, &peer, &headers);
-    ws.on_upgrade(move |socket| conn::run(state, socket, identity))
+    let identity = match peer {
+        Peer::Tcp(addr) if !allowed(&state, addr.ip()) => Err(Refusal::Network),
+        _ => identify(&state, &peer, &headers),
+    };
+    ws.max_message_size(conn::MAX_MESSAGE)
+        .max_frame_size(conn::MAX_MESSAGE)
+        .on_upgrade(move |socket| conn::run(state, socket, identity))
 }
 
 async fn pair_redeem(
     State(state): State<AppRef>,
     ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
     Body(req): Body<PairRedeem>,
 ) -> Result<Json<PairRedeemed>, ApiErr> {
+    refuse_browsers(&headers)?;
     let Peer::Tcp(addr) = peer else {
         return Err(ApiErr::new(ApiErrorCode::NotFound, "this machine doesn't pair; it uses the socket"));
     };
@@ -308,7 +358,7 @@ async fn pair_redeem(
             return Err(ApiErr::new(ApiErrorCode::RateLimited, "too many pairing attempts; wait a minute"));
         }
         Err(RedeemError::Invalid) => {
-            return Err(ApiErr::new(ApiErrorCode::Forbidden, "unknown, expired or void pairing code"));
+            return Err(ApiErr::new(ApiErrorCode::Forbidden, "unknown or expired pairing code"));
         }
     };
     let token = auth::new_token();
@@ -323,7 +373,9 @@ async fn pair_redeem(
 async fn pair_auto(
     State(state): State<AppRef>,
     ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
 ) -> Result<Json<PairRedeemed>, ApiErr> {
+    refuse_browsers(&headers)?;
     let Peer::Tcp(addr) = peer else {
         return Err(ApiErr::new(ApiErrorCode::NotFound, "this machine doesn't pair; it uses the socket"));
     };
@@ -432,11 +484,19 @@ async fn model_unload(_: Admin, State(state): State<AppRef>) -> Result<Json<Mode
     Ok(Json(state.engine.unload().await))
 }
 
+/// Only on the socket: a code pairs a device that can do everything, so a device or a browser
+/// session that could ask for one could give itself a token that outlives its own.
 async fn pairing(
-    _: Admin,
+    Admin(caller): Admin,
     State(state): State<AppRef>,
     Body(req): Body<PairingRequest>,
 ) -> Result<Json<Pairing>, ApiErr> {
+    if !matches!(caller, Caller::Identity(Identity::Local { .. })) {
+        return Err(ApiErr::new(
+            ApiErrorCode::Forbidden,
+            "pairing codes come only from `psst-server pair` on the server's machine",
+        ));
+    }
     let name = req.name.trim();
     if name.is_empty() {
         return Err(ApiErr::new(ApiErrorCode::BadRequest, "the device needs a name"));

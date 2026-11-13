@@ -59,6 +59,40 @@ fn web_url_is_an_http_origin() {
 }
 
 #[test]
+fn allow_from_takes_networks_and_single_addresses() {
+    let config =
+        ServerConfig::from_toml_str(r#"allow_from = ["192.168.1.0/24", "10.0.0.7", "fd00::/8", "::ffff:10.1.2.3"]"#)
+            .unwrap();
+    let allowed = |ip: &str| config.allow_from.iter().any(|net| net.contains(ip.parse().unwrap()));
+    for ip in ["192.168.1.1", "192.168.1.254", "10.0.0.7", "fd12::1", "10.1.2.3", "::ffff:192.168.1.9"] {
+        assert!(allowed(ip), "{ip}");
+    }
+    for ip in ["192.168.2.1", "10.0.0.8", "fe80::1", "127.0.0.1"] {
+        assert!(!allowed(ip), "{ip}");
+    }
+    for net in ["192.168.1.0/33", "fd00::/129", "desktop", "192.168.1.0/", "10.0.0.0/8/8", "::ffff:10.0.0.0/64"] {
+        invalid::<ServerConfig>(&format!("allow_from = [{net:?}]"), "192.168.1.0/24");
+    }
+    let mapped = ServerConfig::from_toml_str(r#"allow_from = ["::ffff:10.0.0.0/104"]"#).unwrap();
+    assert_eq!(mapped.allow_from[0].to_string(), "10.0.0.0/8");
+    for config in [&config, &mapped] {
+        assert_eq!(&ServerConfig::from_toml_str(&config.to_toml_string()).unwrap(), config, "it round-trips");
+    }
+}
+
+#[test]
+fn by_default_only_this_machine_and_the_tailnet_may_connect() {
+    let config = ServerConfig::default();
+    let allowed = |ip: &str| config.allow_from.iter().any(|net| net.contains(ip.parse().unwrap()));
+    for ip in ["127.0.0.1", "::1", "100.101.102.103", "fd7a:115c:a1e0::1"] {
+        assert!(allowed(ip), "{ip}");
+    }
+    for ip in ["192.168.1.10", "10.0.0.2", "100.128.0.1", "fe80::1", "0.0.0.0", "8.8.8.8"] {
+        assert!(!allowed(ip), "{ip}");
+    }
+}
+
+#[test]
 fn auto_pair_takes_magicdns_short_names() {
     let config = ServerConfig::from_toml_str(r#"auto_pair = ["thinkpad", "pixel-9"]"#).unwrap();
     assert_eq!(config.auto_pair, ["thinkpad", "pixel-9"]);

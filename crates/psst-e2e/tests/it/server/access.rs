@@ -1,10 +1,21 @@
+use std::{
+    fs,
+    os::unix::fs::PermissionsExt,
+    time::{Duration, Instant},
+};
+
 use psst_engine_proto::fake::Script;
 use psst_proto::{
-    ErrorCode, SessionId,
+    ErrorCode, PROTOCOL_VERSION, SessionId,
     api::{ModelState, PairRedeemed},
+    ws::{ClientInfo, HelloMsg},
 };
 use psst_testkit::TestServer;
 use serde_json::json;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
+};
 
 use super::harness::*;
 
@@ -63,17 +74,98 @@ async fn tcp_callers_without_a_valid_token_are_refused() {
 }
 
 #[tokio::test]
-async fn a_pairing_code_is_void_after_five_wrong_attempts() {
+async fn a_paired_device_cannot_hand_out_pairing_codes() {
+    let server = tcp_server();
+    let paired = pair(&server).await;
+    let body = json!({"name": "spare"});
+    let (status, body) =
+        http(server.tcp_addr().unwrap(), "POST", "/api/pairing", Some(paired.token.as_str()), Some(body)).await;
+    assert_eq!((status, body["code"].as_str()), (403, Some("forbidden")), "{body}");
+}
+
+#[tokio::test]
+async fn devices_outside_allow_from_get_nothing_but_a_refusal() {
+    let server = server(Script::default(), |cfg| {
+        cfg.tcp = true;
+        cfg.server.allow_from = vec!["100.64.0.0/10".parse().unwrap()];
+    });
+    let addr = server.tcp_addr().unwrap();
+    let code = admin_json(&server, &["pair", "--name", "work-laptop"])["code"].as_str().unwrap().to_owned();
+    let (status, body) = http(addr, "POST", "/api/pair/redeem", None, Some(json!({"code": code, "name": "x"}))).await;
+    assert_eq!(status, 403, "{body}");
+    assert!(body["message"].as_str().unwrap().contains("allow_from"), "{body}");
+    assert_eq!(http_status(addr, "/health").await, Some(403));
+    assert_eq!(http_status(addr, "/login").await, Some(403));
+
+    let err = Socket::tcp(addr, None).await.hello().await.err().expect("refused");
+    assert_ne!(err.code, ErrorCode::Unauthorized, "pairing again wouldn't help");
+    assert!(err.message.contains("allow_from"), "{}", err.message);
+    Client::connect(&server).await;
+}
+
+#[test]
+fn only_the_servers_own_user_can_read_its_state() {
+    let server = tcp_server();
+    let mode = fs::metadata(server.state_dir()).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o700, "{mode:o}");
+}
+
+#[tokio::test]
+async fn one_machine_cannot_hold_every_connection() {
+    let server = tcp_server();
+    let addr = server.tcp_addr().unwrap();
+    let mut idle = Vec::new();
+    for _ in 0..64 {
+        idle.push(TcpStream::connect(addr).await.expect("connect over TCP"));
+    }
+    let mut extra = TcpStream::connect(addr).await.expect("the kernel accepts it");
+    let _ = extra.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n").await;
+    let mut response = Vec::new();
+    let _ = extra.read_to_end(&mut response).await;
+    assert!(response.is_empty(), "{}", String::from_utf8_lossy(&response));
+
+    drop(idle);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while http_status(addr, "/health").await != Some(200) {
+        assert!(Instant::now() < deadline, "the server never took connections again");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Unlike `http`, `None` when the server closes without answering.
+async fn http_status(addr: std::net::SocketAddr, path: &str) -> Option<u16> {
+    let mut stream = TcpStream::connect(addr).await.ok()?;
+    let request = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).await.ok()?;
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.ok()?;
+    String::from_utf8_lossy(&response).split_whitespace().nth(1)?.parse().ok()
+}
+
+#[tokio::test]
+async fn the_server_hangs_up_on_an_oversized_message() {
+    let server = tcp_server();
+    let addr = server.tcp_addr().unwrap();
+    let token = pair(&server).await.token;
+    let client = ClientInfo { name: "psst-e2e".into(), version: "0".into() };
+    let config = Some(json!({"padding": "x".repeat(1024 * 1024)}));
+    let hello = HelloMsg { protocol: PROTOCOL_VERSION, client, accepts: Vec::new(), config };
+    assert!(Socket::tcp(addr, Some(token.as_str())).await.hangs_up_on(hello).await);
+    Socket::tcp(addr, Some(token.as_str())).await.hello().await.expect("a hello of the usual size is welcome");
+}
+
+#[tokio::test]
+async fn wrong_guesses_leave_the_real_code_working() {
     let server = tcp_server();
     let addr = server.tcp_addr().unwrap();
     let code = admin_json(&server, &["pair", "--name", "work-laptop"])["code"].as_str().unwrap().to_owned();
-    for _ in 0..5 {
+    for _ in 0..9 {
         let (status, body) =
             http(addr, "POST", "/api/pair/redeem", None, Some(json!({"code": "WRONG234", "name": "x"}))).await;
         assert_eq!((status, body["code"].as_str()), (403, Some("forbidden")));
     }
-    let (status, _) = http(addr, "POST", "/api/pair/redeem", None, Some(json!({"code": code, "name": "x"}))).await;
-    assert_eq!(status, 403);
+    let (status, body) = http(addr, "POST", "/api/pair/redeem", None, Some(json!({"code": code, "name": "x"}))).await;
+    assert_eq!(status, 200, "{body}");
 }
 
 #[tokio::test]

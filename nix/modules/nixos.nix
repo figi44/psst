@@ -156,7 +156,8 @@ in
       default = [ "tailscale0" ];
       description = ''
         Interfaces on which the `listen` ports are opened. psst has no TLS, so open them only on
-        an encrypted network such as Tailscale's.
+        an encrypted network such as Tailscale's. The server itself also refuses connections from
+        beyond `settings.server.allow_from`, which by default is this machine and its tailnet.
       '';
     };
   };

@@ -128,6 +128,34 @@ fn a_dictation_outlives_the_app_being_killed_and_is_sent_once_it_starts_again() 
 }
 
 #[test]
+fn a_dictation_saved_for_one_server_never_goes_to_another() {
+    let first = tcp_server(FakeServerConfig::default());
+    let second = tcp_server(FakeServerConfig::default());
+    let mut phone = Phone::online(&address(&first));
+    first.set_listening(false);
+    phone.until_link(Link::Offline);
+    phone.send(Command::Start);
+    phone.speak(&test_audio(1_000));
+    phone.send(Command::Stop);
+    let saved = phone.until_saved();
+
+    phone.send(Command::Configure { server: address(&second) });
+    phone.until_link(Link::Online);
+    // A dictation of its own, so the phone has had every chance to send the saved one along.
+    phone.send(Command::Start);
+    phone.speak(&test_audio(500));
+    phone.send(Command::Stop);
+    let (id, _) = phone.until_final();
+    assert!(second.session(id).is_some());
+    assert!(second.session(saved).is_none(), "the first server's dictation went to the second");
+
+    first.set_listening(true);
+    phone.send(Command::Configure { server: address(&first) });
+    phone.until_link(Link::Online);
+    assert!(first.wait_until(WAIT, |s| s.session(saved).is_some_and(|s| s.stop_samples.is_some())));
+}
+
+#[test]
 fn a_dictation_takes_the_connection_from_a_saved_one_going_in_the_background() {
     // Long enough a wait for its text that the dictation comes while the saved one holds the connection.
     let server = tcp_server(FakeServerConfig { final_delay: Duration::from_millis(800), ..Default::default() });
@@ -142,6 +170,7 @@ fn a_dictation_takes_the_connection_from_a_saved_one_going_in_the_background() {
         state: psst_client::store::RecState::Complete,
         final_text: None,
         finalized_at: None,
+        server: None,
     };
     store.write_meta(waiting, &meta).unwrap();
     psst_testkit::write_wav(&store.wav_path(waiting), &test_audio(500));

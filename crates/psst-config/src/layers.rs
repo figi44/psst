@@ -9,16 +9,22 @@ use std::fmt;
 
 use serde_json::{Map, Value};
 
-use crate::{ClientConfig, ConfigFile, ServerConfig};
+use crate::{AudioInput, ClientConfig, ConfigFile, ServerConfig};
 
 pub trait Layerable: ConfigFile + Clone + PartialEq {
     /// Top-level keys, or `table.key`, that only the file sets.
     const LOCKED: &'static [&'static str];
+
+    /// Why an edit may not turn `before` into `after`, though the file could.
+    fn refuse_edit(_before: &Self, _after: &Self) -> Option<String> {
+        None
+    }
 }
 
 impl Layerable for ServerConfig {
     const LOCKED: &'static [&'static str] = &[
         "listen",
+        "allow_from",
         "socket",
         "local_users",
         "auto_pair",
@@ -31,6 +37,13 @@ impl Layerable for ServerConfig {
 
 impl Layerable for ClientConfig {
     const LOCKED: &'static [&'static str] = &["server", "insert"];
+
+    /// The server's edits pick a microphone by name, but a file would have the client upload any
+    /// WAV file on its machine.
+    fn refuse_edit(before: &Self, after: &Self) -> Option<String> {
+        let to_file = matches!(after.audio.input, AudioInput::File(_)) && after.audio.input != before.audio.input;
+        to_file.then(|| format!("only {} sets a file as audio.input", Self::FILE_NAME))
+    }
 }
 
 /// A path of keys; the segments of a Wayland app id keep their dots.
@@ -116,7 +129,13 @@ fn layer_keys<T: Layerable>(base: &T, edits: &Value, locks: bool) -> Layered<T> 
         let mut candidate = merged.clone();
         apply(&mut candidate, &key, &value);
         let parsed = serde_json::from_value::<T>(candidate.clone()).map_err(|err| err.to_string());
-        match parsed.and_then(|parsed| parsed.check().map(|()| parsed)) {
+        let parsed = parsed.and_then(|parsed| parsed.check().map(|()| parsed)).and_then(|parsed| {
+            match locks.then(|| T::refuse_edit(&config, &parsed)).flatten() {
+                Some(refusal) => Err(refusal),
+                None => Ok(parsed),
+            }
+        });
+        match parsed {
             Ok(parsed) => {
                 config = parsed;
                 merged = candidate;

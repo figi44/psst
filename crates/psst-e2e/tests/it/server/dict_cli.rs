@@ -105,6 +105,27 @@ async fn psst_dict_reaches_another_machine_with_the_paired_token() {
     assert!(home.ok(&["dict", "list"]).contains("\nt3code      added"));
 }
 
+#[test]
+fn psst_pair_refuses_an_answer_too_large_to_hold() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = Endpoint::Tcp { host: "127.0.0.1".into(), port: listener.local_addr().unwrap().port() };
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let (mut stream, _) = listener.accept().unwrap();
+        let _ = stream.read(&mut [0; 4096]);
+        let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n");
+        let megabyte = vec![b' '; 1 << 20];
+        for _ in 0..65 {
+            if stream.write_all(&megabyte).is_err() {
+                return;
+            }
+        }
+    });
+    let home = Home::new(endpoint.clone());
+    let err = home.fails(&["pair", &endpoint.to_string(), "ABCD2345"]);
+    assert!(err.contains("too large"), "{err}");
+}
+
 #[tokio::test]
 async fn psst_dict_says_when_the_server_isnt_there() {
     let dir = tempfile::tempdir().unwrap();

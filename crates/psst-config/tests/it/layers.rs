@@ -47,6 +47,22 @@ fn only_the_file_sets_locked_keys() {
 }
 
 #[test]
+fn only_the_file_records_from_a_file() {
+    let layered = layer(&ClientConfig::default(), &json!({"audio": {"input": "file:/home/alice/call.wav"}}));
+    assert_eq!(layered.config, ClientConfig::default());
+    let problem = layered.problem(&KeyPath::of(&["audio", "input"])).unwrap_or_default();
+    assert!(problem.contains("only client.toml"), "{:?}", layered.problems);
+
+    let layered = layer(&ClientConfig::default(), &json!({"audio": {"input": "USB Microphone"}}));
+    assert!(layered.problems.is_empty(), "a microphone by name is fine: {:?}", layered.problems);
+
+    let file = client("[audio]\ninput = \"file:/srv/test.wav\"\n");
+    let layered = layer(&file, &json!({"sounds": "off"}));
+    assert!(layered.problems.is_empty(), "the file's own choice stays: {:?}", layered.problems);
+    assert_eq!(layered.config.audio.input, file.audio.input);
+}
+
+#[test]
 fn null_removes_a_files_app_rule_or_optional_key() {
     let file = client(
         "[apps.\"org.gnome.Ptyxis\"]\npaste = \"ctrl+shift+v\"\npaste_delay_ms = 40\n[apps.kitty]\npaste = false\n",

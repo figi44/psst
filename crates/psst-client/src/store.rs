@@ -30,6 +30,10 @@ pub struct Meta {
     pub final_text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finalized_at: Option<Timestamp>,
+    /// The server it was recorded for, which alone gets it. Recordings kept before it was noted go
+    /// to any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,6 +201,7 @@ impl Store {
                 state: RecState::Incomplete,
                 final_text: None,
                 finalized_at: None,
+                server: None,
             };
             self.write_meta(id, &meta)?;
             recovery.adopted.push(id);
@@ -302,6 +307,7 @@ mod tests {
             state,
             final_text: None,
             finalized_at: None,
+            server: None,
         }
     }
 

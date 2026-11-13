@@ -193,6 +193,20 @@ impl Socket {
     pub async fn hello(self) -> Result<Client, ErrorMsg> {
         self.hello_with(psst_proto::PROTOCOL_VERSION).await
     }
+
+    /// Whether the server hangs up on `hello` rather than answer it.
+    pub async fn hangs_up_on(mut self, hello: HelloMsg) -> bool {
+        let text = serde_json::to_string(&ClientMsg::Hello(hello)).expect("client messages serialise");
+        // The server may hang up before the whole message is out.
+        let _ = self.ws.send(Message::Text(text.into())).await;
+        loop {
+            match tokio::time::timeout(MESSAGE_TIMEOUT, self.ws.next()).await {
+                Err(_) | Ok(Some(Ok(Message::Text(_)))) => return false,
+                Ok(None | Some(Err(_)) | Some(Ok(Message::Close(_)))) => return true,
+                Ok(Some(Ok(_))) => {}
+            }
+        }
+    }
 }
 
 async fn send_json(ws: &mut WebSocketStream<Box<dyn Io>>, msg: &ClientMsg) {

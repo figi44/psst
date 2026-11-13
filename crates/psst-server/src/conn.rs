@@ -29,6 +29,9 @@ use crate::{
 };
 
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
+/// The largest message a client sends is `hello` with its config. tungstenite's default, 64 MiB,
+/// is what anyone could make the server hold before their token is even checked.
+pub const MAX_MESSAGE: usize = 256 * 1024;
 pub const PROGRESS_EVERY: Duration = Duration::from_millis(500);
 const TOO_LONG_GRACE_S: u64 = 5;
 const SAMPLES_PER_MS: u64 = SAMPLE_RATE as u64 / 1000;
@@ -47,8 +50,15 @@ pub async fn run(state: Arc<AppState>, mut ws: WebSocket, identity: Result<Ident
                 Refusal::Unauthorized => "missing, unknown or revoked device token",
                 Refusal::Forbidden => "this user isn't in the server's local_users",
                 Refusal::CrossSite => "cross-site request refused",
+                Refusal::Network => {
+                    "this server doesn't take connections from this device's network. If you trust the network, \
+                     add it to allow_from in server.toml: psst has no TLS, so anyone on it could read your \
+                     dictations."
+                }
             };
-            send(&mut ws, &ServerMsg::Error(ErrorMsg::new(None, ErrorCode::Unauthorized, message))).await;
+            // Clients answer `unauthorized` by pairing again, which a network refusal doesn't need.
+            let code = if refusal == Refusal::Network { ErrorCode::BadRequest } else { ErrorCode::Unauthorized };
+            send(&mut ws, &ServerMsg::Error(ErrorMsg::new(None, code, message))).await;
             close(&mut ws, close_code::POLICY, "unauthorized").await;
             return;
         }

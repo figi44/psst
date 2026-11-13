@@ -168,6 +168,7 @@ fn saved(store: &Store, state: RecState, text: Option<&str>) -> SessionId {
         state,
         final_text: text.map(String::from),
         finalized_at: None,
+        server: None,
     };
     store.write_meta(id, &meta).unwrap();
     write_wav(&store.wav_path(id), &test_audio(500));

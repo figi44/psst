@@ -73,7 +73,10 @@ fn post(host: &str, port: u16, path: &str, body: &str) -> io::Result<(u16, Vec<u
     );
     stream.write_all(request.as_bytes())?;
     let mut response = Vec::new();
-    stream.read_to_end(&mut response)?;
+    (&mut stream).take(psst_client::api::MAX_RESPONSE + 1).read_to_end(&mut response)?;
+    if response.len() as u64 > psst_client::api::MAX_RESPONSE {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "the server's answer is too large"));
+    }
     let bad = |what: &str| io::Error::new(io::ErrorKind::InvalidData, format!("malformed HTTP response: {what}"));
     let head_end = response.windows(4).position(|w| w == b"\r\n\r\n").ok_or_else(|| bad("no header end"))?;
     let head = String::from_utf8_lossy(&response[..head_end]).into_owned();

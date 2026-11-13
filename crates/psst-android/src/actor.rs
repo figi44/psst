@@ -249,6 +249,7 @@ struct Window {
 struct Job {
     id: SessionId,
     started_at: Timestamp,
+    server: Option<String>,
     /// Kept whole until the final or a cancel. Shared with an upload while it runs.
     audio: Arc<Vec<i16>>,
     /// The audio on disk too: Android kills an app's process at will, and a saved dictation must
@@ -328,6 +329,7 @@ impl Job {
             state,
             final_text: None,
             finalized_at: None,
+            server: self.server.clone(),
         }
     }
 
@@ -686,6 +688,7 @@ impl Actor {
         self.job = Some(Job {
             id,
             started_at,
+            server: self.config.server.clone(),
             audio: Arc::default(),
             wav,
             limit: limit(self.max_recording_s),
@@ -713,6 +716,7 @@ impl Actor {
             state: RecState::Recording,
             final_text: None,
             finalized_at: None,
+            server: self.config.server.clone(),
         };
         let made = self.store.write_meta(id, &meta).and_then(|()| WavWriter::create(&self.store.wav_path(id)));
         made.inspect_err(|err| {
@@ -837,6 +841,7 @@ impl Actor {
         let next = self.store.list().into_iter().find(|r| {
             matches!(r.meta.state, RecState::Complete | RecState::Incomplete)
                 && r.meta.samples > 0
+                && r.meta.server.as_ref().is_none_or(|server| Some(server) == self.config.server.as_ref())
                 && !self.tried.contains(&r.id)
                 && self.catch_up.as_ref().is_none_or(|c| c.id != r.id)
         });

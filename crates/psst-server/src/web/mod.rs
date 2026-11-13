@@ -276,6 +276,12 @@ impl FromRequestParts<AppRef> for Viewer {
                 Err(message(StatusCode::FORBIDDEN, "Not allowed", "This user isn't in the server's local_users.", None))
             }
             Err(Refusal::CrossSite) => Err(cross_site()),
+            Err(Refusal::Network) => Err(message(
+                StatusCode::FORBIDDEN,
+                "Not from this network",
+                "This network isn't in the server's allow_from.",
+                None,
+            )),
         }
     }
 }

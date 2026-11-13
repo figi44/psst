@@ -724,6 +724,7 @@ async fn recovery_at_start_marks_interrupted_recordings_and_retry_copies_them() 
         state: RecState::Recording,
         final_text: None,
         finalized_at: None,
+        server: None,
     };
     store.write_meta(id, &meta).unwrap();
     write_wav(&store.wav_path(id), &test_audio(500));
@@ -791,6 +792,7 @@ async fn discard_deletes_a_saved_recording() {
         state: RecState::Complete,
         final_text: None,
         finalized_at: None,
+        server: None,
     };
     d.store.write_meta(id, &meta).unwrap();
     write_wav(&d.store.wav_path(id), &[0; 16]);

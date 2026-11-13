@@ -225,6 +225,13 @@ pub const SERVER: &[Group] = &[
                 "Set in your Nix config: a typo here could lock you out of this page.",
             ),
             read_only(
+                "allow_from",
+                "Accepts connections from",
+                "Networks devices and browsers may connect from. psst has no TLS, so trust each one.",
+                Kind::List,
+                "Set in your Nix config: a typo here could lock you out of this page.",
+            ),
+            read_only(
                 "socket",
                 "Socket",
                 "The Unix socket for this machine's users.",

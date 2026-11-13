@@ -115,3 +115,12 @@ attribution or share-alike terms. Voices with non-commercial data (`ryan`, `hfc_
 The audio is fully reproducible: Piper's noise is seeded from each clip id, so `scripts/synth-evals.sh --force`
 renders byte-identical files with the same nixpkgs and voices. Checked on 2026-11-06 by rendering the whole set twice,
 and on 2026-11-08 by rendering a sample of the current clips again.
+
+## Test fixtures
+
+Synthetic signals, with no recording of anyone in them:
+
+- `crates/psst-eval/tests/fixtures/clip.flac`: 0.5 s of near-silence (peak −30 dBFS), 16 kHz mono.
+- `crates/psst-eval/tests/fixtures/short.flac`: 4,321 samples of a 440 Hz tone, 16 kHz mono.
+- `engines/faster-whisper/tests/data/speech.wav`: one sentence spoken by espeak-ng; the command is in
+  `engines/faster-whisper/tests/real_engine.py`.

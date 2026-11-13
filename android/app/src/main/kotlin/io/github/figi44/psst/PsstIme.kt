@@ -5,6 +5,7 @@ import android.inputmethodservice.InputMethodService
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.text.InputType
 import android.text.format.DateUtils
 import android.view.ContextThemeWrapper
 import android.view.HapticFeedbackConstants
@@ -180,7 +181,11 @@ class PsstIme : InputMethodService(), DictationView.Actions, Recording.Listener 
             Recording.active -> Unit
             else -> {
                 micGranted = hasMic()
-                if (Recording.canStart(micGranted)) start() else render()
+                when {
+                    currentInputEditorInfo?.isPassword() == true -> notify(R.string.ime_no_passwords, Tone.MUTED)
+                    Recording.canStart(micGranted) -> start()
+                    else -> render()
+                }
             }
         }
     }
@@ -445,6 +450,22 @@ private fun lastWord(before: CharSequence?): Int {
     while (start > 0 && !before[start - 1].isWhitespace()) start--
     return before.length - start
 }
+
+/** Dictated, a password would stay in the server's history. */
+private fun EditorInfo.isPassword(): Boolean {
+    val variation = inputType and InputType.TYPE_MASK_VARIATION
+    return when (inputType and InputType.TYPE_MASK_CLASS) {
+        InputType.TYPE_CLASS_TEXT -> variation in TEXT_PASSWORDS
+        InputType.TYPE_CLASS_NUMBER -> variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD
+        else -> false
+    }
+}
+
+private val TEXT_PASSWORDS = setOf(
+    InputType.TYPE_TEXT_VARIATION_PASSWORD,
+    InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD,
+    InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD,
+)
 
 /** A switch of keyboards takes well under a second; this is for one that doesn't happen. */
 private const val HANDOFF_MS = 3000L

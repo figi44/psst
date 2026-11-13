@@ -22,7 +22,7 @@ pub use layers::{KeyPath, Layerable, Layered, Problem};
 pub use profiles::{
     DEFAULT_PROFILE, PROMPT_STYLE_WARN_TOKENS, Profile, ProfileSpec, ProfilesFile, Rule, estimated_tokens,
 };
-pub use server::{DecodePath, Limits, ModelConfig, ModelOptions, ServerConfig, TermsAs, web_origin};
+pub use server::{DecodePath, Limits, ModelConfig, ModelOptions, Network, ServerConfig, TermsAs, web_origin};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {

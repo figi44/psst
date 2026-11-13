@@ -11,7 +11,6 @@ use rand::RngExt;
 use sha2::{Digest, Sha256};
 
 pub const CODE_TTL: Duration = Duration::from_secs(5 * 60);
-pub const MAX_WRONG_ATTEMPTS: u32 = 5;
 pub const CODE_LEN: usize = 8;
 /// No `0`/`O`, `1`/`I`/`L` or `U`, so codes read back unambiguously.
 const CODE_ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTVWXYZ23456789";
@@ -21,8 +20,10 @@ pub const TOKEN_PREFIX: &str = "psst_";
 pub const LINK_TTL: Duration = Duration::from_secs(60);
 pub const SESSION_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
 pub const SESSION_COOKIE: &str = "psst_session";
+/// Per address only: a limit shared by everyone would let one caller lock everyone else out. Ten
+/// guesses a minute over a code's five minutes leave a million addresses a 1 in 13,000 chance at
+/// one of 30^8 codes.
 const REDEEM_PER_ADDR: u32 = 10;
-const REDEEM_TOTAL: u32 = 30;
 const REDEEM_WINDOW: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +46,8 @@ pub enum Refusal {
     Unauthorized,
     Forbidden,
     CrossSite,
+    /// From beyond `allow_from`.
+    Network,
 }
 
 fn random_string(alphabet: &[u8], len: usize) -> String {
@@ -81,7 +84,6 @@ struct PendingCode {
     code: String,
     name: String,
     expires: Instant,
-    wrong: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -104,17 +106,16 @@ impl Window {
 #[derive(Debug, Default)]
 pub struct RedeemLimit {
     per_addr: HashMap<IpAddr, Window>,
-    total: Option<Window>,
 }
 
 impl RedeemLimit {
     pub fn admit(&mut self, addr: IpAddr, now: Instant) -> bool {
         self.per_addr.retain(|_, window| now.duration_since(window.start) < REDEEM_WINDOW);
+        let addr = crate::listen::network(addr);
         let mut slot = self.per_addr.get(&addr).copied();
-        let addr_ok = Window::admit(&mut slot, now, REDEEM_PER_ADDR);
+        let admitted = Window::admit(&mut slot, now, REDEEM_PER_ADDR);
         self.per_addr.insert(addr, slot.expect("admit fills the slot"));
-        let total_ok = Window::admit(&mut self.total, now, REDEEM_TOTAL);
-        addr_ok && total_ok
+        admitted
     }
 }
 
@@ -135,7 +136,7 @@ impl Pairings {
                 break code;
             }
         };
-        state.codes.push(PendingCode { code: code.clone(), name, expires: now + CODE_TTL, wrong: 0 });
+        state.codes.push(PendingCode { code: code.clone(), name, expires: now + CODE_TTL });
         let expires_at = Timestamp::now() + CODE_TTL;
         let expires_at = expires_at.round(jiff::Unit::Second).unwrap_or(expires_at);
         Pairing { code, expires_at, server: None }
@@ -147,8 +148,6 @@ impl Pairings {
         state.limit.admit(addr, Instant::now())
     }
 
-    /// A wrong code counts against every pending code, since nobody can tell which one was being
-    /// guessed.
     pub fn redeem(&self, addr: IpAddr, code: &str) -> Result<String, RedeemError> {
         let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
@@ -159,14 +158,10 @@ impl Pairings {
         state.codes.retain(|code| code.expires > now);
         let wanted: String =
             code.chars().filter(|c| !c.is_whitespace() && *c != '-').map(|c| c.to_ascii_uppercase()).collect();
-        if let Some(pos) = state.codes.iter().position(|pending| pending.code == wanted) {
-            return Ok(state.codes.remove(pos).name);
+        match state.codes.iter().position(|pending| pending.code == wanted) {
+            Some(pos) => Ok(state.codes.remove(pos).name),
+            None => Err(RedeemError::Invalid),
         }
-        for pending in &mut state.codes {
-            pending.wrong += 1;
-        }
-        state.codes.retain(|pending| pending.wrong < MAX_WRONG_ATTEMPTS);
-        Err(RedeemError::Invalid)
     }
 }
 

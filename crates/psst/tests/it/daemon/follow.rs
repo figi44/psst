@@ -108,6 +108,7 @@ fn save(store: &Store, state: RecState, text: Option<String>) -> SessionId {
         state,
         final_text: text,
         finalized_at: None,
+        server: None,
     };
     store.write_meta(id, &meta).unwrap();
     write_wav(&store.wav_path(id), &[0; 16]);

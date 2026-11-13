@@ -248,10 +248,10 @@ class SetupActivity : Activity() {
             state.link == Link.NEEDS_PAIRING || (pairing && state.link == Link.CONNECTING) || switching != null
         pairGroup.visibility = if (showCode) View.VISIBLE else View.GONE
         val from = state.server
-        pairWhere.text = if (switching != null && from != null) {
-            getString(R.string.setup_pair_switch, switching, from)
-        } else {
-            getText(R.string.setup_pair_where)
+        pairWhere.text = when {
+            switching != null && from != null -> getString(R.string.setup_pair_switch, switching, from)
+            switching != null -> getString(R.string.setup_pair_link, switching)
+            else -> getText(R.string.setup_pair_where)
         }
         if (state.link == Link.ONLINE && switching == null && code.length() > 0) code.text.clear()
         connect.isActivated = state.link != Link.ONLINE
@@ -364,8 +364,8 @@ class SetupActivity : Activity() {
     }
 
     /**
-     * Pairs at once when the link replaces nothing. Replacing a server in use is left to the user,
-     * so that a link on any web page can't send their dictation elsewhere.
+     * Pairs at once only with the server psst already uses. Any other, on a fresh install too, waits
+     * for the user's tap, so that a link on any web page can't send their dictation elsewhere.
      */
     private fun followLink() {
         val (address, linkCode) = link ?: return
@@ -374,9 +374,7 @@ class SetupActivity : Activity() {
         if (state.server == null && state.link != Link.UNCONFIGURED) return
         link = null
         code.setText(linkCode)
-        if (state.server == null || state.server == address) {
-            // The core's next state shows the server in its field.
-            Psst.configure(address)
+        if (state.server == address) {
             pairing = true
             Psst.pair(linkCode)
         } else {

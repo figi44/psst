@@ -8,6 +8,9 @@ use tokio::{
 };
 
 pub const API_TIMEOUT: Duration = Duration::from_secs(30);
+/// Far more than psst-server ever answers, a thousand history rows at most: the cap keeps a server
+/// that never stops sending from filling the client's memory.
+pub const MAX_RESPONSE: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiCallError {
@@ -104,6 +107,10 @@ impl ApiClient {
             }
         }
         .map_err(connect_err)?;
+        if raw.len() as u64 > MAX_RESPONSE {
+            let message = format!("its answer is larger than {} MiB", MAX_RESPONSE >> 20);
+            return Err(ApiCallError::Protocol { endpoint: self.endpoint.clone(), message });
+        }
         let (status, body) = parse_response(&raw)
             .map_err(|message| ApiCallError::Protocol { endpoint: self.endpoint.clone(), message })?;
         if (200..300).contains(&status) {
@@ -134,7 +141,7 @@ impl ApiClient {
         stream.write_all(&body).await?;
         stream.flush().await?;
         let mut raw = Vec::new();
-        stream.read_to_end(&mut raw).await?;
+        (&mut stream).take(MAX_RESPONSE + 1).read_to_end(&mut raw).await?;
         Ok(raw)
     }
 }

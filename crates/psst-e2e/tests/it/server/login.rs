@@ -138,6 +138,14 @@ async fn the_session_cookie_authenticates_the_api_over_tcp_until_logout() {
 }
 
 #[tokio::test]
+async fn a_browser_session_cannot_ask_for_a_pairing_code() {
+    let server = tcp_server();
+    let browser = logged_in(&server).await;
+    let response = browser.json("POST", routes::PAIRING, &json!({"name": "spare"})).await;
+    assert_eq!((response.status, response.json()["code"].as_str()), (403, Some("forbidden")), "{}", response.body);
+}
+
+#[tokio::test]
 async fn cookie_requests_from_other_origins_are_refused_before_they_change_anything() {
     let server = tcp_server();
     let browser = logged_in(&server).await;

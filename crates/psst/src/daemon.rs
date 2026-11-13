@@ -517,6 +517,7 @@ impl Dictation {
             state,
             final_text: None,
             finalized_at: None,
+            server: None,
         }
     }
 
