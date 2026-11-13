@@ -9,7 +9,7 @@ let
       transcribe = [
         {
           kind = "result";
-          text = "hello from the VM";
+          text = "hello from PSST in the VM";
         }
       ];
     }
@@ -18,6 +18,49 @@ let
   fakeEngine = pkgs.writeShellScriptBin "psst-engine-fake" ''
     exec ${pkgs.psst-server}/bin/psst-server __fake-engine /var/lib/psst/fake-engine.json
   '';
+  # A minimal client on the socket, in place of `psst daemon` (which needs audio): says hello,
+  # then uploads one second of silence. Prints the answer to `hello`, then the answer to the
+  # dictation, one JSON line each.
+  dictate =
+    pkgs.writers.writePython3Bin "psst-dictate"
+      {
+        libraries = [ pkgs.python3Packages.websockets ];
+        flakeIgnore = [ "E501" ];
+      }
+      ''
+        import json
+        import uuid
+
+        from websockets.sync.client import unix_connect
+
+        SAMPLES = 16000
+        FRAME = 320
+
+
+        def answer(ws):
+            """The next message that isn't progress."""
+            while True:
+                msg = json.loads(ws.recv(timeout=30))
+                if msg["type"] != "progress":
+                    print(json.dumps(msg), flush=True)
+                    return msg
+
+
+        with unix_connect("/run/psst/client.sock", "ws://localhost/v1/client") as ws:
+            ws.send(json.dumps({"type": "hello", "protocol": 1, "client": {"name": "vm-test", "version": "0"}}))
+            if answer(ws)["type"] == "welcome":
+                session = str(uuid.uuid4())
+                audio = {"codec": "pcm_s16le", "sample_rate": 16000, "frame_ms": 20}
+                ws.send(json.dumps({"type": "start", "session_id": session, "audio": audio, "mode": "upload"}))
+                ready = json.loads(ws.recv(timeout=30))
+                if ready["type"] != "ready":
+                    print(json.dumps(ready), flush=True)
+                else:
+                    for _ in range(SAMPLES // FRAME):
+                        ws.send(bytes(2 * FRAME))
+                    ws.send(json.dumps({"type": "stop", "session_id": session, "samples": SAMPLES}))
+                    answer(ws)
+      '';
 in
 pkgs.testers.runNixOSTest {
   name = "psst-server";
@@ -27,7 +70,10 @@ pkgs.testers.runNixOSTest {
 
     users.users.alice.isNormalUser = true;
     users.users.bob.isNormalUser = true;
-    environment.systemPackages = [ pkgs.socat ];
+    environment.systemPackages = [
+      pkgs.socat
+      dictate
+    ];
 
     services.psst-server = {
       enable = true;
@@ -47,6 +93,8 @@ pkgs.testers.runNixOSTest {
   };
 
   testScript = ''
+    import json
+
     machine.wait_for_unit("psst-server.socket")
     machine.wait_for_unit("multi-user.target")
 
@@ -86,13 +134,67 @@ pkgs.testers.runNixOSTest {
         for user in ["alice", "bob"]:
             machine.succeed(f"su {user} -c 'socat -u /dev/null UNIX-CONNECT:/run/psst/client.sock'")
 
-    # TODO(psst-server serve): `serve` is still a stub on main, so nothing answers on the
-    # socket yet and the service keeps restarting. Once it serves, check the access rules
-    # (plan 6.6) and the engine on PATH here:
-    #   machine.wait_for_unit("psst-server.service")
-    #   machine.succeed("su alice -c 'psst-server model status'")  # an allowed user, an admin
-    #   out = machine.fail("su bob -c 'psst-server model status' 2>&1")
-    #   assert "unauthorized" in out, out                          # anyone else is refused
-    #   machine.wait_until_succeeds("grep -q '\"type\":\"load\"' /var/lib/psst/fake-engine.requests.jsonl")
+    def as_user(user, command):
+        return f"su {user} -c '{command}'"
+
+    def dictate(user):
+        return [json.loads(line) for line in machine.succeed(as_user(user, "psst-dictate")).splitlines()]
+
+    def engine_requests():
+        log = machine.succeed("cat /var/lib/psst/fake-engine.requests.jsonl")
+        return [json.loads(line)["header"] for line in log.splitlines()]
+
+    def model_state():
+        status, out = machine.execute(as_user("alice", "psst-server model status --json"))
+        return json.loads(out)["state"] if status == 0 else None
+
+    def loads():
+        return [r for r in engine_requests() if r["type"] == "load"]
+
+    with subtest("the server starts and preloads the model with the engine on its PATH"):
+        machine.wait_for_unit("psst-server.service")
+        retry(lambda _: model_state() == "loaded")
+        assert [(r["model"], r["device"], r["compute_type"]) for r in loads()] == [("large-v3-turbo", "cpu", "int8")]
+
+    with subtest("local_users are admins on the socket; every other user, root included, is refused"):
+        machine.succeed(as_user("alice", "psst-server devices list"))
+        for user in ["bob", "root"]:
+            out = machine.fail(as_user(user, "psst-server model status 2>&1"))
+            assert "local_users" in out and "403" in out, out
+            [refusal] = dictate(user)
+            assert (refusal["type"], refusal["code"]) == ("error", "unauthorized"), refusal
+
+    with subtest("a dictation over the socket uses /etc/psst's profile and dictionary"):
+        welcome, final = dictate("alice")
+        assert welcome["type"] == "welcome" and welcome["device"] == "local:alice", welcome
+        assert final["type"] == "final", final
+        assert final["final"]["raw_text"] == "hello from PSST in the VM", final
+        assert final["final"]["text"] == "Hello from psst in the VM ", final
+        [transcribe] = [r for r in engine_requests() if r["type"] == "transcribe"]
+        assert transcribe["bias"] == {"style": "Testing psst in a VM.", "terms": ["psst"]}, transcribe
+        [row] = json.loads(machine.succeed(as_user("alice", "psst-server history --json")))
+        assert (row["id"], row["device"]) == (final["history_id"], "local:alice"), row
+
+    with subtest("reload rereads profiles.toml and dictionary.toml, keeping the process and the engine"):
+        pid = show("psst-server.service", "MainPID")
+        machine.succeed("systemctl reload psst-server.service")
+        for file in ["profiles.toml", "dictionary.toml"]:
+            machine.wait_until_succeeds(f"journalctl --all -u psst-server.service | grep -F '{file}: reloaded'")
+        assert show("psst-server.service", "MainPID") == pid
+        assert model_state() == "loaded"
+        assert len(loads()) == 1
+
+    with subtest("a model unloaded on purpose stays unloaded across a restart until `model load`"):
+        machine.succeed(as_user("alice", "psst-server model unload"))
+        assert model_state() == "unloaded"
+        [_, refusal] = dictate("alice")
+        assert (refusal["type"], refusal["code"]) == ("error", "model_unloaded"), refusal
+        machine.succeed("systemctl restart psst-server.service")
+        machine.wait_for_unit("psst-server.service")
+        retry(lambda _: model_state() is not None)
+        assert model_state() == "unloaded"
+        machine.succeed(as_user("alice", "psst-server model load"))
+        assert model_state() == "loaded"
+        assert len(loads()) == 2
   '';
 }
