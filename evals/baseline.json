@@ -91,14 +91,14 @@
       "split": "holdout",
       "cases": 44,
       "output": {
-        "term_recall": 84.615,
-        "wer": 4.423,
+        "term_recall": 92.308,
+        "wer": 3.949,
         "false_corrections_per_1000": 0.0,
         "ref_words": 633,
-        "output_words": 628,
-        "word_errors": 28,
+        "output_words": 627,
+        "word_errors": 25,
         "term_occurrences": 26,
-        "term_hits": 22,
+        "term_hits": 24,
         "false_corrections": 0
       },
       "raw": {
@@ -119,14 +119,14 @@
       "split": "*",
       "cases": 125,
       "output": {
-        "term_recall": 85.106,
-        "wer": 5.544,
+        "term_recall": 87.234,
+        "wer": 5.389,
         "false_corrections_per_1000": 0.0,
         "ref_words": 1930,
-        "output_words": 1933,
-        "word_errors": 107,
+        "output_words": 1932,
+        "word_errors": 104,
         "term_occurrences": 94,
-        "term_hits": 80,
+        "term_hits": 82,
         "false_corrections": 0
       },
       "raw": {
@@ -3142,9 +3142,21 @@
       "split": "holdout",
       "must_pass": false,
       "output": {
-        "text": "Add the new machine to tail skill and tag it as a server. ",
+        "text": "Add the new machine to Tailscale and tag it as a server. ",
         "raw_text": "Add the new machine to tail skill and tag it as a server.",
         "edits": [
+          {
+            "stage": "dictionary",
+            "rule": "fuzzy",
+            "term": "tailscale",
+            "raw_span": {
+              "start": 23,
+              "end": 33
+            },
+            "before": "tail skill",
+            "after": "Tailscale",
+            "score": 0.1
+          },
           {
             "stage": "rules",
             "rule": "trailing_space",
@@ -3158,10 +3170,10 @@
         ],
         "counts": {
           "ref_words": 12,
-          "output_words": 13,
-          "word_errors": 2,
+          "output_words": 12,
+          "word_errors": 0,
           "term_occurrences": 1,
-          "term_hits": 0,
+          "term_hits": 1,
           "false_corrections": 0
         }
       },
@@ -3824,9 +3836,21 @@
       "split": "holdout",
       "must_pass": false,
       "output": {
-        "text": "The pipe-wire graph shows the microphone on the wrong sample rate. ",
+        "text": "The PipeWire graph shows the microphone on the wrong sample rate. ",
         "raw_text": "The pipe-wire graph shows the microphone on the wrong sample rate.",
         "edits": [
+          {
+            "stage": "dictionary",
+            "rule": "fuzzy",
+            "term": "pipewire",
+            "raw_span": {
+              "start": 4,
+              "end": 13
+            },
+            "before": "pipe-wire",
+            "after": "PipeWire",
+            "score": 0.0
+          },
           {
             "stage": "rules",
             "rule": "trailing_space",
@@ -3841,9 +3865,9 @@
         "counts": {
           "ref_words": 11,
           "output_words": 11,
-          "word_errors": 1,
+          "word_errors": 0,
           "term_occurrences": 1,
-          "term_hits": 0,
+          "term_hits": 1,
           "false_corrections": 0
         }
       },
@@ -7116,5 +7140,543 @@
       }
     }
   ],
-  "stress": []
+  "stress": [
+    {
+      "lang": "cs",
+      "sentences": 2500,
+      "metrics": {
+        "term_recall": null,
+        "wer": 0.0,
+        "false_corrections_per_1000": 0.0,
+        "ref_words": 20005,
+        "output_words": 20005,
+        "word_errors": 0,
+        "term_occurrences": 0,
+        "term_hits": 0,
+        "false_corrections": 0
+      },
+      "flagged": []
+    },
+    {
+      "lang": "en",
+      "sentences": 2924,
+      "metrics": {
+        "term_recall": null,
+        "wer": 0.057,
+        "false_corrections_per_1000": 0.6,
+        "ref_words": 30014,
+        "output_words": 30014,
+        "word_errors": 17,
+        "term_occurrences": 0,
+        "term_hits": 0,
+        "false_corrections": 18
+      },
+      "flagged": [
+        {
+          "line": 79,
+          "sentence": "An extraction voltage is applied between the two electrodes.",
+          "output": "An extraction voltage is applied between the two Electrones. ",
+          "edits": [
+            {
+              "stage": "dictionary",
+              "rule": "fuzzy",
+              "term": "electron",
+              "raw_span": {
+                "start": 49,
+                "end": 57
+              },
+              "before": "electrod",
+              "after": "Electron",
+              "score": 0.125
+            },
+            {
+              "stage": "rules",
+              "rule": "trailing_space",
+              "raw_span": {
+                "start": 60,
+                "end": 60
+              },
+              "before": "",
+              "after": " "
+            }
+          ]
+        },
+        {
+          "line": 301,
+          "sentence": "Virginia's father Tucker Isaacs was free.",
+          "output": "Virginia's father Docker Isaacs was free. ",
+          "edits": [
+            {
+              "stage": "dictionary",
+              "rule": "fuzzy",
+              "term": "docker",
+              "raw_span": {
+                "start": 18,
+                "end": 24
+              },
+              "before": "Tucker",
+              "after": "Docker",
+              "score": 0.1
+            },
+            {
+              "stage": "rules",
+              "rule": "trailing_space",
+              "raw_span": {
+                "start": 41,
+                "end": 41
+              },
+              "before": "",
+              "after": " "
+            }
+          ]
+        },
+        {
+          "line": 489,
+          "sentence": "Langhorne Manor was named for Jeremiah Langhorne.",
+          "output": "Longhorn Manor was named for Jeremiah Longhorn. ",
+          "edits": [
+            {
+              "stage": "dictionary",
+              "rule": "fuzzy",
+              "term": "longhorn",
+              "raw_span": {
+                "start": 0,
+                "end": 9
+              },
+              "before": "Langhorne",
+              "after": "Longhorn",
+              "score": 0.06666667
+            },
+            {
+              "stage": "dictionary",
+              "rule": "fuzzy",
+              "term": "longhorn",
+              "raw_span": {
+                "start": 39,
+                "end": 48
+              },
+              "before": "Langhorne",
+              "after": "Longhorn",
+              "score": 0.06666667
+            },
+            {
+              "stage": "rules",
+              "rule": "trailing_space",
+              "raw_span": {
+                "start": 49,
+                "end": 49
+              },
+              "before": "",
+              "after": " "
+            }
+          ]
+        },
+        {
+          "line": 712,
+          "sentence": "The electrochemical couple of copper and lead promotes corrosion of the lead and tin.",
+          "output": "The electrochemical couple of copper and lead Prometheus corrosion of the lead and tin. ",
+          "edits": [
+            {
+              "stage": "dictionary",
+              "rule": "fuzzy",
+              "term": "prometheus",
+              "raw_span": {
+                "start": 46,
+                "end": 54
+              },
+              "before": "promotes",
+              "after": "Prometheus",
+              "score": 0.09
+            },
+            {
+              "stage": "rules",
+              "rule": "trailing_space",
+              "raw_span": {
+                "start": 85,
+                "end": 85
+              },
+              "before": "",
+              "after": " "
+            }
+          ]
+        },
+        {
+          "line": 817,
+          "sentence": "Her first undergraduate research experience involved bean and pepper diseases.",
+          "output": "Her first undergraduate research experience involved bean and Piper diseases. ",
+          "edits": [
+            {
+              "stage": "dictionary",
+              "rule": "fuzzy",
+              "term": "piper",
+              "raw_span": {
+                "start": 62,
+                "end": 68
+              },
+              "before": "pepper",
+              "after": "Piper",
+              "score": 0.1
+            },
+            {
+              "stage": "rules",
+              "rule": "trailing_space",
+              "raw_span": {
+                "start": 78,
+                "end": 78
+              },
+              "before": "",
+              "after": " "
+            }
+          ]
+        },
+        {
+          "line": 955,
+          "sentence": "If protected from dust, scuffs and scratches there was very little noise.",
+          "output": "If protected from dust, scuffs and sccaches there was very little noise. ",
+          "edits": [
+            {
+              "stage": "dictionary",
+              "rule": "fuzzy",
+              "term": "sccache",
+              "raw_span": {
+                "start": 35,
+                "end": 43
+              },
+              "before": "scratche",
+              "after": "sccache",
+              "score": 0.075
+            },
+            {
+              "stage": "rules",
+              "rule": "trailing_space",
+              "raw_span": {
+                "start": 73,
+                "end": 73
+              },
+              "before": "",
+              "after": " "
+            }
+          ]
+        },
+        {
+          "line": 966,
+          "sentence": "They were designed for fast and priority service, moving intermodal and container trains.",
+          "output": "They were designed for fast and priority service, moving intermodal and containerd trains. ",
+          "edits": [
+            {
+              "stage": "dictionary",
+              "rule": "fuzzy",
+              "term": "containerd",
+              "raw_span": {
+                "start": 72,
+                "end": 81
+              },
+              "before": "container",
+              "after": "containerd",
+              "score": 0.1
+            },
+            {
+              "stage": "rules",
+              "rule": "trailing_space",
+              "raw_span": {
+                "start": 89,
+                "end": 89
+              },
+              "before": "",
+              "after": " "
+            }
+          ]
+        },
+        {
+          "line": 1229,
+          "sentence": "Other important figures in the Elizabethan theatre include Christopher Marlowe, and Thomas Dekker.",
+          "output": "Other important figures in the Elizabethan theatre include Christopher Marlowe, and Thomas Docker. ",
+          "edits": [
+            {
+              "stage": "dictionary",
+              "rule": "fuzzy",
+              "term": "docker",
+              "raw_span": {
+                "start": 91,
+                "end": 97
+              },
+              "before": "Dekker",
+              "after": "Docker",
+              "score": 0.1
+            },
+            {
+              "stage": "rules",
+              "rule": "trailing_space",
+              "raw_span": {
+                "start": 98,
+                "end": 98
+              },
+              "before": "",
+              "after": " "
+            }
+          ]
+        },
+        {
+          "line": 1421,
+          "sentence": "The turret holds eight missiles ready for launch in watertight containers.",
+          "output": "The turret holds eight missiles ready for launch in watertight containerd. ",
+          "edits": [
+            {
+              "stage": "dictionary",
+              "rule": "fuzzy",
+              "term": "containerd",
+              "raw_span": {
+                "start": 63,
+                "end": 73
+              },
+              "before": "containers",
+              "after": "containerd",
+              "score": 0.1
+            },
+            {
+              "stage": "rules",
+              "rule": "trailing_space",
+              "raw_span": {
+                "start": 74,
+                "end": 74
+              },
+              "before": "",
+              "after": " "
+            }
+          ]
+        },
+        {
+          "line": 1588,
+          "sentence": "The national heritage area commemorates and promotes the region surrounding the Susquehanna River.",
+          "output": "The national heritage area commemorates and Prometheus the region surrounding the Susquehanna River. ",
+          "edits": [
+            {
+              "stage": "dictionary",
+              "rule": "fuzzy",
+              "term": "prometheus",
+              "raw_span": {
+                "start": 44,
+                "end": 52
+              },
+              "before": "promotes",
+              "after": "Prometheus",
+              "score": 0.09
+            },
+            {
+              "stage": "rules",
+              "rule": "trailing_space",
+              "raw_span": {
+                "start": 98,
+                "end": 98
+              },
+              "before": "",
+              "after": " "
+            }
+          ]
+        },
+        {
+          "line": 1691,
+          "sentence": "Radios provided an easier and near instantaneous form of communication.",
+          "output": "Redis provided an easier and near instantaneous form of communication. ",
+          "edits": [
+            {
+              "stage": "dictionary",
+              "rule": "fuzzy",
+              "term": "redis",
+              "raw_span": {
+                "start": 0,
+                "end": 6
+              },
+              "before": "Radios",
+              "after": "Redis",
+              "score": 0.1
+            },
+            {
+              "stage": "rules",
+              "rule": "trailing_space",
+              "raw_span": {
+                "start": 71,
+                "end": 71
+              },
+              "before": "",
+              "after": " "
+            }
+          ]
+        },
+        {
+          "line": 1870,
+          "sentence": "He was named after Captain Tucker.",
+          "output": "He was named after Captain Docker. ",
+          "edits": [
+            {
+              "stage": "dictionary",
+              "rule": "fuzzy",
+              "term": "docker",
+              "raw_span": {
+                "start": 27,
+                "end": 33
+              },
+              "before": "Tucker",
+              "after": "Docker",
+              "score": 0.1
+            },
+            {
+              "stage": "rules",
+              "rule": "trailing_space",
+              "raw_span": {
+                "start": 34,
+                "end": 34
+              },
+              "before": "",
+              "after": " "
+            }
+          ]
+        },
+        {
+          "line": 1931,
+          "sentence": "Also, in summer, the pits are slack.",
+          "output": "Also, in summer, the pits are Slack. ",
+          "edits": [
+            {
+              "stage": "dictionary",
+              "rule": "exact",
+              "term": "slack",
+              "raw_span": {
+                "start": 30,
+                "end": 35
+              },
+              "before": "slack",
+              "after": "Slack"
+            },
+            {
+              "stage": "rules",
+              "rule": "trailing_space",
+              "raw_span": {
+                "start": 36,
+                "end": 36
+              },
+              "before": "",
+              "after": " "
+            }
+          ]
+        },
+        {
+          "line": 1952,
+          "sentence": "The song instantly became a regular feature on the Funkmaster Flex show.",
+          "output": "The song instantly became a regular feature on the Funkmaster Flox show. ",
+          "edits": [
+            {
+              "stage": "dictionary",
+              "rule": "fuzzy",
+              "term": "flox",
+              "raw_span": {
+                "start": 62,
+                "end": 66
+              },
+              "before": "Flex",
+              "after": "Flox",
+              "score": 0.075
+            },
+            {
+              "stage": "rules",
+              "rule": "trailing_space",
+              "raw_span": {
+                "start": 72,
+                "end": 72
+              },
+              "before": "",
+              "after": " "
+            }
+          ]
+        },
+        {
+          "line": 2003,
+          "sentence": "Karl Robbins brought great prominence to Hemp.",
+          "output": "Karl Mobbins brought great prominence to Hemp. ",
+          "edits": [
+            {
+              "stage": "dictionary",
+              "rule": "fuzzy",
+              "term": "mobbin",
+              "raw_span": {
+                "start": 5,
+                "end": 11
+              },
+              "before": "Robbin",
+              "after": "Mobbin",
+              "score": 0.16666667
+            },
+            {
+              "stage": "rules",
+              "rule": "trailing_space",
+              "raw_span": {
+                "start": 46,
+                "end": 46
+              },
+              "before": "",
+              "after": " "
+            }
+          ]
+        },
+        {
+          "line": 2014,
+          "sentence": "The largest island of the Cyclades is Naxos.",
+          "output": "The largest island of the Cyclades is NixOS. ",
+          "edits": [
+            {
+              "stage": "dictionary",
+              "rule": "fuzzy",
+              "term": "nixos",
+              "raw_span": {
+                "start": 38,
+                "end": 43
+              },
+              "before": "Naxos",
+              "after": "NixOS",
+              "score": 0.06
+            },
+            {
+              "stage": "rules",
+              "rule": "trailing_space",
+              "raw_span": {
+                "start": 44,
+                "end": 44
+              },
+              "before": "",
+              "after": " "
+            }
+          ]
+        },
+        {
+          "line": 2762,
+          "sentence": "Robbins Entertainment also announced that they would release \"Blink\" in the United States.",
+          "output": "Mobbins Entertainment also announced that they would release \"Blink\" in the United States. ",
+          "edits": [
+            {
+              "stage": "dictionary",
+              "rule": "fuzzy",
+              "term": "mobbin",
+              "raw_span": {
+                "start": 0,
+                "end": 6
+              },
+              "before": "Robbin",
+              "after": "Mobbin",
+              "score": 0.16666667
+            },
+            {
+              "stage": "rules",
+              "rule": "trailing_space",
+              "raw_span": {
+                "start": 90,
+                "end": 90
+              },
+              "before": "",
+              "after": " "
+            }
+          ]
+        }
+      ]
+    }
+  ]
 }
