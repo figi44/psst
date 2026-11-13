@@ -2,11 +2,12 @@
 
 Where the data in this repository comes from, and its licences.
 
-## Common-word lists
+## Common-word lists and stress sentences
 
 `crates/psst-dict/data/common-words/en.txt` and `cs.txt` hold the 5,000 most frequent word forms
-of each language (plan 7.2). They come from Common Voice's sentence collection, which is
-**CC0 1.0** (`server/data/en/LICENSE` in the repository).
+of each language (plan 7.2), and `evals/stress/en.txt` and `cs.txt` the ordinary sentences of the
+stress test (plan 7.3). Both come from Common Voice's sentence collection, which is **CC0 1.0**
+(`server/data/en/LICENSE` in the repository).
 
 - **Repository:** [common-voice/common-voice](https://github.com/common-voice/common-voice),
   commit `3cf5dd0f81555dced52fa5a1b85f3956cdfe0c76` (2026-11-06).
@@ -15,17 +16,22 @@ of each language (plan 7.2). They come from Common Voice's sentence collection, 
   `europarl-v7-cs.txt`.
 - **Splits.** Each language's sentences (one per line, stripped, NFC, duplicates once) are split
   in two by the SHA-256 of their UTF-8 text: **split A** when its first byte is even, **split B**
-  when it's odd. The lists use split A only. Split B is kept for the Phase 2 stress test
-  (`evals/stress/`), so the stress sentences never shaped the lists.
+  when it's odd. The lists use split A only, and the stress sentences split B only, so the stress
+  sentences never shaped the lists.
 
-  | Language | Sentences | Split A |
-  |---|---|---|
-  | en | 1,584,591 | 792,290 |
-  | cs | 351,867 | 175,672 |
+  | Language | Sentences | Split A | Stress sentences (split B) | Stress words |
+  |---|---|---|---|---|
+  | en | 1,584,591 | 792,290 | 2,924 | 30,009 |
+  | cs | 351,867 | 175,672 | 2,500 | 20,000 |
 - **Word forms** are runs of letters joined by inner apostrophes, after case folding and NFC, with
   typographic apostrophes as `'`. Ties at equal counts go by code point order.
+- **Stress sentences** are split B's sentences in the order of their SHA-256 (as hex), taken until
+  the language has its word count (30,000 English, 20,000 Czech words, split on whitespace), leaving
+  out any that starts with `#`. Nothing else is filtered: a sentence that happens to contain a
+  dictionary term stays, and replay reports the edit.
 - **Regenerating:** `python3 -I crates/psst-dict/data/derive-common-words.py <download dir>`
-  downloads the files below at the commit, checks their SHA-256 and rewrites both lists.
+  downloads the files below at the commit, checks their SHA-256, and rewrites both lists and both
+  stress files.
 
 | File | SHA-256 |
 |---|---|

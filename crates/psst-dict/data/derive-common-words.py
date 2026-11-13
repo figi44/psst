@@ -1,20 +1,25 @@
 #!/usr/bin/env python3
-"""Derives the common-word lists in common-words/ from Common Voice's CC0 sentences (plan 7.2).
+"""Derives the common-word lists in common-words/ (plan 7.2) and the stress-test sentences in
+evals/stress/ (plan 7.3) from Common Voice's CC0 sentences.
 
     python3 -I derive-common-words.py <download dir>
 
 Downloads the files listed in SOURCES at COMMIT into <download dir> (once), checks their SHA-256,
-and rewrites common-words/<lang>.txt next to this script. evals/SOURCES.md records the same files
-and commit.
+and rewrites common-words/<lang>.txt next to this script and evals/stress/<lang>.txt.
+evals/SOURCES.md records the same files and commit.
 
-Sentences are split in two halves by a hash of their text: split A feeds these lists, and split B
-is left for the Phase 2 stress test, so the two never share a sentence. A sentence is one line,
-stripped and NFC-normalised; duplicates count once. Its split is A when the first byte of the
-SHA-256 of its UTF-8 text is even, and B when it's odd.
+Sentences are split in two halves by a hash of their text: split A feeds the lists, and split B
+the stress test, so the two never share a sentence. A sentence is one line, stripped and
+NFC-normalised; duplicates count once. Its split is A when the first byte of the SHA-256 of its
+UTF-8 text is even, and B when it's odd.
 
 Word forms are runs of letters, joined by inner apostrophes (`don't`), after NFC, case folding and
 mapping typographic apostrophes to `'`. Digits, hyphens and other punctuation separate words. The
 list holds the 5,000 most frequent forms, by count and then by code point order.
+
+The stress sentences are split B's sentences in the order of their SHA-256 (hex), taken until the
+language has STRESS_WORDS whitespace-separated words, leaving out any that starts with `#` (a
+comment in evals/stress/).
 """
 
 import hashlib
@@ -28,6 +33,8 @@ from pathlib import Path
 COMMIT = "3cf5dd0f81555dced52fa5a1b85f3956cdfe0c76"
 BASE = f"https://raw.githubusercontent.com/common-voice/common-voice/{COMMIT}/server/data"
 SIZE = 5000
+# Words per language in evals/stress/: about 50,000 in all.
+STRESS_WORDS = {"en": 30_000, "cs": 20_000}
 
 # Every file in server/data/en at COMMIT but its LICENSE; for Czech, sentence-collector.txt and
 # wiki.cs.txt only (never europarl-v7-cs.txt). Each with its SHA-256 at COMMIT.
@@ -83,8 +90,12 @@ def fetch(lang: str, name: str, digest: str, cache: Path) -> Path:
     return path
 
 
+def digest(sentence: str) -> bytes:
+    return hashlib.sha256(sentence.encode()).digest()
+
+
 def in_split_a(sentence: str) -> bool:
-    return hashlib.sha256(sentence.encode()).digest()[0] % 2 == 0
+    return digest(sentence)[0] % 2 == 0
 
 
 def words(sentence: str) -> list[str]:
@@ -92,23 +103,42 @@ def words(sentence: str) -> list[str]:
     return WORD.findall(folded)
 
 
-def derive(lang: str, cache: Path) -> list[str]:
-    sentences: set[str] = set()
-    for name, digest in SOURCES[lang].items():
-        with open(fetch(lang, name, digest, cache), encoding="utf-8") as file:
+def sentences(lang: str, cache: Path) -> set[str]:
+    found: set[str] = set()
+    for name, sha in SOURCES[lang].items():
+        with open(fetch(lang, name, sha, cache), encoding="utf-8") as file:
             for line in file:
                 sentence = unicodedata.normalize("NFC", line.strip())
                 if sentence:
-                    sentences.add(sentence)
+                    found.add(sentence)
+    return found
+
+
+def common_words(lang: str, all_sentences: set[str]) -> list[str]:
     counts: Counter[str] = Counter()
     split_a = 0
-    for sentence in sentences:
+    for sentence in all_sentences:
         if in_split_a(sentence):
             split_a += 1
             counts.update(words(sentence))
-    print(f"{lang}: {len(sentences)} sentences, {split_a} in split A", file=sys.stderr)
+    print(f"{lang}: {len(all_sentences)} sentences, {split_a} in split A", file=sys.stderr)
     ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
     return [word for word, _ in ranked[:SIZE]]
+
+
+def stress_sentences(lang: str, all_sentences: set[str]) -> tuple[list[str], int]:
+    split_b = sorted(
+        (digest(s).hex(), s) for s in all_sentences if not in_split_a(s) and not s.startswith("#")
+    )
+    chosen: list[str] = []
+    total = 0
+    for _, sentence in split_b:
+        if total >= STRESS_WORDS[lang]:
+            break
+        chosen.append(sentence)
+        total += len(sentence.split())
+    print(f"{lang}: {len(chosen)} stress sentences, {total} words", file=sys.stderr)
+    return chosen, total
 
 
 def main() -> None:
@@ -117,14 +147,26 @@ def main() -> None:
     cache = Path(sys.argv[1])
     out = Path(__file__).resolve().parent / "common-words"
     out.mkdir(exist_ok=True)
+    stress = Path(__file__).resolve().parents[3] / "evals" / "stress"
+    stress.mkdir(exist_ok=True)
     for lang in SOURCES:
-        ranked = derive(lang, cache)
+        all_sentences = sentences(lang, cache)
+        ranked = common_words(lang, all_sentences)
         header = (
             f"# The {len(ranked):,} most frequent word forms in Common Voice's CC0 {lang} sentences "
             f"(split A),\n# most frequent first. Generated by ../derive-common-words.py from commit "
             f"{COMMIT};\n# see evals/SOURCES.md.\n"
         )
         (out / f"{lang}.txt").write_text(header + "\n".join(ranked) + "\n", encoding="utf-8")
+
+        chosen, total = stress_sentences(lang, all_sentences)
+        header = (
+            f"# {len(chosen):,} sentences ({total:,} words) from Common Voice's CC0 {lang} sentences "
+            f"(split B, never in the\n# common-word lists), for psst-eval stress. Generated by "
+            f"crates/psst-dict/data/derive-common-words.py\n# from commit {COMMIT}; "
+            f"see evals/SOURCES.md.\n"
+        )
+        (stress / f"{lang}.txt").write_text(header + "\n".join(chosen) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":
