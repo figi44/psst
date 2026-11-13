@@ -1,0 +1,231 @@
+//! The text as the stages see it (plan 6.4 steps 1, 2 and 6): `raw_text`, its tokens with their
+//! word annotations, and the edits made so far.
+
+use std::ops::Range;
+
+use psst_proto::{Edit, EngineResult, Final, Word};
+
+/// A run of non-whitespace in `raw_text`, with the spacing before it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Token {
+    /// The current text; empty once removed.
+    pub text: String,
+    /// The current spacing before the token.
+    pub space: String,
+    /// The raw span of the token. It grows when a dictionary match merges tokens.
+    pub raw: Range<usize>,
+    /// The raw span of the spacing before it.
+    pub raw_space: Range<usize>,
+    /// The lowest probability of the engine words it overlaps.
+    pub prob: Option<f32>,
+    /// The outermost times of the engine words it overlaps.
+    pub start_ms: Option<u32>,
+    pub end_ms: Option<u32>,
+    pub removed: bool,
+    /// Accepted by the dictionary; rules leave it alone.
+    pub protected: bool,
+}
+
+/// A segment with text, and its tokens.
+#[derive(Debug, Clone)]
+pub(crate) struct SegmentTokens {
+    /// Index into `EngineResult::segments`.
+    pub index: usize,
+    pub tokens: Range<usize>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Draft {
+    pub raw: String,
+    pub segments: Vec<SegmentTokens>,
+    pub tokens: Vec<Token>,
+    /// Text after the last token (the trailing space).
+    pub tail: String,
+    pub edits: Vec<Edit>,
+}
+
+impl Draft {
+    /// Steps 1 and 2: `raw_text` is the segment texts, each trimmed, joined with single spaces;
+    /// tokens split it on whitespace and carry the annotations of the words they overlap.
+    pub fn new(result: &EngineResult) -> Self {
+        let mut raw = String::new();
+        let mut segments = Vec::new();
+        let mut tokens: Vec<Token> = Vec::new();
+        for (index, segment) in result.segments.iter().enumerate() {
+            let text = segment.text.trim();
+            if text.is_empty() {
+                continue;
+            }
+            let mut space_start = raw.len();
+            if !raw.is_empty() {
+                raw.push(' ');
+            }
+            let base = raw.len();
+            raw.push_str(text);
+            let first = tokens.len();
+            for range in non_whitespace(text) {
+                let range = base + range.start..base + range.end;
+                tokens.push(Token {
+                    text: raw[range.clone()].to_owned(),
+                    space: raw[space_start..range.start].to_owned(),
+                    raw_space: space_start..range.start,
+                    raw: range.clone(),
+                    prob: None,
+                    start_ms: None,
+                    end_ms: None,
+                    removed: false,
+                    protected: false,
+                });
+                space_start = range.end;
+            }
+            if let Some(words) = &segment.words {
+                annotate(&mut tokens[first..], words);
+            }
+            segments.push(SegmentTokens { index, tokens: first..tokens.len() });
+        }
+        Self { raw, segments, tokens, tail: String::new(), edits: Vec::new() }
+    }
+
+    /// Indices of the tokens whose raw span overlaps `range`.
+    pub fn overlapping(&self, range: &Range<usize>) -> Range<usize> {
+        let start = self.tokens.partition_point(|t| t.raw.end <= range.start);
+        let end = start + self.tokens[start..].partition_point(|t| t.raw.start < range.end);
+        start..end
+    }
+
+    /// Whether any token is left.
+    pub fn has_text(&self) -> bool {
+        self.tokens.iter().any(|t| !t.removed)
+    }
+
+    /// Step 6: the tokens with their spacing.
+    pub fn finish(self, language: String) -> Final {
+        let mut text = String::with_capacity(self.raw.len() + self.tail.len());
+        for token in &self.tokens {
+            text.push_str(&token.space);
+            text.push_str(&token.text);
+        }
+        text.push_str(&self.tail);
+        Final { text, raw_text: self.raw, edits: self.edits, language }
+    }
+}
+
+/// Byte ranges of the runs of non-whitespace in `text`.
+fn non_whitespace(text: &str) -> impl Iterator<Item = Range<usize>> + '_ {
+    let mut start = None;
+    text.char_indices().chain(std::iter::once((text.len(), ' '))).filter_map(move |(i, c)| {
+        match (c.is_whitespace(), start) {
+            (true, Some(s)) => {
+                start = None;
+                Some(s..i)
+            }
+            (false, None) => {
+                start = Some(i);
+                None
+            }
+            _ => None,
+        }
+    })
+}
+
+/// Maps a segment's engine words onto its tokens by walking the concatenated word texts against
+/// the tokens, ignoring whitespace. Each token gets the lowest probability and the outermost times
+/// of the words it overlaps, so "3" + ".14" both annotate the token "3.14". If the words don't
+/// spell out exactly the segment's text, its tokens get no annotations.
+fn annotate(tokens: &mut [Token], words: &[Word]) {
+    let mut owner: Vec<usize> = Vec::new();
+    let mut chars: Vec<char> = Vec::new();
+    for (i, token) in tokens.iter().enumerate() {
+        for c in token.text.chars() {
+            owner.push(i);
+            chars.push(c);
+        }
+    }
+    let mut at = 0;
+    let mut spans: Vec<(Range<usize>, &Word)> = Vec::with_capacity(words.len());
+    for word in words {
+        let start = at;
+        for c in word.text.chars().filter(|c| !c.is_whitespace()) {
+            if chars.get(at) != Some(&c) {
+                return;
+            }
+            at += 1;
+        }
+        if at > start {
+            spans.push((start..at, word));
+        }
+    }
+    if at != chars.len() {
+        return;
+    }
+    for (span, word) in spans {
+        for token in &mut tokens[owner[span.start]..=owner[span.end - 1]] {
+            token.prob = Some(token.prob.map_or(word.prob, |p| p.min(word.prob)));
+            token.start_ms = Some(token.start_ms.map_or(word.start_ms, |t| t.min(word.start_ms)));
+            token.end_ms = Some(token.end_ms.map_or(word.end_ms, |t| t.max(word.end_ms)));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use psst_proto::{EngineResult, Segment, Word};
+
+    use super::Draft;
+
+    fn word(text: &str, start_ms: u32, end_ms: u32, prob: f32) -> Word {
+        Word { text: text.into(), start_ms, end_ms, prob }
+    }
+
+    fn draft(text: &str, words: Vec<Word>) -> Draft {
+        let segment = Segment { text: text.into(), start_ms: 0, end_ms: 0, no_speech_prob: None, words: Some(words) };
+        Draft::new(&EngineResult { language: "en".into(), speech_ms: None, segments: vec![segment] })
+    }
+
+    type Annotation = (String, Option<f32>, Option<u32>, Option<u32>);
+
+    fn annotations(draft: &Draft) -> Vec<Annotation> {
+        draft.tokens.iter().map(|t| (t.text.clone(), t.prob, t.start_ms, t.end_ms)).collect()
+    }
+
+    fn annotated(text: &str, prob: f32, start: u32, end: u32) -> Annotation {
+        (text.into(), Some(prob), Some(start), Some(end))
+    }
+
+    // These annotations are what Phase 2's confidence gate reads; Phase 1 output doesn't depend on
+    // them, so they're checked at the token seam.
+    #[test]
+    fn a_number_split_into_two_words_annotates_one_token_with_the_weaker_word() {
+        let draft = draft(
+            " Pi is 3.14.",
+            vec![
+                word(" Pi", 0, 200, 0.9),
+                word(" is", 200, 300, 0.95),
+                word(" 3", 300, 500, 0.8),
+                word(".14.", 500, 900, 0.4),
+            ],
+        );
+        assert_eq!(
+            annotations(&draft),
+            [annotated("Pi", 0.9, 0, 200), annotated("is", 0.95, 200, 300), annotated("3.14.", 0.4, 300, 900)]
+        );
+    }
+
+    #[test]
+    fn a_word_spanning_two_tokens_annotates_both() {
+        let draft = draft(" New York", vec![word(" New York", 0, 800, 0.7)]);
+        assert_eq!(annotations(&draft), [annotated("New", 0.7, 0, 800), annotated("York", 0.7, 0, 800)]);
+    }
+
+    #[test]
+    fn words_that_dont_spell_the_text_leave_the_segment_unannotated() {
+        for words in [
+            vec![word(" Hello", 0, 100, 0.9), word(" word", 100, 200, 0.9)],
+            vec![word(" Hello", 0, 100, 0.9)],
+            vec![word(" Hello", 0, 100, 0.9), word(" world", 100, 200, 0.9), word(" again", 200, 300, 0.9)],
+        ] {
+            let draft = draft(" Hello world", words);
+            assert_eq!(annotations(&draft), [("Hello".into(), None, None, None), ("world".into(), None, None, None)]);
+        }
+    }
+}
