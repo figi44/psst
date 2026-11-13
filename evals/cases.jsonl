@@ -31,6 +31,7 @@
 {"id":"syn-cs-short-01-jirka-fast","lang":"cs","source":"synthetic","split":"tune","reference":"Ano.","terms":[],"must_pass":true}
 {"id":"syn-cs-short-02-jirka-slow","lang":"cs","source":"synthetic","split":"holdout","reference":"Ne.","terms":[],"must_pass":true}
 {"id":"syn-cs-short-03-jirka-fast","lang":"cs","source":"synthetic","split":"tune","reference":"Kubernetes.","terms":["Kubernetes"],"must_pass":true}
+{"id":"syn-cs-short-04-jirka-slow","lang":"cs","source":"synthetic","split":"holdout","reference":"Ano.","terms":[],"must_pass":true}
 {"id":"syn-cs-silence","lang":"cs","source":"synthetic","split":"tune","reference":"","terms":[],"must_pass":true}
 {"id":"syn-cs-typing","lang":"cs","source":"synthetic","split":"tune","reference":"","terms":[],"must_pass":true}
 {"id":"syn-en-001-lj","lang":"en","source":"synthetic","split":"tune","reference":"Push the fix to psst before lunch.","terms":["psst"],"must_pass":false}
@@ -118,6 +119,7 @@
 {"id":"syn-en-short-03-cori","lang":"en","source":"synthetic","split":"tune","reference":"Hyprland.","terms":["Hyprland"],"must_pass":true}
 {"id":"syn-en-short-04-lj","lang":"en","source":"synthetic","split":"holdout","reference":"Tailscale.","terms":["Tailscale"],"must_pass":true}
 {"id":"syn-en-short-05-norman","lang":"en","source":"synthetic","split":"tune","reference":"Thanks.","terms":[],"must_pass":true}
+{"id":"syn-en-short-06-cori","lang":"en","source":"synthetic","split":"holdout","reference":"No.","terms":[],"must_pass":true}
 {"id":"syn-en-silence","lang":"en","source":"synthetic","split":"tune","reference":"","terms":[],"must_pass":true}
 {"id":"syn-en-typing","lang":"en","source":"synthetic","split":"holdout","reference":"","terms":[],"must_pass":true}
 {"id":"syn-en-white","lang":"en","source":"synthetic","split":"holdout","reference":"","terms":[],"must_pass":true}

@@ -127,3 +127,4 @@ en-short-02 No.
 en-short-03 [[Hyprland|hyper land]].
 en-short-04 [[Tailscale]].
 en-short-05 Thanks.
+en-short-06 No.

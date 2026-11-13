@@ -56,3 +56,4 @@ cs-long-03 Poznámky k dnešnímu incidentu. Ráno začaly v nástroji [[Grafana
 cs-short-01 Ano.
 cs-short-02 Ne.
 cs-short-03 [[Kubernetes]].
+cs-short-04 Ano.
