@@ -89,6 +89,17 @@ impl FeedShared {
     pub fn failure(&self) -> Option<String> {
         self.failed.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
+
+    /// A glitch whose length is unknown.
+    pub fn glitch(&self) {
+        self.glitched.store(true, Ordering::Release);
+    }
+
+    /// Capture can't continue (for example the device is gone). The first reason is kept.
+    pub fn fail(&self, reason: impl FnOnce() -> String) {
+        let mut failed = self.failed.lock().unwrap_or_else(|e| e.into_inner());
+        failed.get_or_insert_with(reason);
+    }
 }
 
 /// The capture side of the ring buffer. Never blocks.
@@ -144,7 +155,7 @@ impl Feed {
 
     /// A glitch of unknown length.
     pub fn glitch(&self) {
-        self.shared.glitched.store(true, Ordering::Release);
+        self.shared.glitch();
     }
 
     /// Counts a capture callback, for draining at stop.
@@ -154,8 +165,7 @@ impl Feed {
 
     /// Capture can't continue (for example the device is gone).
     pub fn fail(&self, reason: String) {
-        let mut failed = self.shared.failed.lock().unwrap_or_else(|e| e.into_inner());
-        failed.get_or_insert(reason);
+        self.shared.fail(|| reason);
     }
 
     pub fn shared(&self) -> &Arc<FeedShared> {
