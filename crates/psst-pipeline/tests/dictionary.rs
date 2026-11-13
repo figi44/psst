@@ -3,7 +3,7 @@
 //! Cases marked "Handy" are adapted from Handy's `src-tauri/src/audio_toolkit/text.rs`
 //! (github.com/cjpais/Handy, MIT) and cases marked "t3code" from t3code's
 //! `apps/server/src/speech/SpeechService.test.ts` (github.com/pingdotgg/t3code, MIT). Their fuzzy
-//! cases belong to Phase 2.
+//! cases are in `fuzzy.rs`.
 
 mod support;
 

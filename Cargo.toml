@@ -18,3 +18,11 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# The dictionary matcher's performance test (plan 7.1: 200 words against 500 terms in under 5 ms)
+# runs with every other test, so the matcher is optimised in the dev profile too.
+[profile.dev.package.psst-dict]
+opt-level = 3
+
+[profile.dev.package.rphonetic]
+opt-level = 3
