@@ -2,32 +2,10 @@ name: Android
 
 on:
   pull_request:
-    paths:
-      - android/**
-      - crates/psst-android/**
-      - crates/psst-client/**
-      - crates/psst-proto/**
-      - Cargo.toml
-      - Cargo.lock
-      - flake.nix
-      - flake.lock
-      - justfile
-      - .github/workflows/android.yml
-  # Each push to main publishes a prerelease; a tag, which the paths don't filter, makes a stable one.
+  # Each push to main that changes the app publishes a prerelease; a tag makes a stable one.
   push:
     branches: [main]
     tags: ['v*']
-    paths:
-      - android/**
-      - crates/psst-android/**
-      - crates/psst-client/**
-      - crates/psst-proto/**
-      - Cargo.toml
-      - Cargo.lock
-      - flake.nix
-      - flake.lock
-      - justfile
-      - .github/workflows/android.yml
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -44,8 +22,27 @@ defaults:
     shell: bash
 
 jobs:
+  changes:
+    name: Changes
+    uses: ./.github/workflows/changes.yml
+    with:
+      paths: |
+        android/*
+        crates/psst-android/*
+        crates/psst-client/*
+        crates/psst-proto/*
+        Cargo.toml
+        Cargo.lock
+        flake.nix
+        flake.lock
+        justfile
+        .github/workflows/android.yml
+        .github/workflows/changes.yml
+
   apk:
     name: APK
+    needs: changes
+    if: needs.changes.outputs.changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:

@@ -1,0 +1,62 @@
+# Whether a pull request or push touched any of `paths`. The caller's job is skipped when it
+# didn't: unlike a workflow that `on.paths` skips, a skipped job reports a check, which counts as
+# passing, so its check can be required.
+name: Changes
+
+on:
+  workflow_call:
+    inputs:
+      paths:
+        description: One glob per line, as bash's `[[ == ]]` matches it, so `*` also matches `/`.
+        type: string
+        required: true
+    outputs:
+      changed:
+        value: ${{ jobs.diff.outputs.changed }}
+
+permissions:
+  contents: read
+
+jobs:
+  diff:
+    name: Changed files
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      - id: diff
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PATHS: ${{ inputs.paths }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          changed() {
+            echo "changed=$1" >> "$GITHUB_OUTPUT"
+            echo "changed: $1 ($2)"
+            exit 0
+          }
+          case $GITHUB_EVENT_NAME in
+            pull_request) range=$BASE...$HEAD ;;
+            push)
+              [[ $GITHUB_REF == refs/tags/* ]] && changed true "a tag"
+              [[ $BEFORE =~ ^0+$ ]] && changed true "a new branch"
+              range=$BEFORE...$GITHUB_SHA
+              ;;
+            *) changed true "$GITHUB_EVENT_NAME" ;;
+          esac
+          # A force-push's old head may be gone, and a comparison lists at most 300 files.
+          files=$(gh api "repos/$GITHUB_REPOSITORY/compare/$range" \
+            --jq 'if (.files | length) >= 300 then "!many" else .files[] | .filename, (.previous_filename // empty) end') \
+            || changed true "no comparison"
+          [[ $files == '!many' ]] && changed true "300 files or more"
+          while IFS= read -r file; do
+            while IFS= read -r glob; do
+              # shellcheck disable=SC2053 # the glob must match as a pattern
+              [[ -n $glob && $file == $glob ]] && changed true "$file"
+            done <<< "$PATHS"
+          done <<< "$files"
+          changed false "none of the paths"

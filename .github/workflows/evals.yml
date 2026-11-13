@@ -5,41 +5,36 @@ name: Evals
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
-    paths:
-      - evals/**
-      - crates/psst-eval/**
-      - crates/psst-pipeline/**
-      - crates/psst-dict/**
-      - crates/psst-config/**
-      - crates/psst-proto/**
-      - crates/psst-engine-proto/**
-      - Cargo.toml
-      - Cargo.lock
-      - flake.nix
-      - flake.lock
-      - .github/workflows/evals.yml
   push:
     branches: [main]
-    paths:
-      - evals/**
-      - crates/psst-eval/**
-      - crates/psst-pipeline/**
-      - crates/psst-dict/**
-      - crates/psst-config/**
-      - crates/psst-proto/**
-      - crates/psst-engine-proto/**
-      - Cargo.toml
-      - Cargo.lock
-      - flake.nix
-      - flake.lock
-      - .github/workflows/evals.yml
 
 permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Changes
+    uses: ./.github/workflows/changes.yml
+    with:
+      paths: |
+        evals/*
+        crates/psst-eval/*
+        crates/psst-pipeline/*
+        crates/psst-dict/*
+        crates/psst-config/*
+        crates/psst-proto/*
+        crates/psst-engine-proto/*
+        Cargo.toml
+        Cargo.lock
+        flake.nix
+        flake.lock
+        .github/workflows/evals.yml
+        .github/workflows/changes.yml
+
   evals:
     name: Replay and stress
+    needs: changes
+    if: needs.changes.outputs.changed == 'true'
     # Every label event runs the gate, even for other labels: a skipped run would count as a
     # passing check and hide an earlier failure on the same commit.
     concurrency:
