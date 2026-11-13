@@ -21,6 +21,7 @@ use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
 
 use crate::clipboard::{self, Action, Content, Gen, Input, Machine, OfferKey, OwnKind, Owner, ReadError, ReadId};
 use crate::dc::{Bytes, DcDevice, DcHandler, DcManager, DcOffer, DcSource, Proto, delegate_dc};
+use crate::input::{Devices, Keys};
 use crate::overlay::{Globals as SurfaceGlobals, Overlay};
 use crate::{Chord, DataControl, Options, WaylandCmd, WaylandEvent, keymap};
 
@@ -99,6 +100,7 @@ pub(crate) struct Wl {
     pub(crate) qh: QueueHandle<State>,
     fd_source: RegistrationToken,
     pub(crate) surfaces: SurfaceGlobals,
+    pub(crate) devices: Devices,
     dc: Option<(DcManager, DcDevice)>,
     vk: Option<ZwpVirtualKeyboardV1>,
     offers: HashMap<OfferKey, DcOffer>,
@@ -119,6 +121,7 @@ pub(crate) struct State {
     writes: HashMap<u64, Io>,
     next_write: u64,
     pub(crate) overlay: Overlay,
+    pub(crate) keys: Keys,
     /// Set by event handlers; the connection is dropped once dispatching is done.
     pub(crate) broken: Option<String>,
     flush_retry: Option<RegistrationToken>,
@@ -140,6 +143,7 @@ impl State {
             writes: HashMap::new(),
             next_write: 1,
             overlay: Overlay::new(),
+            keys: Keys::default(),
             broken: None,
             flush_retry: None,
             connect_failed: false,
@@ -225,6 +229,7 @@ impl State {
             }
         });
         let surfaces = SurfaceGlobals::bind(&globals, &qh);
+        let devices = Devices::bind(&globals, &qh);
         let fd_source = self
             .lh
             .insert_source(Generic::new(ConnFd(conn.backend()), Interest::READ, Mode::Level), |_, _, st| {
@@ -238,6 +243,7 @@ impl State {
             qh,
             fd_source,
             surfaces,
+            devices,
             dc,
             vk,
             offers: HashMap::new(),
@@ -330,6 +336,7 @@ impl State {
         }
         self.machine.handle(Input::Reset);
         self.overlay.forget_surface();
+        self.keys = Keys::default();
         let mut jobs: Vec<_> = self.jobs.drain().collect();
         jobs.sort_by_key(|(generation, _)| *generation);
         for (generation, job) in jobs {
@@ -344,6 +351,7 @@ impl State {
     fn on_cmd(&mut self, cmd: WaylandCmd) {
         match cmd {
             WaylandCmd::Overlay(state) => self.set_overlay(state),
+            WaylandCmd::Menu(spec) => self.set_menu(spec),
             WaylandCmd::SnapshotClipboard { generation } => {
                 if self.clipboard_ready(false).is_ok() {
                     self.feed(Input::SnapshotRequested { generation });
@@ -693,6 +701,5 @@ impl Dispatch<WlCallback, SyncTag> for State {
     }
 }
 
-delegate_noop!(State: ignore WlSeat);
 delegate_noop!(State: ZwpVirtualKeyboardManagerV1);
 delegate_noop!(State: ZwpVirtualKeyboardV1);

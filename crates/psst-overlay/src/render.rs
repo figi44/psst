@@ -4,11 +4,12 @@
 use std::sync::Arc;
 
 use cosmic_text::{
-    Attrs, Buffer, Ellipsize, EllipsizeHeightLimit, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent,
-    Wrap, fontdb,
+    Attrs, Buffer, Ellipsize, EllipsizeHeightLimit, Family, FontSystem, LayoutGlyph, Metrics, Shaping, SwashCache,
+    SwashContent, Wrap, fontdb,
 };
 use tiny_skia::{FillRule, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, Stroke, Transform};
 
+use crate::menu::{Line, Mark, Menu, PAD, ROW};
 use crate::{OverlayState, Rgba, Style, Wave, physical_size};
 
 /// Inter 4.1 Medium, SIL Open Font License 1.1 (`fonts/Inter-LICENSE.txt`).
@@ -18,6 +19,8 @@ const FAMILY: &str = "Inter";
 const SUCCESS: Rgba = Rgba::new(0x3d, 0xd6, 0x8c, 0xff);
 const WARNING: Rgba = Rgba::new(0xff, 0xb0, 0x3b, 0xff);
 const ERROR: Rgba = Rgba::new(0xff, 0x5f, 0x52, 0xff);
+
+const MENU_TEXT: f32 = 14.0;
 
 /// Building one loads the font, so build one and keep it.
 pub struct Renderer {
@@ -61,6 +64,16 @@ impl Renderer {
         let (w, h) = (width.max(1) as f32, height.max(1) as f32);
         let mut frame = Frame { pixmap, w, h, sx: pw as f32 / w, sy: ph as f32 / h, renderer: self, style };
         frame.draw(state, wave);
+        frame.pixmap
+    }
+
+    pub fn render_menu(&mut self, menu: &Menu, style: &Style, scale: f64) -> Pixmap {
+        let (width, height) = menu.size();
+        let (pw, ph) = physical_size(width, height, scale);
+        let pixmap = Pixmap::new(pw, ph).expect("non-zero size");
+        let (w, h) = (width as f32, height as f32);
+        let mut frame = Frame { pixmap, w, h, sx: pw as f32 / w, sy: ph as f32 / h, renderer: self, style };
+        frame.menu(menu);
         frame.pixmap
     }
 }
@@ -186,15 +199,86 @@ impl Frame<'_> {
         self.pixmap.stroke_path(path, &paint, &stroke, t, None);
     }
 
-    /// The faint hairline edge makes it read on dark and light windows alike.
     fn pill(&mut self) {
+        self.panel(self.h / 2.0);
+    }
+
+    /// The faint hairline edge makes it read on dark and light windows alike.
+    fn panel(&mut self, radius: f32) {
         let (w, h) = (self.w, self.h);
-        if let Some(p) = rounded_rect(0.0, 0.0, w, h, h / 2.0) {
+        if let Some(p) = rounded_rect(0.0, 0.0, w, h, radius) {
             self.fill(&p, self.style.background);
         }
         let hair = 1.0 / self.sy;
-        if let Some(p) = rounded_rect(hair / 2.0, hair / 2.0, w - hair, h - hair, (h - hair) / 2.0) {
+        if let Some(p) = rounded_rect(hair / 2.0, hair / 2.0, w - hair, h - hair, radius - hair / 2.0) {
             self.stroke(&p, self.style.foreground.faded(0.10), hair);
+        }
+    }
+
+    fn menu(&mut self, menu: &Menu) {
+        let fg = self.style.foreground;
+        let muted = fg.faded(0.62);
+        self.panel(14.0);
+        let (x0, x1) = (PAD, self.w - PAD);
+        let text_x = x0 + 12.0;
+        for (i, line) in menu.lines().iter().enumerate() {
+            let top = PAD + i as f32 * ROW;
+            let cy = top + ROW / 2.0;
+            match line {
+                Line::Header(title) => {
+                    self.polyline(&[(x0 + 15.0, cy - 5.0), (x0 + 10.0, cy), (x0 + 15.0, cy + 5.0)], muted, 1.8);
+                    self.text_at(title, (x0 + 24.0, cy), x1 - x0 - 36.0, MENU_TEXT, muted, Align::Left);
+                    let y = top + ROW - 1.0;
+                    self.polyline(&[(x0 + 6.0, y), (x1 - 6.0, y)], fg.faded(0.08), 1.0 / self.sy);
+                }
+                Line::Item(item) => {
+                    if menu.selected() == Some(i)
+                        && let Some(p) = rounded_rect(x0, top + 1.0, x1 - x0, ROW - 2.0, 9.0)
+                    {
+                        self.fill(&p, fg.faded(0.10));
+                    }
+                    let color = if item.enabled() { fg } else { fg.faded(0.4) };
+                    let mut right = x1 - 12.0;
+                    match item.mark {
+                        Mark::Chevron => {
+                            self.polyline(
+                                &[(right - 4.0, cy - 5.0), (right + 1.0, cy), (right - 4.0, cy + 5.0)],
+                                muted,
+                                1.8,
+                            );
+                            right -= 16.0;
+                        }
+                        Mark::Check => {
+                            self.polyline(&[(right - 11.0, cy), (right - 7.0, cy + 4.0), (right, cy - 4.5)], fg, 2.0);
+                            right -= 20.0;
+                        }
+                        Mark::None => {}
+                    }
+                    let detail = match &item.detail {
+                        Some(detail) => {
+                            let room = (right - text_x) * 0.5;
+                            self.text_at(detail, (right - room, cy), room, MENU_TEXT, muted, Align::Right) + 10.0
+                        }
+                        None => 0.0,
+                    };
+                    self.text_at(&item.label, (text_x, cy), right - detail - text_x, MENU_TEXT, color, Align::Left);
+                }
+                Line::Note(text) => {
+                    self.text_at(text, (text_x, cy), x1 - 12.0 - text_x, MENU_TEXT, muted, Align::Left);
+                }
+                Line::Field => {
+                    if let Some(p) = rounded_rect(x0, top + 2.0, x1 - x0, ROW - 4.0, 9.0) {
+                        self.fill(&p, fg.faded(0.07));
+                    }
+                    let (word, caret) = menu.word();
+                    let room = x1 - 12.0 - text_x;
+                    if word.is_empty() {
+                        let hint = "The word as it should be written";
+                        self.text_at(hint, (text_x + 4.0, cy), room - 4.0, MENU_TEXT, fg.faded(0.4), Align::Left);
+                    }
+                    self.field(word, caret, (text_x, cy), room, fg);
+                }
+            }
         }
     }
 
@@ -329,42 +413,87 @@ impl Frame<'_> {
     }
 
     fn text(&mut self, text: &str, x: f32, max_w: f32, color: Rgba, align: Align) -> f32 {
+        let size = (self.h * 0.31).clamp(9.0, 24.0);
+        self.text_at(text, (x, self.h / 2.0), max_w, size, color, align)
+    }
+
+    /// One line, ellipsised to `max_w`, with its capitals centred on `cy`. Returns the width used.
+    fn text_at(&mut self, text: &str, (x, cy): (f32, f32), max_w: f32, size: f32, color: Rgba, align: Align) -> f32 {
         if max_w <= 0.0 || text.is_empty() {
             return 0.0;
         }
-        let size = (self.h * 0.31).clamp(9.0, 24.0);
-        let (sx, sy) = (self.sx, self.sy);
-        let Renderer { fonts, glyphs } = &mut *self.renderer;
-        let metrics = Metrics::new(size * sy, size * 1.25 * sy);
-        let mut buffer = Buffer::new(fonts, metrics);
-        buffer.set_wrap(Wrap::None);
-        buffer.set_ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1)));
-        buffer.set_size(Some(max_w * sx), None);
+        let sx = self.sx;
         // Newlines would start lines nobody sees; the overlay shows one.
         let one_line: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        buffer.set_text(&one_line, &Attrs::new().family(Family::Name(FAMILY)), Shaping::Advanced, None);
-        buffer.shape_until_scroll(fonts, false);
-        let Some(run) = buffer.layout_runs().next() else { return 0.0 };
-        let width = run.line_w.min(max_w * sx);
+        let Some((glyphs, line_w)) = self.shape(&one_line, size, Some(max_w)) else { return 0.0 };
+        let width = line_w.min(max_w * sx);
         let px = match align {
             Align::Left => x * sx,
             Align::Right => (x + max_w) * sx - width,
         };
-        // Centre the capitals: Inter's cap height is 0.727 em.
-        let baseline = (self.h / 2.0 + 0.36 * size) * sy;
-        for glyph in run.glyphs {
-            let pg = glyph.physical((px, baseline.round()), 1.0);
-            let Some(image) = glyphs.get_image(fonts, pg.cache_key) else { continue };
-            let left = pg.x + image.placement.left;
-            let top = pg.y - image.placement.top;
-            let (gw, gh) = (image.placement.width, image.placement.height);
+        self.draw_glyphs(&glyphs, (px, self.baseline(cy, size)), (0, self.pixmap.width() as i32), color);
+        width / sx
+    }
+
+    /// One line that scrolls to keep the caret in view instead of ellipsising.
+    fn field(&mut self, text: &str, caret: usize, (x, cy): (f32, f32), max_w: f32, color: Rgba) {
+        let (glyphs, line_w) = self.shape(text, MENU_TEXT, None).unwrap_or_default();
+        let caret_px = glyphs.iter().find(|g| g.start >= caret).map_or(line_w, |g| g.x);
+        let (left, room) = (x * self.sx, max_w * self.sx);
+        let shift = (caret_px - room).max(0.0);
+        let clip = (left.floor() as i32, (left + room).ceil() as i32);
+        self.draw_glyphs(&glyphs, (left - shift, self.baseline(cy, MENU_TEXT)), clip, color);
+        let caret_x = (left - shift + caret_px) / self.sx;
+        self.polyline(&[(caret_x, cy - 9.0), (caret_x, cy + 9.0)], color, 1.5);
+    }
+
+    /// Centres the capitals on `cy`: Inter's cap height is 0.727 em.
+    fn baseline(&self, cy: f32, size: f32) -> f32 {
+        ((cy + 0.36 * size) * self.sy).round()
+    }
+
+    /// Physical pixels; `max_w` (logical) ellipsises the end.
+    fn shape(&mut self, text: &str, size: f32, max_w: Option<f32>) -> Option<(Vec<LayoutGlyph>, f32)> {
+        let (sx, sy) = (self.sx, self.sy);
+        let fonts = &mut self.renderer.fonts;
+        let metrics = Metrics::new(size * sy, size * 1.25 * sy);
+        let mut buffer = Buffer::new(fonts, metrics);
+        buffer.set_wrap(Wrap::None);
+        if let Some(max_w) = max_w {
+            buffer.set_ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1)));
+            buffer.set_size(Some(max_w * sx), None);
+        }
+        buffer.set_text(text, &Attrs::new().family(Family::Name(FAMILY)), Shaping::Advanced, None);
+        buffer.shape_until_scroll(fonts, false);
+        let run = buffer.layout_runs().next()?;
+        Some((run.glyphs.to_vec(), run.line_w))
+    }
+
+    /// Glyphs outside the physical columns `clip` are cut off.
+    fn draw_glyphs(&mut self, glyphs: &[LayoutGlyph], origin: (f32, f32), clip: (i32, i32), color: Rgba) {
+        let Renderer { fonts, glyphs: cache } = &mut *self.renderer;
+        for glyph in glyphs {
+            let pg = glyph.physical(origin, 1.0);
+            let Some(image) = cache.get_image(fonts, pg.cache_key) else { continue };
+            let at = (pg.x + image.placement.left, pg.y - image.placement.top);
+            let size = (image.placement.width, image.placement.height);
+            let data = &image.data;
             match image.content {
-                SwashContent::Mask => blit_mask(&mut self.pixmap, left, top, gw, gh, &image.data, color),
-                SwashContent::Color => blit_rgba(&mut self.pixmap, left, top, gw, gh, &image.data, color.a),
+                SwashContent::Mask => blit(&mut self.pixmap, at, size, clip, |i| {
+                    let cov = data[i] as u32;
+                    let a = mul255(cov, color.a as u32);
+                    (cov != 0)
+                        .then(|| [mul255(color.r as u32, a), mul255(color.g as u32, a), mul255(color.b as u32, a), a])
+                }),
+                // Colour glyphs come as straight-alpha RGBA.
+                SwashContent::Color => blit(&mut self.pixmap, at, size, clip, |i| {
+                    let s = &data[i * 4..][..4];
+                    let a = mul255(s[3] as u32, color.a as u32);
+                    Some([mul255(s[0] as u32, a), mul255(s[1] as u32, a), mul255(s[2] as u32, a), a])
+                }),
                 SwashContent::SubpixelMask => {}
             }
         }
-        width / sx
     }
 }
 
@@ -434,8 +563,16 @@ fn mul255(a: u32, b: u32) -> u32 {
     (a * b + 127) / 255
 }
 
-fn blit_mask(pixmap: &mut Pixmap, x: i32, y: i32, w: u32, h: u32, mask: &[u8], color: Rgba) {
+/// `src(i)` is the premultiplied colour of the image's `i`th pixel, if it has one.
+fn blit(
+    pixmap: &mut Pixmap,
+    (x, y): (i32, i32),
+    (w, h): (u32, u32),
+    clip: (i32, i32),
+    src: impl Fn(usize) -> Option<[u32; 4]>,
+) {
     let (pw, ph) = (pixmap.width() as i32, pixmap.height() as i32);
+    let columns = clip.0.max(0)..clip.1.min(pw);
     let data = pixmap.data_mut();
     for j in 0..h as i32 {
         let py = y + j;
@@ -444,38 +581,12 @@ fn blit_mask(pixmap: &mut Pixmap, x: i32, y: i32, w: u32, h: u32, mask: &[u8], c
         }
         for i in 0..w as i32 {
             let px = x + i;
-            if !(0..pw).contains(&px) {
+            if !columns.contains(&px) {
                 continue;
             }
-            let cov = mask[(j * w as i32 + i) as usize] as u32;
-            if cov == 0 {
-                continue;
+            if let Some(src) = src((j * w as i32 + i) as usize) {
+                blend(&mut data[((py * pw + px) * 4) as usize..][..4], src);
             }
-            let a = mul255(cov, color.a as u32);
-            let src = [mul255(color.r as u32, a), mul255(color.g as u32, a), mul255(color.b as u32, a), a];
-            blend(&mut data[((py * pw + px) * 4) as usize..][..4], src);
-        }
-    }
-}
-
-/// Colour glyphs come as straight-alpha RGBA.
-fn blit_rgba(pixmap: &mut Pixmap, x: i32, y: i32, w: u32, h: u32, rgba: &[u8], alpha: u8) {
-    let (pw, ph) = (pixmap.width() as i32, pixmap.height() as i32);
-    let data = pixmap.data_mut();
-    for j in 0..h as i32 {
-        let py = y + j;
-        if !(0..ph).contains(&py) {
-            continue;
-        }
-        for i in 0..w as i32 {
-            let px = x + i;
-            if !(0..pw).contains(&px) {
-                continue;
-            }
-            let s = &rgba[((j * w as i32 + i) * 4) as usize..][..4];
-            let a = mul255(s[3] as u32, alpha as u32);
-            let src = [mul255(s[0] as u32, a), mul255(s[1] as u32, a), mul255(s[2] as u32, a), a];
-            blend(&mut data[((py * pw + px) * 4) as usize..][..4], src);
         }
     }
 }

@@ -9,7 +9,10 @@ use std::{
 };
 
 use psst_config::{Anchor as ConfigAnchor, Color};
-use psst_wayland::{Anchor, Chord, OverlayConfig, OverlayState, Rgba, Style, WaylandCmd, WaylandEvent, WaylandThread};
+use psst_wayland::{
+    Anchor, Chord, Listing, MenuSpec, ModelChoice, OverlayConfig, OverlayState, Rgba, Style, WaylandCmd, WaylandEvent,
+    WaylandThread,
+};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
@@ -100,7 +103,7 @@ impl WaylandSink for DesktopSink {
     fn send(&mut self, cmd: WaylandCmd) {
         let generation = match &cmd {
             WaylandCmd::Paste { generation, .. } | WaylandCmd::Copy { generation, .. } => Some(*generation),
-            WaylandCmd::Overlay(_) | WaylandCmd::SnapshotClipboard { .. } => None,
+            WaylandCmd::Overlay(_) | WaylandCmd::Menu(_) | WaylandCmd::SnapshotClipboard { .. } => None,
         };
         if let Err(stopped) = self.running.thread.send(cmd) {
             self.running.stopped.store(true, Ordering::Release);
@@ -151,7 +154,7 @@ impl WaylandSink for RecordingSink {
                 self.visible = state.is_some();
                 None
             }
-            WaylandCmd::SnapshotClipboard { .. } => None,
+            WaylandCmd::Menu(_) | WaylandCmd::SnapshotClipboard { .. } => None,
             WaylandCmd::Paste { generation, .. } => Some(WaylandEvent::Pasted { generation }),
             WaylandCmd::Copy { generation, .. } => Some(WaylandEvent::Copied { generation }),
         };
@@ -164,6 +167,7 @@ impl WaylandSink for RecordingSink {
 pub fn record(cmd: &WaylandCmd) -> Value {
     match cmd {
         WaylandCmd::Overlay(state) => json!({"cmd": "overlay", "state": state.as_ref().map(overlay_json)}),
+        WaylandCmd::Menu(spec) => json!({"cmd": "menu", "spec": spec.as_ref().map(menu_json)}),
         WaylandCmd::SnapshotClipboard { generation } => json!({"cmd": "snapshot", "generation": generation}),
         WaylandCmd::Paste { generation, text, chord, delay_ms } => json!({
             "cmd": "paste", "generation": generation, "text": text,
@@ -172,6 +176,19 @@ pub fn record(cmd: &WaylandCmd) -> Value {
         }),
         WaylandCmd::Copy { generation, text } => json!({"cmd": "copy", "generation": generation, "text": text}),
     }
+}
+
+fn menu_json(spec: &MenuSpec) -> Value {
+    let profiles = match &spec.profiles {
+        Listing::Loading => json!("loading"),
+        Listing::Ready(names) => json!(names),
+        Listing::Failed(reason) => json!({"failed": reason}),
+    };
+    let model = spec.model.map(|choice| match choice {
+        ModelChoice::Unload => "unload",
+        ModelChoice::Load => "load",
+    });
+    json!({"profile": spec.profile, "profiles": profiles, "model": model})
 }
 
 fn overlay_json(state: &OverlayState) -> Value {

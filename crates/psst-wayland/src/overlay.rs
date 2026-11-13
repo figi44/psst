@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use calloop::RegistrationToken;
-use psst_overlay::{Meter, OverlayState, Pixmap, Renderer};
+use psst_overlay::{Key, Menu, MenuOutcome, MenuSpec, Meter, OverlayState, Pixmap, Renderer};
 use rustix::fs::{MemfdFlags, ftruncate, memfd_create};
 use wayland_client::globals::GlobalList;
 use wayland_client::protocol::{
@@ -35,7 +35,7 @@ use crate::thread::State;
 use crate::{Anchor, WaylandEvent};
 
 pub(crate) struct Globals {
-    compositor: Option<WlCompositor>,
+    pub(crate) compositor: Option<WlCompositor>,
     shm: Option<WlShm>,
     layer_shell: Option<ZwlrLayerShellV1>,
     viewporter: Option<WpViewporter>,
@@ -68,6 +68,8 @@ pub(crate) struct Overlay {
     /// The next waveform frame, when it waits for [`WAVE_FRAME`] to pass.
     tick: Option<RegistrationToken>,
     desired: Option<OverlayState>,
+    /// Shown instead of the pill while it's open.
+    menu: Option<Menu>,
     surface: Option<Surface>,
     next_id: u64,
     warned: bool,
@@ -81,6 +83,7 @@ impl Overlay {
             advanced: None,
             tick: None,
             desired: None,
+            menu: None,
             surface: None,
             next_id: 1,
             warned: false,
@@ -88,13 +91,33 @@ impl Overlay {
     }
 
     fn waving(&self) -> bool {
-        self.desired.as_ref().is_some_and(|s| s.level().is_some())
+        self.menu.is_none() && self.desired.as_ref().is_some_and(|s| s.level().is_some())
     }
 
-    /// The connection is gone, and its objects with it.
+    fn wanted(&self) -> Option<Kind> {
+        match (&self.menu, &self.desired) {
+            (Some(_), _) => Some(Kind::Menu),
+            (None, Some(_)) => Some(Kind::Pill),
+            (None, None) => None,
+        }
+    }
+
+    pub(crate) fn is_menu(&self, surface: &WlSurface) -> bool {
+        self.surface.as_ref().is_some_and(|s| s.kind == Kind::Menu && s.wl_surface == *surface)
+    }
+
+    /// The connection is gone, and its objects with it. The menu goes too: it had the keyboard.
     pub(crate) fn forget_surface(&mut self) {
         self.surface = None;
+        self.menu = None;
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Pill,
+    /// Takes the keyboard and the pointer.
+    Menu,
 }
 
 /// Tags a surface's callbacks, so ones from a destroyed surface are ignored.
@@ -103,6 +126,7 @@ pub(crate) struct SurfaceId(u64);
 
 struct Surface {
     id: SurfaceId,
+    kind: Kind,
     wl_surface: WlSurface,
     layer: ZwlrLayerSurfaceV1,
     viewport: Option<WpViewport>,
@@ -110,6 +134,8 @@ struct Surface {
     configured: bool,
     /// Logical, from the last configure.
     size: (u32, u32),
+    /// Logical, as last asked for with `set_size`.
+    requested: (u32, u32),
     scale120: Option<u32>,
     buffer_scale: i32,
     buffers: Option<Buffers>,
@@ -136,36 +162,98 @@ impl Surface {
 
 impl State {
     pub(crate) fn set_overlay(&mut self, state: Option<OverlayState>) {
-        let Some(state) = state else {
-            self.overlay_hide();
-            return;
-        };
         if self.overlay.desired.is_none() {
             self.overlay.meter = Meter::default();
         }
-        if let Some(level) = state.level() {
+        if let Some(level) = state.as_ref().and_then(OverlayState::level) {
             self.overlay.meter.set(level);
         }
-        self.overlay.desired = Some(state);
-        if self.ensure_connected().is_err() {
-            return;
+        self.overlay.desired = state;
+        self.show();
+    }
+
+    pub(crate) fn set_menu(&mut self, spec: Option<MenuSpec>) {
+        match (spec, &mut self.overlay.menu) {
+            (Some(spec), Some(menu)) => menu.update(spec),
+            (Some(spec), None) => self.overlay.menu = Some(Menu::new(spec)),
+            (None, _) => self.overlay.menu = None,
         }
-        if self.overlay.surface.is_none() {
-            self.create_surface();
-        }
-        if let Some(surface) = &mut self.overlay.surface {
-            surface.dirty = true;
-        }
-        self.draw_overlay();
+        self.show();
     }
 
     pub(crate) fn overlay_hide(&mut self) {
         self.overlay.desired = None;
+        self.overlay.menu = None;
+        self.show();
+    }
+
+    /// Makes the surface match the menu and the pill: the menu if it's open, else the pill if
+    /// there's one.
+    fn show(&mut self) {
+        let wanted = self.overlay.wanted();
+        if self.overlay.surface.as_ref().is_some_and(|s| Some(s.kind) != wanted) {
+            self.drop_surface();
+        }
+        let Some(kind) = wanted else { return };
+        if self.ensure_connected().is_ok() && self.overlay.surface.is_none() {
+            self.create_surface(kind);
+        }
+        match &mut self.overlay.surface {
+            Some(surface) => surface.dirty = true,
+            // Pastes wait for the menu to close, so one that can't be shown closes at once.
+            None if kind == Kind::Menu => {
+                self.overlay.menu = None;
+                self.emit(WaylandEvent::Menu(MenuOutcome::Closed));
+                return;
+            }
+            None => return,
+        }
+        self.draw_overlay();
+    }
+
+    fn drop_surface(&mut self) {
         if let Some(tick) = self.overlay.tick.take() {
             self.lh.remove(tick);
         }
         if let Some(surface) = self.overlay.surface.take() {
+            if surface.kind == Kind::Menu {
+                self.release_input();
+            }
             surface.destroy();
+        }
+    }
+
+    pub(crate) fn menu_key(&mut self, key: Key) {
+        let Some(menu) = &mut self.overlay.menu else { return };
+        let outcome = menu.key(key);
+        self.menu_changed(outcome);
+    }
+
+    pub(crate) fn menu_hover(&mut self, x: f64, y: f64) {
+        if self.overlay.menu.as_mut().is_some_and(|menu| menu.hover(x, y)) {
+            self.menu_changed(None);
+        }
+    }
+
+    pub(crate) fn menu_click(&mut self, x: f64, y: f64) {
+        let Some(menu) = &mut self.overlay.menu else { return };
+        let outcome = menu.click(x, y);
+        self.menu_changed(outcome);
+    }
+
+    fn menu_changed(&mut self, outcome: Option<MenuOutcome>) {
+        match outcome {
+            Some(outcome) => {
+                self.overlay.menu = None;
+                self.show();
+                self.emit(WaylandEvent::Menu(outcome));
+            }
+            None => {
+                if let Some(surface) = &mut self.overlay.surface {
+                    surface.dirty = true;
+                }
+                self.draw_overlay();
+            }
         }
     }
 
@@ -194,7 +282,7 @@ impl State {
         self.overlay.tick = Some(tick);
     }
 
-    fn create_surface(&mut self) {
+    fn create_surface(&mut self, kind: Kind) {
         let Some(wl) = &self.wl else { return };
         let g = &wl.surfaces;
         let (Some(compositor), Some(_), Some(layer_shell)) = (&g.compositor, &g.shm, &g.layer_shell) else {
@@ -208,13 +296,19 @@ impl State {
         let id = SurfaceId(self.overlay.next_id);
         self.overlay.next_id += 1;
         let wl_surface = compositor.create_surface(qh, id);
-        // Clicks go through: an empty input region.
-        let region = compositor.create_region(qh, ());
-        wl_surface.set_input_region(Some(&region));
-        region.destroy();
-        let layer = layer_shell.get_layer_surface(&wl_surface, None, Layer::Overlay, "psst".into(), qh, id);
         let cfg = &self.opts.overlay;
-        layer.set_size(cfg.width, cfg.height);
+        let (namespace, size, keyboard) = match (kind, &self.overlay.menu) {
+            (Kind::Menu, Some(menu)) => ("psst-menu", menu.size(), KeyboardInteractivity::Exclusive),
+            _ => {
+                // Clicks go through: an empty input region.
+                let region = compositor.create_region(qh, ());
+                wl_surface.set_input_region(Some(&region));
+                region.destroy();
+                ("psst", (cfg.width, cfg.height), KeyboardInteractivity::None)
+            }
+        };
+        let layer = layer_shell.get_layer_surface(&wl_surface, None, Layer::Overlay, namespace.into(), qh, id);
+        layer.set_size(size.0, size.1);
         match cfg.anchor {
             Anchor::Bottom => {
                 layer.set_anchor(zwlr_layer_surface_v1::Anchor::Bottom);
@@ -225,19 +319,21 @@ impl State {
                 layer.set_margin(cfg.margin as i32, 0, 0, 0);
             }
         }
-        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_keyboard_interactivity(keyboard);
         let viewport = g.viewporter.as_ref().map(|v| v.get_viewport(&wl_surface, qh, ()));
         let fractional = g.fractional.as_ref().map(|f| f.get_fractional_scale(&wl_surface, qh, id));
         // The first commit has no buffer; the compositor answers with a configure.
         wl_surface.commit();
         self.overlay.surface = Some(Surface {
             id,
+            kind,
             wl_surface,
             layer,
             viewport,
             fractional,
             configured: false,
-            size: (cfg.width, cfg.height),
+            size,
+            requested: size,
             scale120: None,
             buffer_scale: 1,
             buffers: None,
@@ -249,24 +345,39 @@ impl State {
 
     fn draw_overlay(&mut self) {
         let Some(wl) = &self.wl else { return };
-        let Overlay { renderer, meter, advanced, desired: Some(state), surface: Some(s), .. } = &mut self.overlay
-        else {
+        let Overlay { renderer, meter, advanced, desired, menu, surface: Some(s), .. } = &mut self.overlay else {
             return;
         };
+        // A menu page of another height: the compositor configures the new size before it's drawn.
+        if let (Kind::Menu, Some(menu)) = (s.kind, &menu)
+            && menu.size() != s.requested
+        {
+            s.requested = menu.size();
+            s.layer.set_size(s.requested.0, s.requested.1);
+            s.wl_surface.commit();
+            s.configured = false;
+        }
         if !s.configured || s.frame_pending || !s.dirty {
             return;
         }
         let Some(shm) = &wl.surfaces.shm else { return };
         let qh = &wl.qh;
-        let (w, h) = s.size;
         let scale = match (s.scale120, &s.viewport) {
             (Some(s120), Some(_)) => s120 as f64 / 120.0,
             _ => s.buffer_scale as f64,
         };
-        let now = Instant::now();
-        let wave = meter.advance(advanced.map_or(Duration::ZERO, |at| now - at));
-        *advanced = Some(now);
-        let pixmap = renderer.render(state, wave, &self.opts.overlay.style, w, h, scale);
+        let style = &self.opts.overlay.style;
+        let ((w, h), pixmap) = match (s.kind, menu, desired) {
+            (Kind::Menu, Some(menu), _) => (menu.size(), renderer.render_menu(menu, style, scale)),
+            (Kind::Pill, None, Some(state)) => {
+                let now = Instant::now();
+                let wave = meter.advance(advanced.map_or(Duration::ZERO, |at| now - at));
+                *advanced = Some(now);
+                let (w, h) = s.size;
+                ((w, h), renderer.render(state, wave, style, w, h, scale))
+            }
+            _ => return,
+        };
         let (pw, ph) = (pixmap.width(), pixmap.height());
         if s.buffers.as_ref().is_some_and(|b| (b.width, b.height) != (pw, ph))
             && let Some(old) = s.buffers.take()
@@ -410,20 +521,20 @@ impl Dispatch<ZwlrLayerSurfaceV1, SurfaceId> for State {
         match event {
             zwlr_layer_surface_v1::Event::Configure { serial, width, height } => {
                 layer.ack_configure(serial);
-                let (cw, ch) = (st.opts.overlay.width, st.opts.overlay.height);
                 if let Some(s) = st.surface_mut(*id) {
-                    s.size = (if width > 0 { width } else { cw }, if height > 0 { height } else { ch });
+                    let (rw, rh) = s.requested;
+                    s.size = (if width > 0 { width } else { rw }, if height > 0 { height } else { rh });
                     s.configured = true;
                     s.dirty = true;
                 }
                 st.draw_overlay();
             }
-            zwlr_layer_surface_v1::Event::Closed => {
-                // The compositor took it away (its output went, say); the next state makes a new one.
-                if st.surface_mut(*id).is_some()
-                    && let Some(s) = st.overlay.surface.take()
-                {
-                    s.destroy();
+            // The compositor took it away (its output went, say); the next state makes a new one.
+            // The menu is closed instead: the user would have to find their place in it again.
+            zwlr_layer_surface_v1::Event::Closed if st.surface_mut(*id).is_some() => {
+                st.drop_surface();
+                if st.overlay.menu.take().is_some() {
+                    st.emit(WaylandEvent::Menu(MenuOutcome::Closed));
                 }
             }
             _ => {}

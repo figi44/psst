@@ -194,8 +194,11 @@ pub fn read_clipboard(sandbox: &Sandbox) -> Option<Selection> {
 }
 
 pub mod keys {
+    pub const KEY_ESC: u32 = 1;
     pub const KEY_2: u32 = 3;
+    pub const KEY_ENTER: u32 = 28;
     pub const KEY_A: u32 = 30;
+    pub const KEY_DOWN: u32 = 108;
     pub const KEY_LEFTMETA: u32 = 125;
 }
 
@@ -203,15 +206,21 @@ const HOST_KEYMAP: &str = r#"xkb_keymap {
 xkb_keycodes "psst-host" {
     minimum = 8;
     maximum = 255;
+    <ESC> = 9;
     <AE02> = 11;
+    <RTRN> = 36;
     <AC01> = 38;
+    <DOWN> = 116;
     <LWIN> = 133;
 };
 xkb_types "psst-host" { include "complete" };
 xkb_compatibility "psst-host" { include "complete" };
 xkb_symbols "psst-host" {
+    key <ESC> { [ Escape ] };
     key <AE02> { [ 2, at ] };
+    key <RTRN> { [ Return ] };
     key <AC01> { [ a, A ] };
+    key <DOWN> { [ Down ] };
     key <LWIN> { [ Super_L ] };
     modifier_map Mod4 { <LWIN> };
 };

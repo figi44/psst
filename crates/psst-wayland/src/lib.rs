@@ -8,11 +8,12 @@ use std::{io, path::PathBuf, thread::JoinHandle, time::Duration};
 
 pub mod clipboard;
 mod dc;
+mod input;
 mod keymap;
 mod overlay;
 mod thread;
 
-pub use psst_overlay::{OverlayState, Rgba, Style};
+pub use psst_overlay::{Listing, MenuAction, MenuOutcome, MenuSpec, ModelChoice, OverlayState, Rgba, Style};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Chord {
@@ -25,6 +26,9 @@ pub enum WaylandCmd {
     /// A state with a level shows the waveform, which eases towards each new level and keeps moving
     /// between updates.
     Overlay(Option<OverlayState>),
+    /// Opens the quick menu in the pill's place, or updates the open one; `None` closes it. While
+    /// it's open it has the keyboard, and the pill waits behind it.
+    Menu(Option<MenuSpec>),
     /// Sent at `stop`.
     SnapshotClipboard {
         generation: u64,
@@ -55,6 +59,9 @@ pub enum WaylandEvent {
         generation: u64,
         reason: String,
     },
+    /// The menu closed itself: something was chosen, or it was dismissed.
+    Menu(MenuOutcome),
+    /// Takes the menu with it.
     Disconnected,
 }
 

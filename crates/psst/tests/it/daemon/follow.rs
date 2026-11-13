@@ -149,8 +149,9 @@ async fn the_bar_shows_an_offline_recording_the_error_and_then_the_saved_count()
     })
     .await;
     let bar = Cli::start(&d.socket, Format::Waybar);
-    let connected =
-        |b: &Value| b["tooltip"].as_str().is_some_and(|t| t.starts_with("psst: idle\nserver: connected to "));
+    let connected = |b: &Value| {
+        b["tooltip"].as_str().is_some_and(|t| t.starts_with("psst: idle\nprofile: default\nserver: connected to "))
+    };
     bar.lines.wait("idle and connected", |l| l.bar().last().is_some_and(connected)).await;
     server.set_listening(false);
 

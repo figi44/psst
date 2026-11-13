@@ -1,5 +1,6 @@
 mod follow;
 mod incompatible;
+mod menu;
 mod slow_link;
 
 use std::{
@@ -18,19 +19,21 @@ use psst::{
     store::{Last, Meta, RecState, Store},
     ui::{Wayland, WaylandEvents, WaylandSink},
 };
-use psst_config::{AppRule, ClientConfig, PasteAction, Sounds};
+use psst_config::{AppRule, ClientConfig, MenuConfig, PasteAction, Sounds};
 use psst_proto::{ErrorCode, SessionId};
 use psst_testkit::{
     fake_server::{FakeServer, FakeServerConfig, Outcome},
     test_audio, write_wav,
 };
-use psst_wayland::{Chord, OverlayState, WaylandCmd, WaylandEvent};
+use psst_wayland::{Chord, MenuSpec, OverlayState, WaylandCmd, WaylandEvent};
 
 const WAIT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Default)]
 struct FakeWayland {
     cmds: Arc<Mutex<Vec<WaylandCmd>>>,
+    /// The daemon's, for events the tests make up.
+    events: Arc<Mutex<Option<WaylandEvents>>>,
     fail_inserts: Arc<AtomicBool>,
     shown_after_ms: Arc<AtomicU64>,
 }
@@ -43,6 +46,7 @@ struct FakeSink {
 
 impl Wayland for FakeWayland {
     fn connect(&mut self, events: WaylandEvents) -> Result<Box<dyn WaylandSink>, String> {
+        *self.events.lock().unwrap() = Some(events.clone());
         Ok(Box::new(FakeSink { wayland: self.clone(), events, visible: false }))
     }
 }
@@ -65,7 +69,7 @@ impl WaylandSink for FakeSink {
             }
             WaylandCmd::Paste { generation, .. } => Some(WaylandEvent::Pasted { generation }),
             WaylandCmd::Copy { generation, .. } => Some(WaylandEvent::Copied { generation }),
-            WaylandCmd::SnapshotClipboard { .. } => None,
+            WaylandCmd::Menu(_) | WaylandCmd::SnapshotClipboard { .. } => None,
         };
         let delay = Duration::from_millis(self.wayland.shown_after_ms.load(Ordering::SeqCst));
         match reply {
@@ -113,6 +117,15 @@ impl FakeWayland {
             .collect()
     }
 
+    fn menus(&self) -> Vec<Option<MenuSpec>> {
+        let cmds = self.cmds.lock().unwrap();
+        cmds.iter().filter_map(|cmd| if let WaylandCmd::Menu(spec) = cmd { Some(spec.clone()) } else { None }).collect()
+    }
+
+    fn send(&self, event: WaylandEvent) {
+        self.events.lock().unwrap().as_ref().expect("the daemon connected").send(event).unwrap();
+    }
+
     fn showed(&self, check: impl Fn(&OverlayState) -> bool) -> bool {
         self.overlays().iter().flatten().any(check)
     }
@@ -128,7 +141,7 @@ impl FakeWayland {
                         return false;
                     }
                 }
-                WaylandCmd::Overlay(_) => {}
+                WaylandCmd::Overlay(_) | WaylandCmd::Menu(_) => {}
             }
         }
         true
@@ -159,7 +172,9 @@ async fn daemon_in(root: &Path, server: &FakeServer, tweak: impl FnOnce(&mut Cli
     let wayland = FakeWayland::default();
     let sounds: Arc<Mutex<Vec<Sound>>> = Arc::default();
     let played = sounds.clone();
-    let mut cfg = ClientConfig { server: server.endpoint(), sounds: Sounds::Snap, ..ClientConfig::default() };
+    // Tests dictate briefly: double-tapping is off unless they're about the menu.
+    let menu = MenuConfig { double_tap_ms: 0 };
+    let mut cfg = ClientConfig { server: server.endpoint(), sounds: Sounds::Snap, menu, ..ClientConfig::default() };
     let mut deps = Deps {
         audio: Arc::new(FileSource { path: wav }),
         wayland: Box::new(wayland.clone()),

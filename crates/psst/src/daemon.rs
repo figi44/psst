@@ -18,7 +18,9 @@ use psst_proto::{
     api::{PairRedeemed, routes},
     ws::{FinalMsg, Mode, ProgressState},
 };
-use psst_wayland::{Chord, OverlayState, WaylandCmd, WaylandEvent};
+use psst_wayland::{
+    Chord, Listing, MenuAction, MenuOutcome, MenuSpec, ModelChoice, OverlayState, WaylandCmd, WaylandEvent,
+};
 use tokio::{
     net::UnixListener,
     sync::{mpsc, oneshot, watch},
@@ -32,7 +34,7 @@ use crate::{
         recorder::{self, RecEvent, Recorder},
     },
     ipc::{ActiveInfo, Request, Response, RetainedInfo, Status},
-    niri,
+    menu, niri,
     pair::Credentials,
     store::{self, Last, Meta, RecState, STORAGE_BUDGET, Store},
     ui::{Wayland, WaylandSink},
@@ -74,6 +76,8 @@ impl Default for Timing {
         }
     }
 }
+
+const OPENING_WEB_UI: &str = "Opening the web UI\u{2026}";
 
 /// Caps for slow links, so a dead server is still noticed quickly.
 const MAX_PONG: Duration = Duration::from_secs(2);
@@ -133,7 +137,8 @@ pub async fn spawn(cfg: ClientConfig, paths: Paths, deps: Deps) -> anyhow::Resul
     // The socket first: it's what proves no other daemon is using the recordings.
     let listener = bind_socket(&paths.socket)?;
     let store = Store::open(&paths.state_dir)?;
-    let recovery = store.recover(&cfg.profile)?;
+    let profile = menu::load_profile(&paths.state_dir, &cfg.profile).unwrap_or_else(|| cfg.profile.clone());
+    let recovery = store.recover(&profile)?;
     for id in &recovery.interrupted {
         info!("recording {id} was interrupted; kept as incomplete");
     }
@@ -153,7 +158,7 @@ pub async fn spawn(cfg: ClientConfig, paths: Paths, deps: Deps) -> anyhow::Resul
             }
         }
     });
-    let mut core = Core::new(cfg, store, deps, tx.clone(), wayland_tx, paths);
+    let mut core = Core::new(cfg, profile, store, deps, (tx.clone(), wayland_tx), paths);
     core.connect(core.t.resume_budget, AttemptKind::Connect);
     let task = tokio::spawn(core.run(rx, wayland_rx));
     Ok(DaemonHandle { tx, task, listener })
@@ -267,6 +272,8 @@ enum Input {
         generation: u64,
         app_id: Option<String>,
     },
+    MenuFact(menu::Fact),
+    MenuDone(menu::Done),
     Resumed,
     Follow(oneshot::Sender<watch::Receiver<Status>>),
     Shutdown(oneshot::Sender<()>),
@@ -493,8 +500,22 @@ enum AttemptKind {
     Connect,
 }
 
+/// The quick menu, as the daemon sees it.
+struct MenuState {
+    /// Asked for. It waits for a paste in progress, which would otherwise land in it, and pastes
+    /// wait for it to close.
+    open: bool,
+    /// As the Wayland thread was last told; `None` while it's closed.
+    shown: Option<MenuSpec>,
+    profiles: Listing,
+    model: Option<ModelChoice>,
+}
+
 struct Core {
     cfg: ClientConfig,
+    /// The one new dictations use: client.toml's, or the one chosen in the menu since.
+    profile: String,
+    menu: MenuState,
     store: Store,
     deps: Deps,
     t: Timing,
@@ -543,15 +564,17 @@ struct Core {
 impl Core {
     fn new(
         cfg: ClientConfig,
+        profile: String,
         store: Store,
         deps: Deps,
-        tx: mpsc::UnboundedSender<Input>,
-        wayland_tx: mpsc::UnboundedSender<WaylandEvent>,
+        (tx, wayland_tx): (mpsc::UnboundedSender<Input>, mpsc::UnboundedSender<WaylandEvent>),
         paths: Paths,
     ) -> Core {
         let t = deps.timing.clone();
         Core {
             cfg,
+            profile,
+            menu: MenuState { open: false, shown: None, profiles: Listing::Loading, model: None },
             store,
             deps,
             t,
@@ -633,6 +656,8 @@ impl Core {
             Input::TokenRefused(token) => self.refused_token = Some(token),
             Input::ConnClosed { epoch, reason } => self.on_conn_closed(epoch, reason),
             Input::Focus { generation, app_id } => self.on_focus(generation, app_id),
+            Input::MenuFact(fact) => self.on_menu_fact(fact),
+            Input::MenuDone(done) => self.on_menu_done(done),
             Input::Resumed => {
                 self.resumed_at = Some(Instant::now());
                 if let Some(client) = self.client.take() {
@@ -665,17 +690,29 @@ impl Core {
             return Response::err("the daemon is stopping");
         }
         match request {
-            Request::Toggle { profile } => match self.recording {
+            Request::Toggle { .. } if self.menu.open => self.close_menu(),
+            Request::Toggle { profile } => match &self.recording {
+                Some(rec) if self.double_tapped(rec) => self.double_tap(),
                 Some(_) => self.stop_recording(),
                 None => self.start_recording(profile),
             },
-            Request::Start => match self.recording {
-                Some(_) => {
-                    self.flash("already recording");
-                    Response::err("already recording")
+            Request::Start => {
+                self.menu.open = false;
+                match self.recording {
+                    Some(_) => {
+                        self.flash("already recording");
+                        Response::err("already recording")
+                    }
+                    None => self.start_recording(None),
                 }
-                None => self.start_recording(None),
-            },
+            }
+            Request::Menu if self.menu.open => self.close_menu(),
+            // The menu would hide the pill while the microphone is still live.
+            Request::Menu if self.recording.is_some() => {
+                self.flash("stop the recording first");
+                Response::err("stop the recording first")
+            }
+            Request::Menu => self.open_menu(),
             Request::Stop => match self.recording {
                 Some(_) => self.stop_recording(),
                 None => Response::err("not recording"),
@@ -699,7 +736,7 @@ impl Core {
         }
         let id = SessionId::new_v4();
         let generation = self.next_generation();
-        let profile = profile.unwrap_or_else(|| self.cfg.profile.clone());
+        let profile = profile.unwrap_or_else(|| self.profile.clone());
         let mut d = Dictation::new(id, profile, generation, Phase::Starting, Net::Pending);
         d.t_toggle = Some(Instant::now());
         d.max_recording_s = self.max_recording_s;
@@ -747,6 +784,124 @@ impl Core {
         self.stop_chime = Some((id, Instant::now() + self.t.stop_chime_wait));
         info!("stopped {id}");
         Response::ok(format!("stopped {id}"))
+    }
+
+    fn double_tapped(&self, rec: &Dictation) -> bool {
+        let window = Duration::from_millis(self.cfg.menu.double_tap_ms.into());
+        !window.is_zero() && rec.t_toggle.is_some_and(|t| t.elapsed() < window)
+    }
+
+    /// The first tap started a recording; it's thrown away unheard.
+    fn double_tap(&mut self) -> Response {
+        let d = self.recording.take().expect("checked by the caller");
+        info!("double tap: dropped {} to open the menu", d.id);
+        self.awaiting_shown = None;
+        self.drop_dictation(d);
+        self.open_menu()
+    }
+
+    fn open_menu(&mut self) -> Response {
+        if let Err(reason) = self.connect_wayland() {
+            return Response::err(format!("cannot show the menu: {reason}"));
+        }
+        self.menu.open = true;
+        if matches!(self.menu.profiles, Listing::Failed(_)) {
+            self.menu.profiles = Listing::Loading;
+        }
+        self.fetch_menu_facts();
+        Response::ok("opened the menu")
+    }
+
+    fn fetch_menu_facts(&self) {
+        let tx = self.tx.clone();
+        menu::fetch(self.api(), move |fact| {
+            let _ = tx.send(Input::MenuFact(fact));
+        });
+    }
+
+    fn close_menu(&mut self) -> Response {
+        self.menu.open = false;
+        Response::ok("closed the menu")
+    }
+
+    fn on_menu_fact(&mut self, fact: menu::Fact) {
+        match fact {
+            menu::Fact::Profiles(Ok(names)) => self.menu.profiles = Listing::Ready(names),
+            // Switching needs only the names, so a list from before still does.
+            menu::Fact::Profiles(Err(_)) if matches!(self.menu.profiles, Listing::Ready(_)) => {}
+            menu::Fact::Profiles(Err(reason)) => self.menu.profiles = Listing::Failed(reason),
+            menu::Fact::Model(state) => self.menu.model = Some(menu::choice(state)),
+        }
+    }
+
+    fn menu_action(&mut self, action: MenuAction) {
+        info!("menu: {action:?}");
+        let progress = match &action {
+            MenuAction::SwitchProfile(name) => return self.switch_profile(name.clone()),
+            MenuAction::AddWord(word) => format!("Adding \u{201c}{word}\u{201d}\u{2026}"),
+            MenuAction::UnloadModel => "Unloading the model\u{2026}".into(),
+            MenuAction::LoadModel => "Loading the model\u{2026}".into(),
+            MenuAction::OpenWebUi => OPENING_WEB_UI.into(),
+        };
+        self.flash(&progress);
+        let (api, tx) = (self.api(), self.tx.clone());
+        tokio::spawn(async move {
+            let _ = tx.send(Input::MenuDone(menu::act(api, action).await));
+        });
+    }
+
+    fn on_menu_done(&mut self, done: menu::Done) {
+        if let Some(state) = done.model {
+            self.menu.model = Some(menu::choice(state));
+        }
+        match done.result {
+            Ok(Some(message)) => self.flash(&message),
+            // The browser opening says it.
+            Ok(None) => {
+                self.notice.take_if(
+                    |(state, _)| matches!(state, OverlayState::Flash { message } if message == OPENING_WEB_UI),
+                );
+            }
+            Err(message) => self.error_notice(&message),
+        }
+    }
+
+    fn switch_profile(&mut self, name: String) {
+        if let Err(err) = menu::save_profile(self.store.state_dir(), &self.cfg.profile, &name) {
+            warn!("cannot keep profile {name} for the next start: {err}");
+        }
+        info!("profile: {name}");
+        self.flash(&format!("Profile: {name}"));
+        self.profile = name;
+    }
+
+    fn refresh_menu(&mut self) {
+        let wanted = (self.menu.open && self.inserting.is_none()).then(|| MenuSpec {
+            profile: self.profile.clone(),
+            profiles: self.menu.profiles.clone(),
+            model: self.menu.model,
+        });
+        if wanted != self.menu.shown {
+            self.menu.shown = wanted.clone();
+            self.wayland(WaylandCmd::Menu(wanted));
+        }
+    }
+
+    fn api(&self) -> ApiClient {
+        ApiClient::new(self.cfg.server.clone(), self.token())
+    }
+
+    fn token(&self) -> Option<Token> {
+        if !self.endpoint_is_tcp() {
+            return None;
+        }
+        match Credentials::load(&self.credentials) {
+            Ok(creds) => creds.map(|creds| creds.token),
+            Err(err) => {
+                warn!("cannot read {}: {err}", self.credentials.display());
+                None
+            }
+        }
     }
 
     fn cancel(&mut self) -> Response {
@@ -903,6 +1058,7 @@ impl Core {
         };
         Status {
             state: state.into(),
+            profile: self.profile.clone(),
             connection,
             error,
             recording: self.recording.as_ref().map(info),
@@ -1005,18 +1161,9 @@ impl Core {
         let attempt = self.attempts;
         self.attempt = Some(attempt);
         let endpoint = self.cfg.server.clone();
-        let (token, credentials) = if self.endpoint_is_tcp() {
-            let token = match Credentials::load(&self.credentials) {
-                Ok(Some(creds)) => Some(creds.token),
-                Ok(None) => None,
-                Err(err) => {
-                    warn!("cannot read {}: {err}", self.credentials.display());
-                    None
-                }
-            };
-            (token, Some(self.credentials.clone()))
-        } else {
-            (None, None)
+        let (token, credentials) = match self.endpoint_is_tcp() {
+            true => (self.token(), Some(self.credentials.clone())),
+            false => (None, None),
         };
         let refused_before = token.is_some() && token == self.refused_token;
         let refused_tx = self.tx.clone();
@@ -1082,6 +1229,10 @@ impl Core {
                     );
                     self.client = Some(client);
                     self.connected_at = Instant::now();
+                    // So the menu has them the first time it opens; each opening refreshes them.
+                    if self.menu.profiles == Listing::Loading && self.menu.model.is_none() {
+                        self.fetch_menu_facts();
+                    }
                     // A session on the old connection is lost with it.
                     self.slot = None;
                 }
@@ -1504,7 +1655,8 @@ impl Core {
     }
 
     fn deliver_next(&mut self) {
-        if self.inserting.is_some() {
+        // The menu has the keyboard, so a paste would land in it.
+        if self.inserting.is_some() || self.menu.open {
             return;
         }
         if let Some(r) = self.redeliver.pop_front() {
@@ -1575,9 +1727,19 @@ impl Core {
                 self.delivered(generation);
             }
             WaylandEvent::Failed { generation, reason } => self.insert_failed(generation, reason),
+            // `shown` stays: an update sent before this arrived may have opened it again, so the
+            // next refresh closes it for certain.
+            WaylandEvent::Menu(outcome) => {
+                self.menu.open = false;
+                if let MenuOutcome::Chose(action) = outcome {
+                    self.menu_action(action);
+                }
+            }
             WaylandEvent::Disconnected => {
                 info!("the Wayland thread disconnected");
                 self.sink = None;
+                self.menu.open = false;
+                self.menu.shown = None;
                 // The overlay is gone with the connection; the next refresh shows it again, which
                 // isn't the `toggle` a recording waits to see.
                 self.overlay = None;
@@ -1645,21 +1807,23 @@ impl Core {
     }
 
     fn wayland(&mut self, cmd: WaylandCmd) {
-        if self.sink.is_none() {
-            match self.deps.wayland.connect(self.wayland_tx.clone()) {
-                Ok(sink) => self.sink = Some(sink),
-                Err(reason) => {
-                    debug!("no Wayland: {reason}");
-                    if let WaylandCmd::Paste { generation, .. } | WaylandCmd::Copy { generation, .. } = cmd {
-                        let _ = self.wayland_tx.send(WaylandEvent::Failed { generation, reason });
-                    }
-                    return;
-                }
+        if let Err(reason) = self.connect_wayland() {
+            debug!("no Wayland: {reason}");
+            if let WaylandCmd::Paste { generation, .. } | WaylandCmd::Copy { generation, .. } = cmd {
+                let _ = self.wayland_tx.send(WaylandEvent::Failed { generation, reason });
             }
+            return;
         }
         if let Some(sink) = &mut self.sink {
             sink.send(cmd);
         }
+    }
+
+    fn connect_wayland(&mut self) -> Result<(), String> {
+        if self.sink.is_none() {
+            self.sink = Some(self.deps.wayland.connect(self.wayland_tx.clone())?);
+        }
+        Ok(())
     }
 
     fn overlay_visible(&self) -> bool {
@@ -1692,6 +1856,9 @@ impl Core {
     }
 
     fn desired_overlay(&self) -> Option<OverlayState> {
+        if self.menu.shown.is_some() {
+            return None;
+        }
         let now = Instant::now();
         let notice = self.notice.as_ref().filter(|(_, until)| *until > now).map(|(state, _)| state.clone());
         if let Some(rec) = &self.recording {
@@ -1854,6 +2021,8 @@ impl Core {
                 self.connect(budget.max(Duration::from_millis(50)), AttemptKind::Connect);
             }
         }
+        // The menu closes before a paste it held back is sent.
+        self.refresh_menu();
         self.deliver_next();
         self.refresh_overlay();
     }

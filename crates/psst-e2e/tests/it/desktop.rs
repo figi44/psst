@@ -9,15 +9,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-use psst_config::{AppRule, ClientConfig, PasteAction};
+use psst_config::{AppRule, ClientConfig, ConfigFile, MenuConfig, PasteAction, ProfilesFile};
 use psst_engine_proto::fake::{LoggedRequest, Script, TranscribeStep};
 use psst_proto::Endpoint;
 use psst_testkit::{
     RealEngine, Sandbox, TestClientConfig, TestDaemon, TestServer, TestServerConfig, nested_niri, spawn_daemon,
-    spawn_server, test_audio, wayland::ClipboardOwner, write_wav,
+    spawn_server, test_audio,
+    wayland::{ClipboardOwner, HostKeyboard, keys, screenshot},
+    write_wav,
 };
 use serde_json::Value;
-use support::{App, Proxy, Seen, Watcher, in_order, now_us};
+use support::{App, Proxy, Seen, Watcher, in_order, menu_bounds, now_us};
 
 const DAEMON: &str = env!("CARGO_BIN_EXE_psst-e2e-daemon");
 const SERVER: &str = env!("CARGO_BIN_EXE_psst-server-e2e");
@@ -194,6 +196,61 @@ fn a_dictation_is_pasted_into_the_focused_app_and_the_clipboard_comes_back() {
     for key in ["toggle_to_overlay_ms", "toggle_to_first_frame_ms", "stop_to_final_ms", "stop_to_dispatch_ms"] {
         assert!(t[key].is_u64(), "{key} in {t}");
     }
+}
+
+#[test]
+fn the_menu_switches_the_profile_and_adds_a_word_from_the_keyboard() {
+    let profiles = "[profiles.default]\nlanguage = \"en\"\n\n[profiles.czech]\nlanguage = \"cs\"\n";
+    let transcribe = ["Ahoj.", "Ahoj."].map(|text| TranscribeStep::Result {
+        text: text.into(),
+        delay_ms: 0,
+        no_speech_prob: None,
+        speech_ms: None,
+    });
+    let server = spawn_server(
+        Path::new(SERVER),
+        TestServerConfig {
+            script: Script { transcribe: transcribe.to_vec(), ..Script::default() },
+            profiles: ProfilesFile::from_toml_str(profiles).unwrap(),
+            ..Default::default()
+        },
+    );
+    let desk = Desktop::start_with(server.endpoint(), &test_audio(3_000), |cfg| cfg.menu = MenuConfig::default());
+    let mut keyboard = HostKeyboard::new(&desk.sandbox);
+
+    assert!(desk.ok(&["toggle"]).starts_with("recording"));
+    assert_eq!(desk.ok(&["toggle"]).trim(), "opened the menu", "a double tap");
+    desk.app.wait("leave", WAIT);
+    keyboard.tap(keys::KEY_ENTER);
+    // Header and both profiles: 3 rows of 36 px and 6 px around them.
+    let deadline = Instant::now() + WAIT;
+    while menu_bounds(&screenshot(&desk.sandbox)).is_none_or(|(_, y0, _, y1)| y1 - y0 + 1 < 118) {
+        assert!(Instant::now() < deadline, "the profiles never showed\n{}", desk.daemon.log());
+        thread::sleep(Duration::from_millis(20));
+    }
+    // From default down to czech, wrapping round.
+    keyboard.tap(keys::KEY_DOWN);
+    keyboard.tap(keys::KEY_ENTER);
+    desk.wait_for("czech", |s| s["profile"] == "czech");
+    desk.app.wait("focus", WAIT);
+
+    desk.ok(&["toggle"]);
+    thread::sleep(Duration::from_millis(600));
+    desk.ok(&["toggle"]);
+    assert_pasted(&desk.pasted(Duration::from_secs(5)), "Ahoj. ");
+    assert_eq!(transcriptions(&server).last().unwrap().header["language"], "cs");
+
+    assert_eq!(desk.ok(&["menu"]).trim(), "opened the menu");
+    desk.app.wait("leave", WAIT);
+    for key in [keys::KEY_DOWN, keys::KEY_ENTER, keys::KEY_A, keys::KEY_2, keys::KEY_ENTER] {
+        keyboard.tap(key);
+    }
+    let deadline = Instant::now() + WAIT;
+    while !desk.ok(&["dict", "list", "--json"]).contains("\"a2\"") {
+        assert!(Instant::now() < deadline, "a2 never reached the dictionary\n{}", desk.daemon.log());
+        thread::sleep(Duration::from_millis(20));
+    }
+    desk.app.wait("focus", WAIT);
 }
 
 #[test]

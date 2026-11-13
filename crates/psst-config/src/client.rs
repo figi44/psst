@@ -13,6 +13,7 @@ pub struct ClientConfig {
     pub sounds: Sounds,
     pub audio: AudioConfig,
     pub overlay: OverlayConfig,
+    pub menu: MenuConfig,
     /// By Wayland app id.
     pub apps: BTreeMap<String, AppRule>,
     /// Test seam.
@@ -28,6 +29,7 @@ impl Default for ClientConfig {
             sounds: Sounds::default(),
             audio: AudioConfig::default(),
             overlay: OverlayConfig::default(),
+            menu: MenuConfig::default(),
             apps: BTreeMap::new(),
             insert: InsertConfig::default(),
         }
@@ -224,6 +226,21 @@ impl Default for OverlayConfig {
             foreground: Color { r: 0xf5, g: 0xf5, b: 0xf7, a: 0xff },
             accent: Color { r: 0xff, g: 0x45, b: 0x3a, a: 0xff },
         }
+    }
+}
+
+/// The quick menu, which `psst menu` opens too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MenuConfig {
+    /// A `toggle` this soon after the one that started a recording opens the menu instead of
+    /// stopping it, and the recording is thrown away. 0 turns double-tapping off.
+    pub double_tap_ms: u32,
+}
+
+impl Default for MenuConfig {
+    fn default() -> Self {
+        Self { double_tap_ms: 300 }
     }
 }
 

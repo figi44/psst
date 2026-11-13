@@ -4,6 +4,7 @@ pub mod dict;
 pub mod follow;
 pub mod ipc;
 mod logind;
+mod menu;
 pub mod niri;
 pub mod pair;
 pub mod server_api;
@@ -77,6 +78,9 @@ enum Command {
     Pair { server: Endpoint, code: String },
     /// Change the server's dictionary: add, remove or reset terms, never rules, and tests.
     Dict(dict::DictArgs),
+    /// Open the quick menu, or close it: switch profiles, add a word to the dictionary, unload the
+    /// model, open the web UI. Double-tapping `toggle` opens it too.
+    Menu,
     /// Open the server's web UI in the browser, logged in with a one-time link.
     Ui {
         /// Print the link (valid for a minute, for one login) instead of opening it.
@@ -94,6 +98,7 @@ pub fn main() -> ExitCode {
         Command::Ui { print } => web_ui::run(print),
         Command::Toggle { profile } => command(Request::Toggle { profile }, false),
         Command::Start => command(Request::Start, false),
+        Command::Menu => command(Request::Menu, false),
         Command::Stop => command(Request::Stop, false),
         Command::Cancel => command(Request::Cancel, false),
         Command::Retry { session } => command(Request::Retry { session }, false),

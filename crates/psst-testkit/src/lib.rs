@@ -18,7 +18,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use psst_config::{ClientConfig, ConfigFile, DictionaryFile, ProfilesFile, ServerConfig, ServerFiles, Sounds};
+use psst_config::{
+    ClientConfig, ConfigFile, DictionaryFile, MenuConfig, ProfilesFile, ServerConfig, ServerFiles, Sounds,
+};
 use psst_engine_proto::fake::{self, LoggedRequest, Script};
 use psst_proto::Endpoint;
 use tempfile::TempDir;
@@ -194,7 +196,8 @@ pub(crate) fn isolate(command: &mut Command, env: &[(OsString, OsString)]) {
 
 #[derive(Debug, Clone)]
 pub struct TestClientConfig {
-    /// The testkit overrides `sounds` (off) and `audio.input` (`wav`).
+    /// The testkit overrides `sounds` (off) and `audio.input` (`wav`). Double-tapping is off, so
+    /// tests can dictate briefly; menu tests turn it back on.
     pub client: ClientConfig,
     /// A 16 kHz mono 16-bit WAV, replayed by every dictation.
     pub wav: PathBuf,
@@ -202,7 +205,8 @@ pub struct TestClientConfig {
 
 impl TestClientConfig {
     pub fn new(server: Endpoint, wav: impl Into<PathBuf>) -> Self {
-        Self { client: ClientConfig { server, ..ClientConfig::default() }, wav: wav.into() }
+        let menu = MenuConfig { double_tap_ms: 0 };
+        Self { client: ClientConfig { server, menu, ..ClientConfig::default() }, wav: wav.into() }
     }
 }
 

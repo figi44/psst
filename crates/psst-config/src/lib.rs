@@ -14,7 +14,7 @@ use serde::{Serialize, de::DeserializeOwned};
 
 pub use client::{
     Anchor, AppRule, AudioCodec, AudioConfig, AudioInput, ClientConfig, Color, InsertConfig, KNOWN_TERMINALS,
-    OverlayConfig, PasteAction, PasteRule, Sounds,
+    MenuConfig, OverlayConfig, PasteAction, PasteRule, Sounds,
 };
 pub use dictionary::{DictionaryFile, TermLanguages, TermSpec};
 pub use profiles::{

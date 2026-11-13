@@ -36,6 +36,8 @@ pub enum Request {
     Discard {
         session: SessionId,
     },
+    /// Opens the quick menu, or closes it.
+    Menu,
     Status,
     /// Unlike the others, the connection stays open: a [`Status`] line now and after every change,
     /// with changes within `follow_interval` of each other sent as one line.
@@ -63,6 +65,9 @@ impl Response {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Status {
     pub state: String,
+    /// The one new dictations use: client.toml's, or the menu's choice since.
+    #[serde(default)]
+    pub profile: String,
     pub connection: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -118,6 +123,7 @@ impl Status {
     pub fn stopped() -> Status {
         Status {
             state: "stopped".into(),
+            profile: String::new(),
             connection: "offline: the daemon isn't running".into(),
             error: None,
             recording: None,
@@ -133,7 +139,7 @@ impl Status {
     }
 
     pub fn render(&self) -> String {
-        let mut out = format!("state: {}\nserver: {}\n", self.state, self.connection);
+        let mut out = format!("state: {}\nprofile: {}\nserver: {}\n", self.state, self.profile, self.connection);
         if let Some(error) = &self.error {
             out += &format!("error: {error}\n");
         }

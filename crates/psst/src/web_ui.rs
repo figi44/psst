@@ -30,7 +30,7 @@ pub fn run(print: bool) -> anyhow::Result<ExitCode> {
 }
 
 /// Own process group, so the browser it starts survives the terminal's Ctrl-C.
-fn open(url: &str) -> anyhow::Result<()> {
+pub(crate) fn open(url: &str) -> anyhow::Result<()> {
     let by_hand = || format!("open this link yourself within a minute:\n{url}");
     let mut child = Command::new("xdg-open")
         .arg(url)

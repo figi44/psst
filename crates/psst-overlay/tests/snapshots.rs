@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use psst_overlay::{OverlayState, Pixmap, Renderer, Style, Wave};
+use psst_overlay::{Key, Listing, Menu, MenuSpec, ModelChoice, OverlayState, Pixmap, Renderer, Style, Wave};
 use tiny_skia::{Color, PixmapPaint, Transform};
 
 const WIDTH: u32 = 240;
@@ -46,7 +46,30 @@ fn cases() -> Vec<(&'static str, OverlayState, Wave)> {
     ]
 }
 
-const FRACTIONAL: [&str; 3] = ["recording", "processing", "error-long"];
+fn menu(model: Option<ModelChoice>, profiles: Listing, keys: &[Key]) -> Menu {
+    let mut menu = Menu::new(MenuSpec { profile: "en".into(), profiles, model });
+    for key in keys {
+        menu.key(key.clone());
+    }
+    menu
+}
+
+fn menu_cases() -> Vec<(&'static str, Menu)> {
+    let ready = Listing::Ready(["cs", "en", "work"].map(String::from).to_vec());
+    let typed = |text: &str| [Key::Text("2".into()), Key::Text(text.into())];
+    vec![
+        ("menu", menu(Some(ModelChoice::Unload), ready.clone(), &[])),
+        ("menu-checking-model", menu(None, Listing::Loading, &[Key::Down])),
+        ("menu-profiles", menu(Some(ModelChoice::Load), ready, &[Key::Enter, Key::Up])),
+        ("menu-profiles-loading", menu(None, Listing::Loading, &[Key::Enter])),
+        ("menu-profiles-failed", menu(None, Listing::Failed("cannot reach the server".into()), &[Key::Enter])),
+        ("menu-add-word", menu(None, Listing::Loading, &[Key::Text("2".into())])),
+        ("menu-add-word-typed", menu(None, Listing::Loading, &typed("Kubernetes"))),
+        ("menu-add-word-long", menu(None, Listing::Loading, &typed("Pneumonoultramicroscopicsilicovolcanoconiosis"))),
+    ]
+}
+
+const FRACTIONAL: [&str; 4] = ["recording", "processing", "error-long", "menu-add-word-long"];
 
 fn scales(name: &str) -> Vec<f64> {
     if FRACTIONAL.contains(&name) { vec![1.0, 1.25, 2.0] } else { vec![1.0, 2.0] }
@@ -77,11 +100,18 @@ fn every_state_matches_its_snapshot() {
     let mut expected_files = Vec::new();
     let mut sheet = Vec::new();
 
-    for (name, state, wave) in cases() {
+    let pills = cases().into_iter().map(|(name, state, wave)| (name, Some((state, wave)), None));
+    let menus = menu_cases().into_iter().map(|(name, menu)| (name, None, Some(menu)));
+    for (name, pill, menu) in pills.chain(menus) {
         for scale in scales(name) {
             let file = file_name(name, scale);
             expected_files.push(file.clone());
-            let rendered = normalised(&renderer.render(&state, wave, &style, WIDTH, HEIGHT, scale));
+            let rendered = match (&pill, &menu) {
+                (Some((state, wave)), _) => renderer.render(state, *wave, &style, WIDTH, HEIGHT, scale),
+                (_, Some(menu)) => renderer.render_menu(menu, &style, scale),
+                (None, None) => unreachable!(),
+            };
+            let rendered = normalised(&rendered);
             if scale == 2.0 {
                 sheet.push(rendered.clone());
             }
@@ -127,18 +157,19 @@ fn every_state_matches_its_snapshot() {
 }
 
 fn write_contact_sheet(frames: &[Pixmap]) {
-    let Some(first) = frames.first() else { return };
-    let (fw, fh) = (first.width(), first.height());
+    if frames.is_empty() {
+        return;
+    }
     let (pad, gap) = (32, 20);
     let columns = [Color::from_rgba8(0xe4, 0xe6, 0xeb, 0xff), Color::from_rgba8(0x22, 0x25, 0x2d, 0xff)];
-    let col_w = fw + 2 * pad;
-    let height = 2 * pad + frames.len() as u32 * (fh + gap) - gap;
+    let col_w = frames.iter().map(Pixmap::width).max().unwrap() + 2 * pad;
+    let height = 2 * pad + frames.iter().map(|f| f.height() + gap).sum::<u32>() - gap;
     let mut sheet = Pixmap::new(col_w * columns.len() as u32, height).unwrap();
     for (c, bg) in columns.iter().enumerate() {
         let mut column = Pixmap::new(col_w, height).unwrap();
         column.fill(*bg);
-        for (i, frame) in frames.iter().enumerate() {
-            let y = pad + i as u32 * (fh + gap);
+        let mut y = pad;
+        for frame in frames {
             column.draw_pixmap(
                 pad as i32,
                 y as i32,
@@ -147,6 +178,7 @@ fn write_contact_sheet(frames: &[Pixmap]) {
                 Transform::identity(),
                 None,
             );
+            y += frame.height() + gap;
         }
         sheet.draw_pixmap(
             (c as u32 * col_w) as i32,
@@ -175,6 +207,12 @@ fn renders_any_size_and_scale_without_panicking() {
                 let p = renderer.render(&state, wave, &style, w, h, scale);
                 assert!(p.width() >= 1 && p.height() >= 1);
             }
+        }
+    }
+    for (_, menu) in menu_cases() {
+        for scale in [0.5, 1.75, 3.0, f64::NAN] {
+            let p = renderer.render_menu(&menu, &style, scale);
+            assert!(p.width() >= 1 && p.height() >= 1);
         }
     }
 }

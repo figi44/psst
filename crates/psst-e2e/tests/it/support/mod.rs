@@ -148,6 +148,21 @@ pub enum Seen {
     Other,
 }
 
+/// The default style's black, which nothing else in the sandbox is: niri recolours the app's
+/// border as the menu takes its focus.
+pub fn menu_bounds(shot: &Screenshot) -> Option<(u32, u32, u32, u32)> {
+    let mut bounds: Option<(u32, u32, u32, u32)> = None;
+    for y in 0..shot.height {
+        for x in 0..shot.width {
+            if shot.pixel(x, y)[..3].iter().all(|&c| c <= 8) {
+                let b = bounds.get_or_insert((x, y, x, y));
+                *b = (b.0.min(x), b.1.min(y), b.2.max(x), b.3.max(y));
+            }
+        }
+    }
+    bounds
+}
+
 /// Searches only the bottom half's middle, where the default `[overlay]` puts it.
 pub fn overlay_bounds(base: &Screenshot, shot: &Screenshot) -> Option<(u32, u32, u32, u32)> {
     let (width, height) = (shot.width.min(base.width), shot.height.min(base.height));

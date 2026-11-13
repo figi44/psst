@@ -11,10 +11,11 @@ use psst_testkit::{
     wayland::{ClipboardOwner, HostKeyboard, TEXT_MIMES, keys, read_clipboard, screenshot},
 };
 use psst_wayland::{
-    Chord, DataControl, Options, OverlayConfig, OverlayState, Rgba, Style, WaylandCmd, WaylandEvent, WaylandThread,
+    Chord, DataControl, Listing, MenuAction, MenuOutcome, MenuSpec, ModelChoice, Options, OverlayConfig, OverlayState,
+    Rgba, Style, WaylandCmd, WaylandEvent, WaylandThread,
 };
 use serde_json::Value;
-use support::{App, now_us, pill_bounds};
+use support::{App, menu_bounds, now_us, pill_bounds};
 
 const RESTORE: Duration = Duration::from_millis(1500);
 /// For the tests that check nothing comes back: their probes wait for a restore that's due all the
@@ -440,6 +441,43 @@ fn overlay_at_the_bottom_centre(sandbox: &Sandbox) {
     paster.send(WaylandCmd::Overlay(Some(OverlayState::Done)));
     paster.expect(&WaylandEvent::OverlayShown, Duration::from_secs(3));
     eprintln!("overlay on {:?}: shown again in {:?}", sandbox.compositor(), sent.elapsed());
+}
+
+#[test]
+fn the_menu_takes_the_keyboard_and_hands_it_back() {
+    let sandbox = nested_niri();
+    let paster = Paster::new(&sandbox, RESTORE);
+    let app = App::start(&sandbox);
+    let mut keyboard = HostKeyboard::new(&sandbox);
+    let spec = MenuSpec {
+        profile: "en".into(),
+        profiles: Listing::Ready(vec!["cs".into(), "en".into()]),
+        model: Some(ModelChoice::Unload),
+    };
+
+    paster.send(WaylandCmd::Menu(Some(spec.clone())));
+    app.wait("leave", Duration::from_secs(3));
+    let shot = screenshot(&sandbox);
+    let (x0, _, x1, y1) = menu_bounds(&shot).expect("the menu is on screen");
+    assert!((276..=284).contains(&(x1 - x0 + 1)), "the menu is {} px wide", x1 - x0 + 1);
+    let up = shot.height - 1 - y1;
+    assert!((126..=134).contains(&up), "where the pill goes: {up} px up");
+    for key in [keys::KEY_DOWN, keys::KEY_ENTER, keys::KEY_A, keys::KEY_2, keys::KEY_ENTER] {
+        keyboard.tap(key);
+    }
+    paster.expect(&WaylandEvent::Menu(MenuOutcome::Chose(MenuAction::AddWord("a2".into()))), Duration::from_secs(3));
+    let events = app.until("focus", Duration::from_secs(3));
+    assert!(events.iter().all(|e| e["ev"] != "key"), "the menu's keys reached the app: {events:?}");
+    keyboard.tap(keys::KEY_A);
+    assert_eq!(app.wait("key", Duration::from_secs(3))["utf8"], "a");
+
+    paster.send(WaylandCmd::Menu(Some(spec)));
+    app.wait("leave", Duration::from_secs(3));
+    keyboard.tap(keys::KEY_ESC);
+    paster.expect(&WaylandEvent::Menu(MenuOutcome::Closed), Duration::from_secs(3));
+    app.wait("focus", Duration::from_secs(3));
+    thread::sleep(Duration::from_millis(100));
+    assert!(menu_bounds(&screenshot(&sandbox)).is_none(), "the menu is gone");
 }
 
 #[test]

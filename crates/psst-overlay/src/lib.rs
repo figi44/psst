@@ -3,8 +3,10 @@
 
 use std::{f32::consts::TAU, time::Duration};
 
+mod menu;
 mod render;
 
+pub use menu::{Key, Listing, MENU_WIDTH, Menu, MenuAction, MenuOutcome, MenuSpec, ModelChoice};
 pub use render::Renderer;
 pub use tiny_skia::Pixmap;
 

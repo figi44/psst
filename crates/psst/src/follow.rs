@@ -71,7 +71,7 @@ impl WaybarLine {
         }
         let mut tooltip = format!("psst: {headline}");
         if alt != "stopped" {
-            tooltip += &format!("\nserver: {}", status.connection);
+            tooltip += &format!("\nprofile: {}\nserver: {}", status.profile, status.connection);
         }
         if saved > 0 {
             let s = if saved == 1 { "" } else { "s" };
