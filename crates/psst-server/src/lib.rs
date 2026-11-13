@@ -7,6 +7,7 @@
 //! - `listen`: the Unix socket (from systemd or bound here) and TCP listeners.
 //! - `api`: HTTP routes; `conn`: one client WebSocket; `registry`: the session registry.
 //! - `engine`: the engine supervisor; `db`: SQLite; `auth`: identities, tokens and pairing.
+//! - `dictionary`: the dictionary's database layer and the `/api/dictionary` operations.
 //! - `admin`: the admin subcommands, as thin clients of `/api` over the socket.
 
 mod admin;
@@ -14,6 +15,7 @@ mod api;
 mod auth;
 mod conn;
 mod db;
+mod dictionary;
 mod engine;
 mod listen;
 mod registry;
@@ -29,7 +31,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use clap::{Parser, Subcommand};
 use psst_config::ServerFiles;
 use psst_dict::Dictionary;
@@ -37,6 +39,7 @@ use tokio::{sync::watch, task::JoinHandle};
 
 use crate::{
     db::{Db, UNLOADED_BOOT_ID},
+    dictionary::Layered,
     engine::{EngineConfig, Supervisor},
     listen::{Peer, TcpSocket, UnixSocket},
     registry::Registry,
@@ -129,15 +132,15 @@ async fn start(cfg: ServeConfig, systemd: Option<std::os::unix::net::UnixListene
     for warning in files.warnings() {
         tracing::warn!("{warning}");
     }
-    let dictionary = Dictionary::from_file(&files.dictionary).map_err(|err| anyhow!("dictionary.toml: {err}"))?;
-    for warning in dictionary.warnings() {
-        tracing::warn!("{warning}");
-    }
     let server = files.server;
     for dir in [&cfg.state_dir, &cfg.cache_dir] {
         fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     }
     let db = Db::open(&cfg.state_dir.join("psst.db"))?;
+    let (layered, dictionary) = Layered::load(files.dictionary, &db)?;
+    for warning in dictionary.warnings() {
+        tracing::warn!("{warning}");
+    }
     match db.prune_history(server.history_days) {
         Ok(0) => {}
         Ok(pruned) => tracing::info!("pruned {pruned} history rows older than {} days", server.history_days),
@@ -189,7 +192,7 @@ async fn start(cfg: ServeConfig, systemd: Option<std::os::unix::net::UnixListene
         Supervisor::start(EngineConfig::from_server(&server, cfg.cache_dir.clone()), server.model.preload && !unloaded);
     let (shutdown, shutdown_rx) = watch::channel(false);
     let state = Arc::new(AppState {
-        live: LiveConfig::new(cfg.config_dir.clone(), files.profiles, dictionary),
+        live: LiveConfig::new(cfg.config_dir.clone(), files.profiles, layered, dictionary),
         db,
         registry: Registry::new(server.limits.max_active_sessions as usize),
         engine,
@@ -297,6 +300,13 @@ enum Command {
         #[command(flatten)]
         connection: Connection,
     },
+    /// The dictionary's database layer.
+    Dict {
+        #[command(subcommand)]
+        action: DictAction,
+        #[command(flatten)]
+        connection: Connection,
+    },
     /// Print recent dictations.
     History {
         #[arg(long, default_value_t = 20)]
@@ -328,6 +338,13 @@ enum ModelAction {
     Unload,
     /// Show the model's state.
     Status,
+}
+
+#[derive(Debug, Subcommand)]
+enum DictAction {
+    /// Print the database layer in dictionary.toml's format, for moving it into the file
+    /// (the host config's settings.dictionary).
+    Export,
 }
 
 #[derive(Debug, Subcommand)]
@@ -363,6 +380,7 @@ pub fn main() -> ExitCode {
                 DevicesAction::Revoke { id } => admin::Action::DevicesRevoke { id },
             },
         ),
+        Command::Dict { action: DictAction::Export, connection } => admin(connection, admin::Action::DictExport),
         Command::Stats { connection } => admin(connection, admin::Action::Stats),
         Command::History { limit, connection } => admin(connection, admin::Action::History { limit }),
     }

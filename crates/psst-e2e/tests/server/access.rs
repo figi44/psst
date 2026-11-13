@@ -15,7 +15,7 @@ fn tcp_server() -> TestServer {
 }
 
 /// Pairs a device called `thinkpad` and returns its id and token.
-async fn pair(server: &TestServer) -> PairRedeemed {
+pub async fn pair(server: &TestServer) -> PairRedeemed {
     let pairing = admin_json(server, &["pair", "--name", "thinkpad"]);
     let code = pairing["code"].as_str().unwrap();
     assert_eq!(code.len(), 8);

@@ -8,7 +8,8 @@ use http_body_util::{BodyExt, Full};
 use hyper::{Method, Request, StatusCode, body::Bytes, header};
 use hyper_util::rt::TokioIo;
 use psst_proto::api::{
-    ApiError, Device, DeviceKind, HistoryRow, ModelState, ModelStatus, Pairing, PairingRequest, Stats, routes,
+    ApiError, Device, DeviceKind, DictionaryExport, HistoryRow, ModelState, ModelStatus, Pairing, PairingRequest,
+    Stats, routes,
 };
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -23,6 +24,7 @@ pub enum Action {
     DevicesRevoke { id: String },
     Stats,
     History { limit: u32 },
+    DictExport,
 }
 
 /// Runs one admin command against the server at `socket`.
@@ -104,6 +106,15 @@ async fn execute(socket: &Path, json: bool, action: Action) -> Result<ExitCode> 
             api.call_empty(Method::DELETE, &format!("/api/devices/{}", encode_segment(&id))).await?;
             if !json {
                 println!("revoked {id}");
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Action::DictExport => {
+            let export: DictionaryExport = api.call(Method::GET, routes::DICTIONARY_EXPORT, None::<()>).await?;
+            if json {
+                print(json, &export, |_| String::new());
+            } else {
+                print!("{}", export.toml);
             }
             Ok(ExitCode::SUCCESS)
         }

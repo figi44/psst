@@ -4,6 +4,8 @@
 //! - [`Dictionary::from_file`] builds the dictionary from `dictionary.toml` and rejects the
 //!   conflicts of plan 7.1; [`Dictionary::warnings`] lists what is allowed but probably unintended.
 //!   `psst-server check-config` reports both.
+//! - [`Dictionary::resolve`] puts the server's database [`Layer`] (added, replaced and hidden
+//!   terms, and never rules) on top of the file, deterministically ([`layers`]).
 //! - [`NeverRule`]s veto a term replacing a span ([`Dictionary::vetoes`]), compared by
 //!   [`fuzzy_key`], both in exact and in fuzzy matching. [`Dictionary::with_never_rules`] sets
 //!   them.
@@ -13,19 +15,18 @@
 //!   3–7).
 //! - [`is_common_word`] and [`common_words`] answer from the 5,000 most frequent word forms of
 //!   English and Czech.
-//!
-//! The database layer arrives with the Phase 2 API.
 
 mod common;
 mod exact;
 mod fold;
 mod fuzzy;
 mod key;
+pub mod layers;
 mod never;
 
 use std::{collections::HashMap, fmt, ops::Range};
 
-use psst_config::{ConfigFile, DictionaryFile, TermLanguages, Warning};
+use psst_config::{ConfigFile, DictionaryFile, TermLanguages, TermSpec, Warning};
 use psst_proto::TermId;
 
 pub use common::{COMMON_WORD_LANGUAGES, common_words, is_common_word};
@@ -33,6 +34,7 @@ pub use exact::{ExactMatch, Outcome};
 pub use fold::term_id;
 pub use fuzzy::{FUZZY_LANGUAGE, FuzzyMatch, FuzzyToken};
 pub use key::fuzzy_key;
+pub use layers::{Layer, LayerEntry, LayerTerm, Resolved};
 pub use never::NeverRule;
 
 #[derive(Debug, thiserror::Error)]
@@ -100,14 +102,20 @@ fn estimated_tokens(terms: &[&str]) -> usize {
 }
 
 impl Dictionary {
-    /// Builds the dictionary from the file. The database layer comes in Phase 2.
+    /// Builds the dictionary from the file alone; [`Dictionary::resolve`] adds the database layer.
     ///
     /// Rejects two terms with one identity, and a spelling two terms both claim in a language
     /// they share, including one term's `sounds_like` matching another term's `text`.
     pub fn from_file(file: &DictionaryFile) -> Result<Dictionary> {
-        let mut terms: Vec<Term> = Vec::with_capacity(file.terms.len());
-        let mut ids: HashMap<TermId, usize> = HashMap::with_capacity(file.terms.len());
-        for spec in &file.terms {
+        Self::from_specs(&file.terms)
+    }
+
+    /// Builds the dictionary from terms in this order, with the checks of [`Dictionary::from_file`].
+    fn from_specs<'a>(specs: impl IntoIterator<Item = &'a TermSpec>) -> Result<Dictionary> {
+        let specs = specs.into_iter();
+        let mut terms: Vec<Term> = Vec::with_capacity(specs.size_hint().0);
+        let mut ids: HashMap<TermId, usize> = HashMap::with_capacity(specs.size_hint().0);
+        for spec in specs {
             let id = term_id(&spec.text);
             if let Some(&first) = ids.get(&id) {
                 return Err(Error::DuplicateTerm { id, first: terms[first].text.clone(), second: spec.text.clone() });

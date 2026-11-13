@@ -1,4 +1,5 @@
-//! HTTP routes (plan 5.2): `/health`, the client WebSocket, pairing and the Phase 1 `/api`.
+//! HTTP routes (plan 5.2): `/health`, the client WebSocket, pairing, the Phase 1 `/api` and the
+//! dictionary.
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -7,13 +8,16 @@ use axum::{
     extract::{ConnectInfo, FromRequest, FromRequestParts, Path, Query, Request, State, WebSocketUpgrade},
     http::{HeaderMap, StatusCode, header::AUTHORIZATION, request::Parts},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
+use psst_dict::term_id;
+use psst_pipeline::PipelineOptions;
 use psst_proto::{
-    ClientTimings, ServerTimings, Token,
+    ClientTimings, EngineResult, EngineTrace, Final, Segment, ServerTimings, Token,
     api::{
-        ApiError, ApiErrorCode, Device, Health, HistoryQuery, HistoryRow, ModelStatus, PairRedeem, PairRedeemed,
-        Pairing, PairingRequest, Percentiles, Stats, routes,
+        ApiError, ApiErrorCode, Device, DictionaryExport, DictionaryTest, DictionaryView, Health, HistoryQuery,
+        HistoryRow, ModelStatus, NeverRule, NeverRuleId, NewNeverRule, PairRedeem, PairRedeemed, Pairing,
+        PairingRequest, Percentiles, Stats, Term, TermChange, routes,
     },
 };
 use serde::de::DeserializeOwned;
@@ -23,6 +27,7 @@ use crate::{
     auth::{self, Identity, RedeemError, Refusal},
     conn,
     db::{Revoke, UNLOADED_BOOT_ID},
+    dictionary::{self, Change},
     listen::Peer,
     state::AppState,
 };
@@ -46,6 +51,14 @@ pub fn router(state: AppRef) -> Router {
         .route(routes::DEVICE, delete(revoke))
         .route(routes::STATS, get(stats))
         .route(routes::HISTORY, get(history))
+        .route(routes::DICTIONARY, get(dictionary_view))
+        .route(routes::DICTIONARY_TERMS, post(add_term))
+        .route(routes::DICTIONARY_TERM, put(replace_term).delete(remove_term))
+        .route(routes::DICTIONARY_TERM_RESET, post(reset_term))
+        .route(routes::DICTIONARY_NEVER, post(add_never))
+        .route(routes::DICTIONARY_NEVER_RULE, delete(remove_never))
+        .route(routes::DICTIONARY_EXPORT, get(export_dictionary))
+        .route(routes::DICTIONARY_TEST, post(test_dictionary))
         .fallback(async || ApiErr::new(ApiErrorCode::NotFound, "no such route"))
         .with_state(state)
 }
@@ -55,7 +68,7 @@ pub fn router(state: AppRef) -> Router {
 pub struct ApiErr(ApiError);
 
 impl ApiErr {
-    fn new(code: ApiErrorCode, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: ApiErrorCode, message: impl Into<String>) -> Self {
         Self(ApiError { code, message: message.into() })
     }
 
@@ -95,6 +108,20 @@ impl<T: DeserializeOwned, S: Send + Sync> FromRequest<S> for Body<T> {
         Json::<T>::from_request(req, state)
             .await
             .map(|Json(body)| Body(body))
+            .map_err(|err| ApiErr::new(ApiErrorCode::BadRequest, err.body_text()))
+    }
+}
+
+/// A path parameter whose rejections are [`ApiErr`]s.
+struct Id<T>(T);
+
+impl<T: DeserializeOwned + Send, S: Send + Sync> FromRequestParts<S> for Id<T> {
+    type Rejection = ApiErr;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, ApiErr> {
+        Path::<T>::from_request_parts(parts, state)
+            .await
+            .map(|Path(id)| Id(id))
             .map_err(|err| ApiErr::new(ApiErrorCode::BadRequest, err.body_text()))
     }
 }
@@ -240,6 +267,75 @@ async fn history(
     let Query(query) = query.map_err(|err| ApiErr::new(ApiErrorCode::BadRequest, err.body_text()))?;
     let limit = query.limit.unwrap_or(HISTORY_DEFAULT).min(HISTORY_MAX);
     Ok(Json(state.db.history(limit)?))
+}
+
+async fn dictionary_view(_: Admin, State(state): State<AppRef>) -> Json<DictionaryView> {
+    let layered = state.live.layered();
+    Json(layered.view(&state.live.dictionary()))
+}
+
+async fn add_term(_: Admin, State(state): State<AppRef>, Body(term): Body<Term>) -> Result<Json<TermChange>, ApiErr> {
+    dictionary::change_term(&state.live, &state.db, Change::Add(term.into())).map(Json)
+}
+
+async fn replace_term(
+    _: Admin,
+    State(state): State<AppRef>,
+    Id(id): Id<String>,
+    Body(term): Body<Term>,
+) -> Result<Json<TermChange>, ApiErr> {
+    dictionary::change_term(&state.live, &state.db, Change::Replace(term_id(&id), term.into())).map(Json)
+}
+
+async fn remove_term(_: Admin, State(state): State<AppRef>, Id(id): Id<String>) -> Result<Json<TermChange>, ApiErr> {
+    dictionary::change_term(&state.live, &state.db, Change::Remove(term_id(&id))).map(Json)
+}
+
+async fn reset_term(_: Admin, State(state): State<AppRef>, Id(id): Id<String>) -> Result<Json<TermChange>, ApiErr> {
+    dictionary::change_term(&state.live, &state.db, Change::Reset(term_id(&id))).map(Json)
+}
+
+async fn add_never(
+    _: Admin,
+    State(state): State<AppRef>,
+    Body(rule): Body<NewNeverRule>,
+) -> Result<Json<NeverRule>, ApiErr> {
+    dictionary::add_never(&state.live, &state.db, &rule.term, &rule.span).map(Json)
+}
+
+async fn remove_never(_: Admin, State(state): State<AppRef>, Id(id): Id<NeverRuleId>) -> Result<StatusCode, ApiErr> {
+    dictionary::remove_never(&state.live, &state.db, id).map(|()| StatusCode::NO_CONTENT)
+}
+
+async fn export_dictionary(_: Admin, State(state): State<AppRef>) -> Json<DictionaryExport> {
+    Json(DictionaryExport { toml: state.live.layered().export() })
+}
+
+/// Runs the pipeline on the text as if the engine had transcribed it, without probabilities.
+async fn test_dictionary(
+    _: Admin,
+    State(state): State<AppRef>,
+    Body(test): Body<DictionaryTest>,
+) -> Result<Json<Final>, ApiErr> {
+    if test.language.as_deref().is_some_and(|language| language.trim().is_empty()) {
+        return Err(ApiErr::new(ApiErrorCode::BadRequest, "language must be a language code"));
+    }
+    let profile = state
+        .live
+        .default_profile_in(test.language.as_deref())
+        .ok_or_else(|| ApiErr::internal(anyhow::anyhow!("profiles.toml has no default profile")))?;
+    let segment = Segment { text: test.text, start_ms: 0, end_ms: 0, no_speech_prob: None, words: None };
+    let trace = EngineTrace {
+        engine: "dictionary test".into(),
+        model: String::new(),
+        revision: String::new(),
+        path: String::new(),
+        options: Value::Null,
+        prompt: String::new(),
+        result: EngineResult { language: profile.language.clone(), speech_ms: None, segments: vec![segment] },
+    };
+    let dictionary = state.live.dictionary();
+    Ok(Json(psst_pipeline::run(&trace, &profile, &dictionary, &PipelineOptions::default())))
 }
 
 /// p50/p95 per timing field (plan 6.7). `network_estimate_ms` is the client's stop→final minus

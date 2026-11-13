@@ -8,7 +8,7 @@ use psst_proto::{
     Word,
     api::{
         ApiError, ApiErrorCode, Device, DeviceKind, DownloadProgress, HistoryRow, ModelState, ModelStatus,
-        PairRedeemed, Pairing, Percentiles, Stats,
+        PairRedeemed, Pairing, Percentiles, Stats, Term, routes,
     },
     ws::{
         AudioFormat, CancelMsg, CancelledMsg, ClientInfo, ClientMsg, ErrorMsg, EvalOpts, FinalMsg, HelloMsg, Mode,
@@ -335,4 +335,24 @@ fn token_debug_output_is_redacted() {
     let token = Token::new("s3cret");
     assert_eq!(token.as_str(), "s3cret");
     assert!(!format!("{token:?}").contains("s3cret"));
+}
+
+#[test]
+fn a_term_leaves_out_keys_at_their_default() {
+    assert_wire(&Term::new("Hyprland"), json!({"text": "Hyprland"}));
+    let term =
+        Term {
+            languages: "cs".into(), fuzzy: false, pin: true, notes: Some("composer".into()), ..Term::new("Dvořák")
+        };
+    assert_wire(&term, json!({"text": "Dvořák", "languages": "cs", "fuzzy": false, "pin": true, "notes": "composer"}));
+}
+
+#[test]
+fn term_ids_go_into_routes_as_one_percent_encoded_segment() {
+    assert_eq!(routes::with_id(routes::DICTIONARY_TERM, "c++"), "/api/dictionary/terms/c%2B%2B");
+    assert_eq!(
+        routes::with_id(routes::DICTIONARY_TERM_RESET, "c/c# ř"),
+        "/api/dictionary/terms/c%2Fc%23%20%C5%99/reset"
+    );
+    assert_eq!(routes::with_id(routes::DICTIONARY_NEVER_RULE, "7"), "/api/dictionary/never/7");
 }

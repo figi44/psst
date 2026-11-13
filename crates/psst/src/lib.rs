@@ -14,9 +14,11 @@
 //! | [`ui`] | the seam to the Wayland thread |
 //! | [`niri`] | the focused window, for the paste chord |
 //! | [`pair`] | `psst pair` and the credentials file |
+//! | [`dict`] | `psst dict`, a client of the server's dictionary API |
 
 pub mod audio;
 pub mod daemon;
+pub mod dict;
 pub mod ipc;
 mod logind;
 pub mod niri;
@@ -83,6 +85,8 @@ enum Command {
     },
     /// Pair this device with a server: `psst pair http://desktop:7341 <code>`.
     Pair { server: Endpoint, code: String },
+    /// Change the server's dictionary: add, remove or reset terms, never rules, and tests.
+    Dict(dict::DictArgs),
 }
 
 /// The `psst` program.
@@ -91,6 +95,7 @@ pub fn main() -> ExitCode {
     let result = match cli.command {
         Command::Daemon => run_daemon(),
         Command::Pair { server, code } => pair(&server, &code),
+        Command::Dict(args) => dict::run(args),
         Command::Toggle { profile } => command(Request::Toggle { profile }, false),
         Command::Start => command(Request::Start, false),
         Command::Stop => command(Request::Stop, false),

@@ -19,8 +19,11 @@
 //!   upload still needs it, and while queued audio is still being sent. Dropping a session never
 //!   cancels it; disconnecting doesn't cancel on the server either.
 //!
+//! [`api::ApiClient`] calls the HTTP API (`/api/*`) at the same endpoint.
+//!
 //! Everything here must run inside a tokio runtime.
 
+pub mod api;
 mod connection;
 mod upload;
 mod wav;
