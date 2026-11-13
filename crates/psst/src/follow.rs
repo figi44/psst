@@ -22,7 +22,7 @@ use std::{
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use serde::Serialize;
 
-use crate::ipc::{CLI_TIMEOUT, Request, Response, Status};
+use crate::ipc::{CLI_TIMEOUT, Request, Status};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -136,7 +136,7 @@ pub fn main(json: bool) -> anyhow::Result<ExitCode> {
 /// Follows the daemon at `socket`, writing a line to `out` at start and after every change.
 /// Returns only once `out` is closed, or on an error writing to it.
 pub fn run<W: Write + AsFd>(socket: &Path, format: Format, out: &mut W, backoff: Backoff) -> io::Result<()> {
-    let mut printer = Printer { out, format, last: None, warned: false };
+    let mut printer = Printer { out, format, last: None };
     let mut delay = backoff.first;
     loop {
         let started = Instant::now();
@@ -166,8 +166,6 @@ struct Printer<'a, W> {
     out: &'a mut W,
     format: Format,
     last: Option<String>,
-    /// The daemon refused to follow, and that's been said once.
-    warned: bool,
 }
 
 impl<W: Write> Printer<'_, W> {
@@ -242,17 +240,8 @@ fn follow<W: Write + AsFd>(mut stream: UnixStream, printer: &mut Printer<W>) -> 
                         return Ok(Ended::OutputClosed);
                     }
                 }
-                Err(_) => {
-                    // A daemon from before `follow` answers with an error.
-                    if !printer.warned {
-                        let why = serde_json::from_slice::<Response>(&line)
-                            .map(|r| r.message)
-                            .unwrap_or_else(|_| String::from_utf8_lossy(&line).trim().to_string());
-                        eprintln!("psst: the daemon can't be followed: {why}");
-                        printer.warned = true;
-                    }
-                    return Ok(Ended::Disconnected { delivered: false });
-                }
+                // Not a status, for example a daemon from before `follow` refusing it.
+                Err(_) => return Ok(Ended::Disconnected { delivered: false }),
             }
         }
     }
