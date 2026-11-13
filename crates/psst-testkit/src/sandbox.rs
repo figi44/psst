@@ -80,7 +80,7 @@ pub fn nested_niri() -> Sandbox {
     Sandbox::start(Compositor::NestedNiri).unwrap_or_else(|err| panic!("nested niri sandbox: {err}"))
 }
 
-/// Starts headless sway alone (the daemon's end-to-end compositor in CI; no niri IPC).
+/// Starts headless sway alone, for tests that need no niri IPC.
 pub fn headless_sway() -> Sandbox {
     Sandbox::start(Compositor::HeadlessSway).unwrap_or_else(|err| panic!("headless sway sandbox: {err}"))
 }
