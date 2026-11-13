@@ -481,11 +481,13 @@ dependencies = [
  "psst-client",
  "psst-config",
  "psst-dict",
+ "psst-engine-proto",
  "psst-pipeline",
  "psst-proto",
  "psst-server",
  "serde",
  "serde_json",
+ "tempfile",
  "unicode-normalization",
 ]
 
