@@ -130,6 +130,9 @@ async fn start(cfg: ServeConfig, systemd: Option<std::os::unix::net::UnixListene
         tracing::warn!("{warning}");
     }
     let dictionary = Dictionary::from_file(&files.dictionary).map_err(|err| anyhow!("dictionary.toml: {err}"))?;
+    for warning in dictionary.warnings() {
+        tracing::warn!("{warning}");
+    }
     let server = files.server;
     for dir in [&cfg.state_dir, &cfg.cache_dir] {
         fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
