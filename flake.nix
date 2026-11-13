@@ -58,11 +58,13 @@
             (pkgs.python3.withPackages (ps: [ ps.pytest ]))
           ];
           nativeBuildInputs = [ pkgs.rustPlatform.bindgenHook ];
-          # The system libraries the crates link: PipeWire and ALSA for audio, Wayland and
-          # xkbcommon for the overlay and virtual keyboard, SQLite for the server.
+          # The system libraries the crates link: PipeWire and ALSA for audio, D-Bus for asking
+          # RTKit for real-time priority, Wayland and xkbcommon for the overlay and virtual
+          # keyboard, SQLite for the server.
           buildInputs = [
             pkgs.pipewire
             pkgs.alsa-lib
+            pkgs.dbus
             pkgs.wayland
             pkgs.libxkbcommon
             pkgs.sqlite

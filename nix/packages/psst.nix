@@ -3,6 +3,7 @@
   rustPlatform,
   pkg-config,
   alsa-lib,
+  dbus,
   pipewire,
   wayland,
   libxkbcommon,
@@ -20,14 +21,15 @@ rustPlatform.buildRustPackage {
     "psst"
   ];
 
-  # As in the dev shell: PipeWire and ALSA for audio, Wayland and xkbcommon for the overlay and
-  # the virtual keyboard.
+  # As in the dev shell: PipeWire and ALSA for audio, D-Bus for asking RTKit for real-time
+  # priority, Wayland and xkbcommon for the overlay and the virtual keyboard.
   nativeBuildInputs = [
     pkg-config
     rustPlatform.bindgenHook
   ];
   buildInputs = [
     alsa-lib
+    dbus
     pipewire
     wayland
     libxkbcommon

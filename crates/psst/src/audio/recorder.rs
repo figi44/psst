@@ -359,7 +359,7 @@ fn header(data_len: u32) -> [u8; 44] {
 mod tests {
     use std::sync::{Mutex, mpsc};
 
-    use crate::audio::OpenCapture;
+    use crate::audio::{OpenCapture, gaps::GapDetector};
 
     use super::*;
 
@@ -381,7 +381,7 @@ mod tests {
         }
     }
 
-    fn record(source: Scripted, run_for: Duration) -> (Vec<RecEvent>, PathBuf, tempfile::TempDir) {
+    fn record(source: impl AudioSource, run_for: Duration) -> (Vec<RecEvent>, PathBuf, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let wav = dir.path().join("rec.wav");
         let (tx, rx) = mpsc::channel();
@@ -454,6 +454,32 @@ mod tests {
         assert!(sent[..RING_SAMPLES].iter().all(|&s| s == to_i16(0.25)));
         assert!(sent[RING_SAMPLES..].iter().all(|&s| s == 0), "the gap is where the lost audio was");
         assert_eq!(psst_client::read_wav_info(&wav).unwrap().samples, total);
+    }
+
+    /// A source that delivers 16 kHz buffers captured at the given times (µs), as cpal does.
+    struct Timestamped(Vec<(u64, Vec<f32>)>);
+
+    impl AudioSource for Timestamped {
+        fn open(&self, mut feed: Feed) -> Result<OpenCapture, String> {
+            let mut gaps = GapDetector::new(16_000);
+            for (micros, samples) in &self.0 {
+                gaps.push(&mut feed, cpal::StreamInstant::from_micros(*micros), samples);
+                feed.tick();
+            }
+            Ok(OpenCapture { sample_rate: 16_000, drain_on_stop: false, guard: Box::new(Mutex::new(feed)) })
+        }
+    }
+
+    #[test]
+    fn a_gap_in_the_capture_timestamps_becomes_silence_and_the_recording_is_gapped() {
+        // Two 20 ms buffers, then one that starts 64 ms after the second ended, without an xrun.
+        let source = Timestamped(vec![(0, vec![0.25; 320]), (20_000, vec![0.25; 320]), (104_000, vec![0.5; 320])]);
+        let (events, wav, _dir) = record(source, Duration::from_millis(50));
+        assert!(events.contains(&RecEvent::Gap));
+        assert_eq!(events.last(), Some(&RecEvent::Finished { samples: 1_984, gapped: true }));
+        let expected: Vec<i16> = [vec![to_i16(0.25); 640], vec![0; 1_024], vec![to_i16(0.5); 320]].concat();
+        assert_eq!(&audio_of(&events)[..1_984], &expected[..], "the silence is where the lost audio was");
+        assert_eq!(psst_client::read_wav_info(&wav).unwrap().samples, 1_984);
     }
 
     #[test]

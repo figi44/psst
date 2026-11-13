@@ -3,20 +3,19 @@
 //! It asks for 16 kHz mono `f32`; if the device can't provide that, it captures the device's
 //! default format and downmixes in the callback, and the recorder resamples.
 //!
-//! Gaps are found from the callbacks' capture timestamps (docs/decisions/desktop.md: the one gap
-//! measured in Phase 0 came without an xrun): a buffer that starts more than half a buffer after
-//! the previous one ended is a discontinuity, filled with silence.
+//! Gaps are found from the callbacks' capture timestamps ([`GapDetector`]): the one gap measured
+//! in Phase 0 came without an xrun.
 
 use std::time::Duration;
 
 use cpal::{
-    ErrorKind, InputCallbackInfo, SampleFormat, SizedSample, StreamConfig, StreamInstant,
+    ErrorKind, InputCallbackInfo, SampleFormat, SizedSample, StreamConfig,
     traits::{DeviceTrait, HostTrait, StreamTrait},
 };
 use psst_proto::SAMPLE_RATE;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
-use super::{AudioSource, Feed, OpenCapture};
+use super::{AudioSource, Feed, FeedShared, OpenCapture, gaps::GapDetector};
 
 pub struct CpalSource {
     /// A capture device's name or id (a PipeWire node name such as
@@ -106,13 +105,12 @@ fn build<T: ToF32>(
     feed: &mut Option<Feed>,
 ) -> Result<cpal::Stream, cpal::Error> {
     let channels = config.channels.max(1) as usize;
-    let rate = config.sample_rate as f64;
     // The callbacks take the feed only once the stream exists; until then it waits here.
     let slot = std::sync::Arc::new(std::sync::Mutex::new(None::<Feed>));
     let error_shared = feed.as_ref().expect("a feed to build with").shared().clone();
     let data_slot = slot.clone();
     let mut mono: Vec<f32> = Vec::with_capacity(8192);
-    let mut expected: Option<StreamInstant> = None;
+    let mut gaps = GapDetector::new(config.sample_rate);
     let mut taken: Option<Feed> = None;
     let stream = device.build_input_stream::<T, _, _>(
         config,
@@ -121,42 +119,62 @@ fn build<T: ToF32>(
                 taken = data_slot.try_lock().ok().and_then(|mut slot| slot.take());
             }
             let Some(feed) = taken.as_mut() else { return };
-            let frames = data.len() / channels;
-            // A buffer starting more than half a buffer after the last one ended is a
-            // discontinuity: fill it with silence.
-            let capture = info.timestamp().capture;
-            let length = Duration::from_secs_f64(frames as f64 / rate);
-            if let Some(expected) = expected
-                && let Some(gap) = capture.checked_duration_since(expected)
-                && gap > length / 2
-            {
-                feed.push_silence((gap.as_secs_f64() * rate).round() as usize);
-            }
-            expected = capture.checked_add(length);
             mono.clear();
             for frame in data.chunks_exact(channels) {
                 mono.push(frame.iter().map(|s| s.to_f32()).sum::<f32>() / channels as f32);
             }
-            feed.push(&mono);
+            gaps.push(feed, info.timestamp().capture, &mono);
             feed.tick();
         },
-        move |err: cpal::Error| match err.kind() {
-            ErrorKind::Xrun => {
-                error_shared.glitched.store(true, std::sync::atomic::Ordering::Release);
-            }
-            ErrorKind::DeviceChanged | ErrorKind::RealtimeDenied => debug!("capture: {err}"),
-            ErrorKind::DeviceNotAvailable
-            | ErrorKind::StreamInvalidated
-            | ErrorKind::HostUnavailable
-            | ErrorKind::PermissionDenied => {
-                warn!("capture failed: {err}");
-                let mut failed = error_shared.failed.lock().unwrap_or_else(|e| e.into_inner());
-                failed.get_or_insert_with(|| format!("the capture device is gone: {err}"));
-            }
-            _ => warn!("capture: {err}"),
-        },
+        move |err: cpal::Error| on_stream_error(&error_shared, &err),
         Some(Duration::from_secs(2)),
     )?;
     *slot.lock().unwrap_or_else(|e| e.into_inner()) = feed.take();
     Ok(stream)
+}
+
+/// What a stream error means for the recording: only a lost device stops it.
+fn on_stream_error(shared: &FeedShared, err: &cpal::Error) {
+    match err.kind() {
+        ErrorKind::Xrun => shared.glitch(),
+        // RTKit said no, or its burst limit was hit (docs/decisions/desktop.md): capture goes on
+        // at normal priority.
+        ErrorKind::RealtimeDenied => info!("capturing at normal priority: {err}"),
+        ErrorKind::DeviceChanged => debug!("capture: {err}"),
+        ErrorKind::DeviceNotAvailable
+        | ErrorKind::StreamInvalidated
+        | ErrorKind::HostUnavailable
+        | ErrorKind::PermissionDenied => {
+            warn!("capture failed: {err}");
+            shared.fail(|| format!("the capture device is gone: {err}"));
+        }
+        _ => warn!("capture: {err}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refused_real_time_priority_leaves_the_recording_alone() {
+        let shared = FeedShared::default();
+        let refused = cpal::Error::with_message(
+            ErrorKind::RealtimeDenied,
+            "Failed to promote audio thread to real-time priority: Device or resource busy",
+        );
+        on_stream_error(&shared, &refused);
+        assert_eq!(shared.failure(), None);
+        assert!(!shared.take_glitched());
+    }
+
+    #[test]
+    fn an_xrun_is_a_glitch_and_a_lost_device_stops_the_recording() {
+        let shared = FeedShared::default();
+        on_stream_error(&shared, &ErrorKind::Xrun.into());
+        assert!(shared.take_glitched());
+        assert_eq!(shared.failure(), None);
+        on_stream_error(&shared, &cpal::Error::with_message(ErrorKind::DeviceNotAvailable, "unplugged"));
+        assert!(shared.failure().is_some_and(|reason| reason.contains("unplugged")), "{:?}", shared.failure());
+    }
 }

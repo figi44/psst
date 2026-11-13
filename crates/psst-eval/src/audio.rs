@@ -218,7 +218,7 @@ enum Outcome {
 }
 
 /// Runs sessions from `start` until one gives a `final`: waits while the model is unavailable
-/// (loading or downloading), and retries retryable errors.
+/// (loading or downloading) but not once it has failed, and retries retryable errors.
 async fn transcribe(
     client: &mut Client,
     endpoint: &Endpoint,
@@ -244,11 +244,16 @@ async fn transcribe(
                 continue;
             }
         };
-        if err.code == ErrorCode::ModelUnavailable && Instant::now() < deadline {
-            let detail = err.detail.as_ref().map(|d| format!(" {d}")).unwrap_or_default();
-            eprintln!("waiting for the model: {}{detail}", err.message);
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            continue;
+        if err.code == ErrorCode::ModelUnavailable {
+            // A failed model stays failed until `psst-server model load`, which nothing here
+            // sends: the engine can't start, crashed repeatedly, or couldn't load the model.
+            ensure!(!model_failed(&err), "{}", err.message);
+            if Instant::now() < deadline {
+                let detail = err.detail.as_ref().map(|d| format!(" {d}")).unwrap_or_default();
+                eprintln!("waiting for the model: {}{detail}", err.message);
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                continue;
+            }
         }
         failures += 1;
         if !err.retryable || failures >= ATTEMPTS {
@@ -256,6 +261,12 @@ async fn transcribe(
         }
         eprintln!("warning: `{:?}`: {}; trying again", err.code, err.message);
     }
+}
+
+/// Whether a `model_unavailable` error says the model failed, rather than that it's still
+/// downloading (docs/protocol.md).
+fn model_failed(err: &ErrorMsg) -> bool {
+    err.detail.as_ref().and_then(|detail| detail.get("reason")).and_then(|reason| reason.as_str()) == Some("failed")
 }
 
 async fn outcome(session: &mut Session) -> anyhow::Result<Outcome> {
