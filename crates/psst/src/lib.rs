@@ -7,6 +7,8 @@
 //! This is the contract stub: the commands parse; their behaviour arrives with the client work
 //! package.
 
+pub mod store;
+
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
