@@ -1,81 +1,39 @@
 # Working on psst
 
-psst is a dictation system: a Rust server that runs the speech model on a GPU machine, an engine
-process per model, and a thin Linux desktop client. There are no prose docs: the code and its doc
-comments are the reference, starting with the contract crates below.
+psst is a self-hosted dictation system: a Rust server runs the speech model on a GPU machine, and
+thin clients send it audio over the network. The code and its doc comments are the documentation.
 
-## Hard rules
+## What we care about
 
-- **All GPU work runs inside `scripts/gpu-session.sh`.** Nothing else uses the GPU.
-- **Never apply the `baseline-change` label.** Only a maintainer applies it.
-- **Tests never touch the live Wayland session.** No `wl-copy`, `wtype`, clipboard or input tools
-  against it. Compositor tests run in `psst_testkit::nested_niri()`, which refuses to run if any
-  client variable points at the live session.
-- **Cargo never compiles CUDA or C++.** Engines come prebuilt from Nix.
+- **Latency.** Text should be there the moment the user stops talking. Back performance changes
+  with measurements, not intuition.
+- **Bad connections.** Clients sit on slow, lossy, high-latency links far from the server. Design
+  for those first; never assume a LAN.
+- **Thin clients.** Heavy work belongs on the server, so clients stay light and easy to port.
+- **Ease of use.** It should just work: sensible defaults, no setup step the software could do
+  itself, errors that say what to do next.
+- **UX.** Fast, quiet and predictable.
+- **Dev experience.** Fast builds, a small `target/`, fast CI. Weigh every new dependency, test
+  binary and CI step against what it costs to build and run.
 
 ## Building and testing
 
-Work inside the dev shell: `nix develop` (Rust from the pinned nixpkgs, cargo-nextest, just,
-sccache, mold, the system libraries, and Python with pytest for the engine).
+Work in the dev shell (`nix develop`). `just` lists the recipes; run `just check`, which runs
+everything CI checks, before every push.
 
-Run everything CI checks before every push:
+- Tests run without a GPU, against a fake engine.
+- Each crate's integration tests are one binary, `tests/it/main.rs`: add a module there, not a new
+  `tests/*.rs`.
+- Add dependencies with `cargo add`.
+- A change to a contract (wire messages, config files) updates its doc comments in the same PR.
 
-```sh
-just check
-```
+## Hard rules
 
-That's rustfmt, clippy with warnings as errors, `cargo nextest run --workspace`, the engine's
-pytest, the golden frames, the eval gate and `nix flake check --no-build`, in that order. `just`
-lists each step as a recipe of its own (`just clippy`, `just test -E 'package(psst-dict)'`), and
-CI's Rust job runs the same recipes.
-
-- **Each crate's integration tests are one binary**, `tests/it/main.rs`, with a module per file.
-  Add a test file as a module there: every other `tests/*.rs` is a binary of its own, compiled and
-  linked separately.
-- **Tests run without a GPU**, through `psst-server __fake-engine` (`psst_engine_proto::fake`).
-  GPU tests are marked as such and run locally inside `scripts/gpu-session.sh`.
-- **Wayland tests run by default.** Each starts its own offscreen nested niri
-  (`psst_testkit::nested_niri()`); sway, niri and mesa come from `PATH`, or from the flake's nixpkgs
-  on the first run. In-process clients connect to `Sandbox::wayland_socket()` by path, never through
-  this process's `WAYLAND_DISPLAY`.
-- **Overlay snapshots:** after an intended change to the overlay's look, regenerate them with
-  `PSST_UPDATE_SNAPSHOTS=1 cargo nextest run -p psst-overlay` and review the PNGs.
-- **End-to-end tests live only in `psst-e2e`.** They start
-  `env!("CARGO_BIN_EXE_psst-server-e2e")` and `env!("CARGO_BIN_EXE_psst-e2e-daemon")` through
-  `psst-testkit`, so they always run freshly built binaries. Evals run the server in-process with
-  `psst_server::serve_in_process`.
-- **Regenerate `evals/baseline.json` after a rebase:** `cargo run -p psst-eval -- replay --write`.
-- Add dependencies with `cargo add`, not by editing manifests.
-
-## Contracts
-
-| Contract | Code |
-|---|---|
-| Client ↔ server messages, HTTP bodies, shared types | `psst-proto` |
-| Server ↔ engine messages and framing | `psst-engine-proto`, `engines/faster-whisper/psst_engine_faster_whisper/protocol.py` |
-| Config files and the resolved `Profile` | `psst-config` |
-| Daemon ↔ Wayland thread | `psst-wayland` (`OverlayState` in `psst-overlay`) |
-| Library seams | `psst-dict`, `psst-pipeline`, `psst-client`, `psst-server`, `psst-testkit` |
-
-- **A change to a contract updates its crate docs in the same pull request.**
-- **Golden frames** in `engines/faster-whisper/tests/golden/` check the engine contract in both
-  directions: pytest writes `from-engine/`, a Rust test in `psst-engine-proto` writes
-  `to-engine/`, and each side decodes the other's. Running the tests regenerates them; commit the
-  result. CI fails if they differ from what's committed.
-
-## Crates and dependency direction
-
-```
-psst-proto ← psst-engine-proto, psst-config
-psst-config ← psst-dict ← psst-pipeline ← psst-server ← psst-eval
-psst-proto ← psst-client ← psst, psst-eval
-psst-config ← psst
-psst-overlay ← psst-wayland ← psst
-psst-server, psst, psst-client, psst-testkit ← psst-e2e
-```
-
-Keep to these directions; in particular `psst-client` never depends on `psst-config`, and
-`psst-overlay` and `psst-wayland` know nothing about the network.
+- All GPU work runs inside `scripts/gpu-session.sh`.
+- Tests never touch the live Wayland session: no clipboard or input tools against it. Compositor
+  tests run in `psst_testkit::nested_niri()`.
+- Cargo never compiles CUDA or C++; engines come prebuilt from Nix.
+- Never apply the `baseline-change` label; only a maintainer does.
 
 ## Git
 
