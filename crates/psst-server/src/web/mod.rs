@@ -9,6 +9,7 @@
 
 mod dictionary;
 mod login;
+mod profiles;
 
 use std::sync::{Arc, OnceLock};
 
@@ -46,6 +47,7 @@ const TEMPLATES: &[(&str, &str)] = &[
     ("message.html", include_str!("../../../../web/templates/message.html")),
     ("login.html", include_str!("../../../../web/templates/login.html")),
     ("dictionary.html", include_str!("../../../../web/templates/dictionary.html")),
+    ("profiles.html", include_str!("../../../../web/templates/profiles.html")),
 ];
 
 /// Static files: name, content type, contents.
@@ -70,6 +72,10 @@ pub fn router() -> Router<AppRef> {
         .route("/dictionary/terms/{id}/reset", post(dictionary::reset))
         .route("/dictionary/never", post(dictionary::add_never))
         .route("/dictionary/never/{id}/remove", post(dictionary::remove_never))
+        .route("/profiles", get(profiles::show).post(profiles::add))
+        .route("/profiles.toml", get(profiles::export))
+        .route("/profiles/{name}", post(profiles::save))
+        .route("/profiles/{name}/reset", post(profiles::reset))
         .route("/static/{file}", get(asset))
 }
 

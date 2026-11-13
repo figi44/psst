@@ -2,9 +2,9 @@
 //! dictionary action through its forms, escaping, and what a page needs to be shown.
 
 use psst_client::api::{ApiClient, Method};
-use psst_config::{ConfigFile, DictionaryFile};
+use psst_config::{ConfigFile, DictionaryFile, ProfilesFile};
 use psst_engine_proto::fake::Script;
-use psst_proto::api::{DictionaryView, TermLayer, routes};
+use psst_proto::api::{DictionaryView, ProfileLayer, ProfilesView, TermLayer, routes};
 use psst_testkit::TestServer;
 use serde_json::json;
 
@@ -205,4 +205,67 @@ async fn pages_need_a_session_or_a_token_and_refuse_posts_from_elsewhere() {
     let missing = anonymous.get("/nowhere").await;
     assert_eq!((missing.status, missing.header("content-type")), (404, Some("text/html; charset=utf-8")));
     assert_eq!(anonymous.get("/api/nowhere").await.json()["code"], "not_found");
+}
+
+async fn profiles(server: &TestServer) -> ProfilesView {
+    ApiClient::new(server.endpoint(), None).call(Method::Get, routes::PROFILES, None::<&()>).await.unwrap()
+}
+
+#[tokio::test]
+async fn profiles_are_edited_added_and_reset_through_the_pages() {
+    let server = server(Script::default(), |cfg| {
+        cfg.tcp = true;
+        cfg.profiles = ProfilesFile::from_toml_str(
+            "[profiles.default]\nprompt_style = \"File style.\"\n[profiles.czech]\nlanguage = \"cs\"\n",
+        )
+        .unwrap();
+    });
+    let browser = logged_in(&server).await;
+    let page = browser.get("/profiles").await;
+    assert_eq!(page.status, 200);
+    for text in ["<h2>czech</h2>", "<h2>default</h2>", "action=\"/profiles/czech\"", "File style."] {
+        assert!(page.body.contains(text), "{text} on the page: {}", page.body);
+    }
+
+    let czech = [("language", "cs"), ("prompt_style", "Nový styl."), ("rules", "whitespace capitalize")];
+    see_other(&browser.post("/profiles/czech", &czech).await, "/profiles");
+    let stored = profiles(&server).await.profiles.into_iter().find(|p| p.name == "czech").unwrap();
+    assert_eq!(
+        (stored.layer, stored.profile.rules.join(",")),
+        (ProfileLayer::Replaced, "whitespace,capitalize".into())
+    );
+    assert!(browser.get("/profiles").await.body.contains("Reset to profiles.toml"));
+    let refused = browser.post("/profiles/czech", &[("language", "cs"), ("rules", "fillers, shout")]).await;
+    refused_with(&refused, "unknown rule `shout`");
+    assert!(refused.body.contains("value=\"fillers, shout\""), "the entered values are kept");
+    let long = "word ".repeat(100);
+    see_other(&browser.post("/profiles/czech", &[("language", "cs"), ("prompt_style", &long)]).await, "/profiles");
+    assert!(browser.get("/profiles").await.body.contains("profiles.czech.prompt_style is over about 100 tokens"));
+
+    // Add, with a name the page has to escape.
+    let new = [
+        ("name", "<b>notes</b>"),
+        ("language", "en"),
+        ("prompt_style", "</textarea><script>x()</script>"),
+        ("rules", ""),
+    ];
+    see_other(&browser.post("/profiles", &new).await, "/profiles");
+    let added = profiles(&server).await.profiles.into_iter().find(|p| p.name == "<b>notes</b>").expect("added");
+    assert_eq!((added.layer, added.profile.rules.len()), (ProfileLayer::Added, 0));
+    let page = browser.get("/profiles").await;
+    assert!(page.body.contains("<h2>&lt;b&gt;notes&lt;&#x2f;b&gt;</h2>"), "{}", page.body);
+    assert!(!page.body.contains("<script>x()"), "{}", page.body);
+    assert!(page.body.contains("action=\"/profiles/%3Cb%3Enotes%3C%2Fb%3E/reset\""), "{}", page.body);
+    refused_with(&browser.post("/profiles", &[("name", "default"), ("language", "en")]).await, "already");
+
+    // The export, then reset and remove.
+    let export = browser.get("/profiles.toml").await;
+    assert_eq!(export.header("content-disposition"), Some("attachment; filename=\"profiles.toml\""));
+    let exported = ProfilesFile::from_toml_str(&export.body).unwrap_or_else(|err| panic!("{err}\n{}", export.body));
+    assert_eq!(exported.profiles.len(), 3);
+    see_other(&browser.post("/profiles/czech/reset", &[]).await, "/profiles");
+    see_other(&browser.post("/profiles/%3Cb%3Enotes%3C%2Fb%3E/reset", &[]).await, "/profiles");
+    refused_with(&browser.post("/profiles/default/reset", &[]).await, "no database version");
+    let layers: Vec<_> = profiles(&server).await.profiles.into_iter().map(|p| (p.name, p.layer)).collect();
+    assert_eq!(layers, [("czech".into(), ProfileLayer::File), ("default".into(), ProfileLayer::File)]);
 }
