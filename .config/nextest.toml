@@ -1,0 +1,4 @@
+# `paste_timing` asserts a 50 ms p95 through llvmpipe, so it runs alone.
+[[profile.default.overrides]]
+filter = 'binary_id(psst-e2e::wayland) & test(=paste_timing)'
+threads-required = "num-test-threads"
