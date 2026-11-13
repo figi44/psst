@@ -13,6 +13,7 @@
 
 mod cpal_source;
 mod file_source;
+pub mod gaps;
 pub mod recorder;
 
 use std::{
