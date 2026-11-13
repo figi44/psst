@@ -1,5 +1,5 @@
-# fmt, clippy, tests, the Rust half of the golden frames, and the flake. Everything runs in the
-# flake's dev shell, so CI uses exactly the toolchain agents use locally.
+# fmt, clippy, tests and the Rust half of the golden frames, in the flake's dev shell, so CI uses
+# exactly the toolchain agents use locally; and the flake itself.
 name: CI
 
 on:
@@ -15,6 +15,17 @@ permissions:
   contents: read
 
 jobs:
+  # A job of its own, so evaluating the flake doesn't hold up the Rust job.
+  nix:
+    name: Nix
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+      - name: Check the flake
+        run: nix flake check --no-build
+
   rust:
     name: Rust
     runs-on: ubuntu-latest
@@ -22,8 +33,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: cachix/install-nix-action@v31
-      - name: Check the flake
-        run: nix flake check --no-build
       - name: Enter the dev shell
         uses: nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a # v1.2.1
       # Only main saves the cache. A pull request's cache is visible only to that pull request,
