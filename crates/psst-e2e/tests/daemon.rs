@@ -4,9 +4,11 @@
 
 use std::{
     fs,
+    io::{BufRead, BufReader, Read},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::{Child, Command, Output, Stdio},
+    sync::{Arc, Mutex, mpsc},
     thread,
     time::{Duration, Instant},
 };
@@ -30,11 +32,16 @@ impl Server {
     /// A server whose engine transcribes the next dictations as `texts`, in order. The pipeline
     /// then appends a space (the `trailing_space` rule).
     fn start(texts: &[&str], tcp: bool) -> Server {
+        Server::start_slow(texts, 0, tcp)
+    }
+
+    /// [`Server::start`], with each transcription taking `delay_ms`.
+    fn start_slow(texts: &[&str], delay_ms: u64, tcp: bool) -> Server {
         let transcribe = texts
             .iter()
             .map(|text| TranscribeStep::Result {
                 text: text.to_string(),
-                delay_ms: 0,
+                delay_ms,
                 no_speech_prob: None,
                 speech_ms: None,
             })
@@ -255,4 +262,109 @@ fn a_second_daemon_refuses_to_start_and_leaves_the_recordings_alone() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("another psst daemon"));
     let status = client.status();
     assert_eq!(status["retained"][0]["state"], "recording", "not recovered under the running daemon: {status}");
+}
+
+/// `psst status --follow`, as a bar runs it, with its lines collected as they come.
+struct Bar {
+    child: Child,
+    lines: Arc<Mutex<Vec<Value>>>,
+}
+
+impl Bar {
+    fn start(mut command: Command) -> Bar {
+        let mut child =
+            command.args(["status", "--follow"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let sink = lines.clone();
+        let stdout = child.stdout.take().unwrap();
+        thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                sink.lock().unwrap().push(serde_json::from_str(&line).unwrap());
+            }
+        });
+        Bar { child, lines }
+    }
+
+    /// The states it showed (waybar's `alt`), with repeats collapsed.
+    fn alts(&self) -> Vec<String> {
+        let mut alts: Vec<String> =
+            self.lines.lock().unwrap().iter().map(|l| l["alt"].as_str().unwrap().to_owned()).collect();
+        alts.dedup();
+        alts
+    }
+
+    #[track_caller]
+    fn wait_for(&self, alts: &[&str]) {
+        let deadline = Instant::now() + WAIT;
+        while self.alts() != alts {
+            assert!(Instant::now() < deadline, "the bar showed {:?}, not {alts:?}", self.alts());
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+impl Drop for Bar {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[test]
+fn status_follow_shows_each_change_and_follows_a_restarted_daemon() {
+    let server = Server::start_slow(&["Followed."], 300, false);
+    let mut client = Client::start(server.endpoint());
+    let bar = Bar::start(client.sandbox.command(DAEMON));
+    bar.wait_for(&["idle"]);
+
+    client.ok(&["toggle"]);
+    thread::sleep(Duration::from_millis(400));
+    client.ok(&["toggle"]);
+    client.wait_idle();
+    bar.wait_for(&["idle", "recording", "finishing", "idle"]);
+    let tooltip = bar.lines.lock().unwrap().last().unwrap()["tooltip"].as_str().unwrap().to_owned();
+    assert!(tooltip.starts_with("psst: idle\nserver: connected to "), "{tooltip}");
+
+    client.daemon.take().unwrap().kill();
+    bar.wait_for(&["idle", "recording", "finishing", "idle", "stopped"]);
+    client.daemon = Some(spawn_daemon(Path::new(DAEMON), &client.sandbox, client.cfg.clone()));
+    bar.wait_for(&["idle", "recording", "finishing", "idle", "stopped", "idle"]);
+}
+
+#[test]
+fn status_follow_exits_quietly_when_its_output_closes() {
+    // Waiting to retry without a daemon, and following an idle daemon: neither has anything to
+    // write, so it has to notice the bar going away by itself.
+    let sandbox = Sandbox::headless();
+    exits_once_its_first_line_is_read(sandbox.command(DAEMON), "stopped");
+    let server = Server::start(&[], false);
+    let client = Client::start(server.endpoint());
+    exits_once_its_first_line_is_read(client.sandbox.command(DAEMON), "idle");
+}
+
+#[track_caller]
+fn exits_once_its_first_line_is_read(mut command: Command, alt: &str) {
+    let mut child = command.args(["status", "--follow"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (tx, first) = mpsc::channel();
+    // Reads one line, then drops the pipe's only reader.
+    thread::spawn(move || {
+        let mut line = String::new();
+        let _ = BufReader::new(stdout).read_line(&mut line);
+        let _ = tx.send(line);
+    });
+    let line: Value = serde_json::from_str(&first.recv_timeout(WAIT).expect("a first line")).unwrap();
+    assert_eq!(line["alt"], alt, "{line}");
+    let deadline = Instant::now() + WAIT;
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "still running after its output closed");
+        thread::sleep(Duration::from_millis(20));
+    };
+    let mut stderr = String::new();
+    child.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
+    assert!(status.success() && stderr.is_empty(), "{status}: {stderr}");
 }
