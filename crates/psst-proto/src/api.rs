@@ -1,4 +1,5 @@
-//! HTTP routes and their bodies (plan 5.2), Phase 1. All bodies are JSON.
+//! HTTP routes and their bodies (plan 5.2): Phase 1, and the dictionary routes of Phase 2. All
+//! bodies are JSON.
 //!
 //! Errors from `/api/*` come back with a non-2xx status and an [`ApiError`] body.
 
@@ -7,7 +8,7 @@ use std::collections::BTreeMap;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use crate::{ClientTimings, DeviceId, Final, HistoryId, ServerTimings, SessionId, Token};
+use crate::{ClientTimings, DeviceId, Final, HistoryId, ServerTimings, SessionId, TermId, Token};
 
 /// Route paths. `{id}` is a path parameter.
 pub mod routes {
@@ -33,6 +34,40 @@ pub mod routes {
     pub const STATS: &str = "/api/stats";
     /// `GET ?limit=` ([`super::HistoryQuery`]) → `[`[`super::HistoryRow`]`]`, newest first.
     pub const HISTORY: &str = "/api/history";
+    /// `GET` → [`super::DictionaryView`].
+    pub const DICTIONARY: &str = "/api/dictionary";
+    /// `POST` [`super::Term`] → [`super::TermChange`]: adds a term.
+    pub const DICTIONARY_TERMS: &str = "/api/dictionary/terms";
+    /// `PUT` [`super::Term`] → [`super::TermChange`]: replaces a term. `DELETE` →
+    /// [`super::TermChange`]: hides a file term, or removes an added one. `{id}` is any spelling
+    /// with the term's identity.
+    pub const DICTIONARY_TERM: &str = "/api/dictionary/terms/{id}";
+    /// `POST` → [`super::TermChange`]: deletes the database's entry for the identity.
+    pub const DICTIONARY_TERM_RESET: &str = "/api/dictionary/terms/{id}/reset";
+    /// `POST` [`super::NewNeverRule`] → [`super::NeverRule`].
+    pub const DICTIONARY_NEVER: &str = "/api/dictionary/never";
+    /// `DELETE` → `204 No Content`. `{id}` is a [`super::NeverRuleId`].
+    pub const DICTIONARY_NEVER_RULE: &str = "/api/dictionary/never/{id}";
+    /// `GET` → [`super::DictionaryExport`].
+    pub const DICTIONARY_EXPORT: &str = "/api/dictionary/export";
+    /// `POST` [`super::DictionaryTest`] → [`crate::Final`].
+    pub const DICTIONARY_TEST: &str = "/api/dictionary/test";
+
+    /// `template` with its `{id}` replaced by `id`, percent-encoded as one path segment.
+    pub fn with_id(template: &str, id: &str) -> String {
+        template.replace("{id}", &super::encode_segment(id))
+    }
+}
+
+/// Percent-encodes `segment` for use as one path segment: everything but unreserved characters.
+pub fn encode_segment(segment: &str) -> String {
+    segment
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 /// Body of `GET /health`, with status 200 while the server is serving.
@@ -190,4 +225,162 @@ pub struct HistoryRow {
     pub server_timings: Option<ServerTimings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_timings: Option<ClientTimings>,
+}
+
+/// A dictionary term as the API carries it: the keys of a `[[terms]]` entry in
+/// `dictionary.toml` (plan 7.1), each with the same default. Keys at their default are left out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Term {
+    /// The exact spelling to produce. Its identity ([`TermId`]) is this after NFC and case folding.
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sounds_like: Vec<String>,
+    /// `"any"`, or the one language code whose sessions use the term.
+    #[serde(default = "any_language", skip_serializing_if = "is_any_language")]
+    pub languages: String,
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub fuzzy: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pin: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+impl Term {
+    /// A term with every other key at its default.
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            sounds_like: Vec::new(),
+            languages: any_language(),
+            fuzzy: true,
+            pin: false,
+            notes: None,
+        }
+    }
+}
+
+fn any_language() -> String {
+    "any".into()
+}
+
+fn is_any_language(languages: &str) -> bool {
+    languages == "any"
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// `GET /api/dictionary`: every identity that `dictionary.toml` or the database layer knows, and
+/// the never rules.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DictionaryView {
+    /// Sorted by identity.
+    pub terms: Vec<DictionaryTerm>,
+    /// Oldest first.
+    pub never: Vec<NeverRule>,
+    /// What `check-config` would warn about in the dictionary sessions use now.
+    pub warnings: Vec<String>,
+}
+
+/// One identity, and where its version comes from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DictionaryTerm {
+    pub id: TermId,
+    pub layer: TermLayer,
+    /// Whether sessions use [`DictionaryTerm::term`]. False for a hidden term, and for a database
+    /// entry left out for [`DictionaryTerm::problem`].
+    pub active: bool,
+    /// The database's version for `added` and `replaced`, the file's for `file` and `hidden`.
+    /// Absent for a hidden term that `dictionary.toml` no longer has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub term: Option<Term>,
+    /// The file's version, for `replaced`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<Term>,
+    /// Why the database's entry is left out: it conflicts with `dictionary.toml` (which can happen
+    /// when the file changes) or with an older entry. A replaced term then falls back to the
+    /// file's version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TermLayer {
+    /// From `dictionary.toml`, unchanged.
+    File,
+    /// Only in the database.
+    Added,
+    /// The database replaces the file's term with the same identity.
+    Replaced,
+    /// The database hides the file's term.
+    Hidden,
+}
+
+/// The answer to a change of one term: the identity's entry afterwards, and what the change set
+/// off in the plan 7.1 checks. A change that the checks reject gets `400 bad_request` instead,
+/// and changes nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TermChange {
+    /// Absent when neither layer knows the identity any more (an added term removed or reset).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub term: Option<DictionaryTerm>,
+    /// Warnings the dictionary has after the change and didn't have before.
+    pub warnings: Vec<String>,
+}
+
+/// Id of a never rule, assigned by the server.
+pub type NeverRuleId = u64;
+
+/// `POST /api/dictionary/never`: `term` (any spelling with its identity) must never replace
+/// `span`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NewNeverRule {
+    pub term: String,
+    pub span: String,
+}
+
+/// A never rule (plan 7.1): it vetoes `term` replacing a span whose fuzzy key is `span_key`, both
+/// exactly and fuzzily.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NeverRule {
+    pub id: NeverRuleId,
+    pub term: TermId,
+    /// The span as it was given.
+    pub span: String,
+    /// What a span is compared by: lowercase, diacritics folded, letters and digits only.
+    pub span_key: String,
+    /// False while `term` is hidden or gone; the rule is kept.
+    pub active: bool,
+    pub created_at: Timestamp,
+}
+
+/// `GET /api/dictionary/export`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DictionaryExport {
+    /// The database layer in `dictionary.toml`'s format, for moving into the file (the host config's
+    /// `settings.dictionary`): the added and replaced terms as `[[terms]]`, and hidden terms and
+    /// never rules, which the file can't express, as comments.
+    pub toml: String,
+}
+
+/// `POST /api/dictionary/test`: runs the pipeline on `text` as if the engine had produced it,
+/// without probabilities, with the dictionary sessions use now and the `default` profile's rules.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DictionaryTest {
+    pub text: String,
+    /// The session language; the `default` profile's when absent. It picks the terms, the common
+    /// words and the fillers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
