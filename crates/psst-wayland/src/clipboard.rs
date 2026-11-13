@@ -431,7 +431,11 @@ impl Machine {
                 }
             }
             Input::RestoreDue { generation } => self.restore_due(generation, &mut out),
-            Input::Reset => *self = Machine::new(self.cfg),
+            Input::Reset => {
+                // Ids keep counting: timers from before the reset may still fire.
+                let (next_read, next_epoch) = (self.next_read, self.next_epoch);
+                *self = Machine { next_read, next_epoch, ..Machine::new(self.cfg) };
+            }
         }
         out
     }
@@ -1142,6 +1146,23 @@ mod tests {
         let a = m.handle(Input::SnapshotRequested { generation: 2 });
         assert!(noted(&a, Note::SnapshotInherited { from: 1 }));
         assert!(read_of(&a).is_none());
+    }
+
+    #[test]
+    fn a_timer_from_before_a_reset_leaves_a_new_snapshot_alone() {
+        let mut m = machine();
+        m.handle(Input::SelectionChanged(ext(1, &["image/png"])));
+        let a = m.handle(Input::SnapshotRequested { generation: 1 });
+        let stale = a.iter().find_map(|a| match a {
+            Action::ExpireSnapshot { epoch, .. } => Some(*epoch),
+            _ => None,
+        });
+        m.handle(Input::Reset);
+        m.handle(Input::SelectionChanged(ext(1, &["image/png"])));
+        let (id, _, _) = read_of(&m.handle(Input::SnapshotRequested { generation: 2 })).unwrap();
+        m.handle(Input::ReadDone { id, result: Ok(vec![0; 10]) });
+        assert!(m.handle(Input::SnapshotExpired { epoch: stale.unwrap() }).is_empty());
+        assert_eq!(m.held_bytes(), 10);
     }
 
     #[test]
