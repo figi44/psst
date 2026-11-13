@@ -2,6 +2,10 @@
 //!
 //! It asks for 16 kHz mono `f32`; if the device can't provide that, it captures the device's
 //! default format and downmixes in the callback, and the recorder resamples.
+//!
+//! Gaps are found from the callbacks' capture timestamps (docs/decisions/desktop.md: the one gap
+//! measured in Phase 0 came without an xrun): a buffer that starts more than half a buffer after
+//! the previous one ended is a discontinuity, filled with silence.
 
 use std::time::Duration;
 
@@ -14,11 +18,9 @@ use tracing::{debug, warn};
 
 use super::{AudioSource, Feed, OpenCapture};
 
-/// A capture discontinuity shorter than this is jitter, not a gap.
-const GAP_TOLERANCE: Duration = Duration::from_millis(10);
-
 pub struct CpalSource {
-    /// A capture device's name; the system default when `None`.
+    /// A capture device's name or id (a PipeWire node name such as
+    /// `alsa_input.usb-…`); the system default when `None`.
     pub device: Option<String>,
 }
 
@@ -30,7 +32,13 @@ impl AudioSource for CpalSource {
             Some(name) => host
                 .input_devices()
                 .map_err(|e| format!("cannot list capture devices: {e}"))?
-                .find(|d| d.description().is_ok_and(|desc| desc.name() == name) || d.to_string() == *name)
+                .find(|d| {
+                    let id = d.id().map(|id| id.to_string()).unwrap_or_default();
+                    d.description().is_ok_and(|desc| desc.name() == name)
+                        || d.to_string() == *name
+                        || id == *name
+                        || id.split_once(':').is_some_and(|(_, node)| node == name)
+                })
                 .ok_or_else(|| format!("no capture device named `{name}`"))?,
         };
         debug!("capturing from {device} on {:?}", host.id());
@@ -114,15 +122,17 @@ fn build<T: ToF32>(
             }
             let Some(feed) = taken.as_mut() else { return };
             let frames = data.len() / channels;
-            // A capture timestamp past where this buffer should start is a discontinuity: fill it.
+            // A buffer starting more than half a buffer after the last one ended is a
+            // discontinuity: fill it with silence.
             let capture = info.timestamp().capture;
+            let length = Duration::from_secs_f64(frames as f64 / rate);
             if let Some(expected) = expected
                 && let Some(gap) = capture.checked_duration_since(expected)
-                && gap > GAP_TOLERANCE
+                && gap > length / 2
             {
                 feed.push_silence((gap.as_secs_f64() * rate).round() as usize);
             }
-            expected = capture.checked_add(Duration::from_secs_f64(frames as f64 / rate));
+            expected = capture.checked_add(length);
             mono.clear();
             for frame in data.chunks_exact(channels) {
                 mono.push(frame.iter().map(|s| s.to_f32()).sum::<f32>() / channels as f32);
