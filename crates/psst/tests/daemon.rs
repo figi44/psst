@@ -164,7 +164,14 @@ async fn daemon_in(root: &Path, server: &FakeServer, tweak: impl FnOnce(&mut Cli
     let handle = daemon::spawn(cfg, paths, deps).await.unwrap();
     // Let the start-up connection settle.
     wait_until(|| server.connections() > 0).await;
-    Daemon { handle: Some(handle), wayland, sounds, store: Store::open(&root.join("state")).unwrap(), audio, _dir: None }
+    Daemon {
+        handle: Some(handle),
+        wayland,
+        sounds,
+        store: Store::open(&root.join("state")).unwrap(),
+        audio,
+        _dir: None,
+    }
 }
 
 impl Daemon {
@@ -463,7 +470,11 @@ async fn paste_last_and_copy_last_redeliver_the_last_text() {
     let d = daemon(&server, |_, _| {}).await;
     assert!(!d.run(Request::PasteLast { session: None }).await.ok, "nothing dictated yet");
     d.store
-        .write_last(&Last { session_id: SessionId::new_v4(), finalized_at: jiff::Timestamp::now(), text: "old ".into() })
+        .write_last(&Last {
+            session_id: SessionId::new_v4(),
+            finalized_at: jiff::Timestamp::now(),
+            text: "old ".into(),
+        })
         .unwrap();
     assert!(d.run(Request::PasteLast { session: None }).await.ok);
     assert!(d.run(Request::CopyLast { session: None }).await.ok);
@@ -500,7 +511,10 @@ async fn the_chord_follows_the_focused_window_and_app_rules() {
     server.push_outcome(Outcome::Final("secret ".into()));
     let d = daemon(&server, |cfg, deps| {
         deps.niri_socket = Some(niri.clone());
-        cfg.apps.insert("org.keepassxc.KeePassXC".into(), AppRule { paste: Some(PasteAction::CopyOnly), paste_delay_ms: 0 });
+        cfg.apps.insert(
+            "org.keepassxc.KeePassXC".into(),
+            AppRule { paste: Some(PasteAction::CopyOnly), paste_delay_ms: 0 },
+        );
     })
     .await;
     d.dictate(200).await;
