@@ -18,9 +18,14 @@ use std::{
 };
 
 use anyhow::{Context, bail, ensure};
-use psst_client::{AudioFrame, Client, Endpoint, Session, SessionEvent, StartOpts, upload_file};
+use psst_client::{
+    AudioFrame, Client, Endpoint, Session, SessionEvent, StartOpts,
+    api::{ApiClient, Method},
+    upload_file,
+};
 use psst_proto::{
     ErrorCode, FRAME_MS, FRAME_SAMPLES, SAMPLE_RATE, ServerTimings,
+    api::{ModelState, ModelStatus, routes},
     ws::{ErrorMsg, EvalOpts, FinalMsg, Mode},
 };
 use psst_server::{ServeConfig, serve_in_process};
@@ -167,7 +172,10 @@ pub async fn run(opts: &AudioOptions) -> anyhow::Result<Vec<LatencyRow>> {
     .context("cannot start the eval server")?;
     let endpoint = Endpoint::Unix(server.socket().to_owned());
     // Shut the server down whatever happened, then report the first error.
-    let recorded = record(&mut set, &clips, &endpoint).await;
+    let recorded = match wait_for_model(&endpoint).await {
+        Ok(()) => record(&mut set, &clips, &endpoint).await,
+        Err(err) => Err(err),
+    };
     let shutdown = server.shutdown().await.context("cannot shut the eval server down");
     let timings = recorded?;
     shutdown?;
@@ -284,6 +292,37 @@ fn live_cases(set: &EvalSet, clips: &[(PathBuf, Vec<i16>)]) -> Vec<usize> {
 enum Outcome {
     Final(Box<FinalMsg>),
     Refused(ErrorMsg),
+}
+
+/// Waits until the server's model is loaded (a first download takes a while), so no upload waits
+/// for it and every biased upload counts in the latency. A model that failed or is unloaded
+/// stops it at once: nothing here loads it.
+async fn wait_for_model(endpoint: &Endpoint) -> anyhow::Result<()> {
+    let api = ApiClient::new(endpoint.clone(), None);
+    let deadline = Instant::now() + MODEL_WAIT;
+    let mut shown = None;
+    loop {
+        let status: ModelStatus = api
+            .call(Method::Get, routes::MODEL, None::<&()>)
+            .await
+            .context("cannot ask the eval server about its model")?;
+        match status.state {
+            ModelState::Loaded => return Ok(()),
+            ModelState::Failed => bail!("the model failed: {}", status.error.unwrap_or_default()),
+            // A preloading server starts in `loading`, so this is `preload = false`.
+            ModelState::Unloaded => {
+                bail!("the eval server's model is unloaded, and nothing here loads it: set `model.preload = true`")
+            }
+            state => {
+                ensure!(Instant::now() < deadline, "the model is still {state:?} after {MODEL_WAIT:?}");
+                if shown != Some(state) {
+                    eprintln!("waiting for the model: {state:?}");
+                    shown = Some(state);
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }
+    }
 }
 
 /// Runs sessions from `start` until one gives a `final`: waits while the model is unavailable

@@ -104,7 +104,9 @@ fn options(evals: &Evals, cache: &tempfile::TempDir) -> AudioOptions {
 async fn it_records_both_traces_of_every_clip_through_the_in_process_server() {
     let evals = Evals::new();
     let cases = [("en-1", CLIP), ("en-2", SHORT_CLIP), ("cs-1", CLIP)];
-    let script = fake_eval_set(&evals, &Script::default(), &cases);
+    // A model that takes a while to load: the uploads wait for it, so all of them count below.
+    let slow = Script { load: LoadScript { delay_ms: 500, ..LoadScript::default() }, ..Script::default() };
+    let script = fake_eval_set(&evals, &slow, &cases);
     let cache = tempfile::tempdir().unwrap();
 
     let latency = run(&options(&evals, &cache)).await.unwrap();
@@ -131,7 +133,7 @@ async fn it_records_both_traces_of_every_clip_through_the_in_process_server() {
     assert_eq!(transcribed, expected);
     // The baseline it wrote is the replay of what it recorded.
     evals.run("replay", &["--check"]).success();
-    // And the latency of the three biased uploads, all short.
+    // And the latency of the three biased uploads, all short, none of them waiting for the model.
     assert_eq!(
         latency.iter().map(|row| (row.over_s, row.up_to_s, row.dictations)).collect::<Vec<_>>(),
         [(0, Some(15), 3)]
@@ -158,6 +160,22 @@ fn latency_is_reported_per_range_of_recording_lengths() {
         .collect();
     assert_eq!(summary, [(0, Some(15), 20, 210, 219), (30, Some(90), 2, 800, 900)]);
     assert_eq!((rows[0].stop_to_final_ms.max, rows[0].engine_ms.p50), (220, 200));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_model_that_isnt_preloaded_stops_it_at_once() {
+    let evals = Evals::new();
+    fake_eval_set(&evals, &Script::default(), &[("en-1", CLIP)]);
+    let server_toml = fs::read_to_string(evals.file("server.toml")).unwrap();
+    evals.write("server.toml", &server_toml.replacen("[model]\n", "[model]\npreload = false\n", 1));
+    let cache = tempfile::tempdir().unwrap();
+
+    let err = tokio::time::timeout(Duration::from_secs(30), run(&options(&evals, &cache)))
+        .await
+        .expect("it gives up at once")
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("model.preload = true"), "{err:#}");
+    assert!(!evals.file("baseline.json").exists());
 }
 
 #[tokio::test(flavor = "multi_thread")]
