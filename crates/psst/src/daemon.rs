@@ -985,8 +985,14 @@ impl Core {
         let rec = self.recording.as_mut().expect("checked");
         rec.max_recording_s = client.welcome().limits.max_recording_s;
         rec.net = Net::Live { ready: false, since: Instant::now() };
+        // Frames captured so far go first; the session's buffer holds them until `ready`.
+        let backlog = std::mem::take(&mut rec.backlog);
+        let full = backlog.into_iter().any(|frame| ctl.frames.try_send(frame).is_err());
         rec.session = Some(ctl);
         self.slot = Some(id);
+        if full {
+            self.went_offline(id, "too much audio waiting for the server".into());
+        }
     }
 
     fn start_upload(&mut self, client: &mut Client, index: usize) {
@@ -1179,16 +1185,6 @@ impl Core {
             SessionEvent::Ready { .. } => {
                 if let Net::Live { ready, .. } = &mut d.net {
                     *ready = true;
-                    let backlog = std::mem::take(&mut d.backlog);
-                    let full = d.session.as_ref().is_some_and(|session| {
-                        backlog.into_iter().any(|frame| session.frames.try_send(frame).is_err())
-                    });
-                    if full {
-                        if let Some(client) = &self.client {
-                            client.close();
-                        }
-                        self.went_offline(id, "the server isn't keeping up".into());
-                    }
                 }
             }
             SessionEvent::Progress { state, .. } => d.progress = Some(state),

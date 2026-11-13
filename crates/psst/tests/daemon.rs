@@ -280,6 +280,33 @@ async fn toggling_while_finishing_records_again_at_once_and_pastes_in_order() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_recording_that_waited_for_the_connection_streams_its_early_frames_first() {
+    let server = FakeServer::start(FakeServerConfig {
+        final_delay: Duration::from_millis(300),
+        ready_delay: Duration::from_millis(150),
+        ..Default::default()
+    });
+    server.push_outcome(Outcome::Final("first ".into()));
+    server.push_outcome(Outcome::Final("second ".into()));
+    let d = daemon(&server, |_, _| {}).await;
+
+    d.dictate(200).await;
+    // Recording while the first is transcribed: its `start` waits for the first's `final`,
+    // then it goes live with the frames captured meanwhile.
+    let second = d.dictate(900).await;
+    d.idle().await;
+
+    assert_eq!(d.wayland.inserted(), vec![paste("first "), paste("second ")]);
+    let seen = server.session(second).unwrap();
+    assert_eq!(seen.starts.len(), 1);
+    assert_eq!((seen.starts[0].mode, seen.starts[0].resume), (psst_proto::ws::Mode::Live, false), "streamed live");
+    let samples = seen.stop_samples.unwrap() as usize;
+    assert!(samples >= 12_800, "{samples}");
+    assert_eq!(&seen.audio[..samples], &d.audio[..samples], "early frames first, in order");
+    d.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn toggling_while_starting_stops_once_recording_runs() {
     let server = FakeServer::start(FakeServerConfig::default());
     server.push_outcome(Outcome::Final("short ".into()));
