@@ -7,10 +7,13 @@
 
 mod common;
 
-use std::{fs, fs::File, path::PathBuf, process::Command};
+use std::{fs, fs::File, path::PathBuf, process::Command, time::Duration};
 
 use common::{CS_PROMPT, EN_PROMPT, Evals, Run};
-use psst_engine_proto::fake::{Script, read_request_log};
+use psst_engine_proto::{
+    EngineErrorCode,
+    fake::{LoadOutcome, LoadScript, Script, read_request_log},
+};
 use psst_eval::{
     audio::{AudioOptions, run},
     cases::{Case, Source, Split, read_cases},
@@ -127,4 +130,21 @@ async fn it_records_both_traces_of_every_clip_through_the_in_process_server() {
     assert_eq!(transcribed, expected);
     // The baseline it wrote is the replay of what it recorded.
     evals.run("replay", &["--check"]).success();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_model_that_fails_to_load_stops_it_at_once() {
+    let evals = Evals::new();
+    let outcome = LoadOutcome::Error { code: EngineErrorCode::LoadFailed, message: "CUDA driver too old".into() };
+    let script = Script { load: LoadScript { outcome, ..LoadScript::default() }, ..Script::default() };
+    fake_eval_set(&evals, &script, &[("en-1", CLIP)]);
+    let cache = tempfile::tempdir().unwrap();
+
+    // Not the half hour it waits for a model that is still loading or downloading.
+    let err = tokio::time::timeout(Duration::from_secs(30), run(&options(&evals, &cache)))
+        .await
+        .expect("it gives up at once")
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("CUDA driver too old"), "{err:#}");
+    assert!(!evals.file("baseline.json").exists());
 }
