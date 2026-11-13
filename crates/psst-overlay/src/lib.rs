@@ -1,7 +1,7 @@
-//! Rendering is pure: the same arguments always give the same pixels, and nothing animates on its
-//! own.
+//! Rendering is pure: the same arguments always give the same pixels. The waveform moves only as
+//! the caller advances a [`Meter`] and passes on its [`Wave`].
 
-use std::collections::VecDeque;
+use std::{f32::consts::TAU, time::Duration};
 
 mod render;
 
@@ -33,14 +33,18 @@ pub enum OverlayState {
         message: String,
     },
     LimitWarning {
+        level: f32,
         seconds_left: u32,
     },
 }
 
 impl OverlayState {
+    /// `Some` for the states that show the waveform.
     pub fn level(&self) -> Option<f32> {
         match self {
-            OverlayState::Recording { level } | OverlayState::Offline { level, .. } => Some(*level),
+            OverlayState::Recording { level }
+            | OverlayState::Offline { level, .. }
+            | OverlayState::LimitWarning { level, .. } => Some(*level),
             _ => None,
         }
     }
@@ -75,56 +79,57 @@ pub struct Style {
 impl Default for Style {
     fn default() -> Self {
         Self {
-            background: Rgba::new(0x1c, 0x1c, 0x1e, 0xe6),
+            background: Rgba::new(0x00, 0x00, 0x00, 0xff),
             foreground: Rgba::new(0xf5, 0xf5, 0xf7, 0xff),
             accent: Rgba::new(0xff, 0x45, 0x3a, 0xff),
         }
     }
 }
 
-pub const LEVEL_HISTORY: usize = 64;
+/// One moment of the waveform.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Wave {
+    /// The microphone level, eased.
+    pub level: f32,
+    /// How far the ripple has travelled, in radians.
+    pub phase: f32,
+}
 
+/// Seconds to close most of the gap to a louder level: syllables show at once.
+const ATTACK: f32 = 0.04;
+/// Seconds to fall back: the wave settles instead of flickering between words.
+const RELEASE: f32 = 0.2;
+/// Radians a second: a slow sway in silence, quicker while speaking.
+const QUIET_SPEED: f32 = 2.4;
+const LOUD_SPEED: f32 = 5.0;
+/// The renderer's ripples turn at 1 and 3/5 of the phase, so both are whole turns here.
+const PHASE_PERIOD: f32 = 5.0 * TAU;
+
+/// Turns the level updates the daemon sends every few frames into a wave that moves smoothly
+/// between them and keeps moving through silence.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct Levels {
-    values: VecDeque<f32>,
+pub struct Meter {
+    target: f32,
+    wave: Wave,
 }
 
-impl Levels {
-    pub fn new() -> Self {
-        Self { values: VecDeque::with_capacity(LEVEL_HISTORY) }
+impl Meter {
+    pub fn set(&mut self, level: f32) {
+        self.target = if level.is_nan() { 0.0 } else { level.clamp(0.0, 1.0) };
     }
 
-    pub fn push(&mut self, level: f32) {
-        if self.values.len() == LEVEL_HISTORY {
-            self.values.pop_front();
-        }
-        self.values.push_back(if level.is_nan() { 0.0 } else { level.clamp(0.0, 1.0) });
+    pub fn advance(&mut self, elapsed: Duration) -> Wave {
+        // A stalled frame resumes where it was instead of jumping.
+        let dt = elapsed.as_secs_f32().min(0.1);
+        let wave = &mut self.wave;
+        let tau = if self.target > wave.level { ATTACK } else { RELEASE };
+        wave.level += (self.target - wave.level) * (1.0 - (-dt / tau).exp());
+        wave.phase = (wave.phase + dt * (QUIET_SPEED + LOUD_SPEED * wave.level)) % PHASE_PERIOD;
+        *wave
     }
 
-    pub fn clear(&mut self) {
-        self.values.clear();
-    }
-
-    pub fn len(&self) -> usize {
-        self.values.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.values.is_empty()
-    }
-
-    pub fn iter(&self) -> impl DoubleEndedIterator<Item = f32> + ExactSizeIterator + '_ {
-        self.values.iter().copied()
-    }
-}
-
-impl FromIterator<f32> for Levels {
-    fn from_iter<I: IntoIterator<Item = f32>>(iter: I) -> Self {
-        let mut levels = Levels::new();
-        for level in iter {
-            levels.push(level);
-        }
-        levels
+    pub fn wave(&self) -> Wave {
+        self.wave
     }
 }
 
@@ -138,18 +143,35 @@ pub fn physical_size(width: u32, height: u32, scale: f64) -> (u32, u32) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn levels_keep_the_newest_and_clamp() {
-        let mut levels = Levels::new();
-        for i in 0..LEVEL_HISTORY + 3 {
-            levels.push(i as f32 / 10.0);
+    fn run(meter: &mut Meter, ms: u64) -> Wave {
+        for _ in 0..ms / 16 {
+            meter.advance(Duration::from_millis(16));
         }
-        assert_eq!(levels.len(), LEVEL_HISTORY);
-        assert_eq!(levels.iter().next(), Some(0.3));
-        assert_eq!(levels.iter().last(), Some(1.0));
-        levels.push(f32::NAN);
-        levels.push(-2.0);
-        assert_eq!(levels.iter().rev().take(2).collect::<Vec<_>>(), [0.0, 0.0]);
+        meter.wave()
+    }
+
+    #[test]
+    fn the_wave_rises_fast_falls_slowly_and_keeps_moving_in_silence() {
+        let mut meter = Meter::default();
+        meter.set(0.8);
+        assert!(run(&mut meter, 96).level > 0.7, "a syllable shows within a few frames");
+        meter.set(0.0);
+        let after_word = run(&mut meter, 96).level;
+        assert!((0.2..0.6).contains(&after_word), "the wave settles between words: {after_word}");
+        let still = run(&mut meter, 2000);
+        assert!(still.level < 0.01);
+        assert_ne!(run(&mut meter, 160).phase, still.phase, "silence still ripples");
+    }
+
+    #[test]
+    fn the_meter_ignores_bad_levels_and_stalls() {
+        let mut meter = Meter::default();
+        meter.set(f32::NAN);
+        assert_eq!(meter.advance(Duration::from_millis(16)).level, 0.0);
+        meter.set(7.0);
+        let wave = meter.advance(Duration::from_secs(3600));
+        assert!(wave.level <= 1.0 && wave.phase < PHASE_PERIOD, "{wave:?}");
+        assert!(wave.phase <= 0.1 * (QUIET_SPEED + LOUD_SPEED), "a stall moves it one short step: {wave:?}");
     }
 
     #[test]

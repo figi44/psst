@@ -2,7 +2,7 @@
 //! `delay_ms` → the chord through the virtual keyboard → `wl_display.sync` →
 //! [`WaylandEvent::Pasted`].
 //!
-//! Idle, the thread sleeps in `epoll` with no timers.
+//! Idle, the thread sleeps in `epoll` with no timers; only the waveform wakes it on its own.
 
 use std::{io, path::PathBuf, thread::JoinHandle, time::Duration};
 
@@ -22,8 +22,8 @@ pub enum Chord {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WaylandCmd {
-    /// Every `Recording` or `Offline` update adds one waveform bar, so send them at a steady pace
-    /// (every 40–60 ms).
+    /// A state with a level shows the waveform, which eases towards each new level and keeps moving
+    /// between updates.
     Overlay(Option<OverlayState>),
     /// Sent at `stop`.
     SnapshotClipboard {

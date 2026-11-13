@@ -5,7 +5,7 @@ use psst_client::{
     AudioCodec, AudioFrame, Client, ClientError, FRAME_BUFFER, FrameSender, OpusSettings, Outdated, Session,
     SessionEvent, StartOpts, TrySendError, upload_file,
 };
-use psst_config::{ClientConfig, PasteAction};
+use psst_config::{ClientConfig, PasteAction, Sounds};
 use psst_proto::{
     ClientTimings, Endpoint, ErrorCode, FRAME_MS, SessionId,
     ws::{FinalMsg, Mode, ProgressState},
@@ -69,10 +69,20 @@ impl Default for Timing {
 const MAX_PONG: Duration = Duration::from_secs(2);
 const MAX_CHECK: Duration = Duration::from_secs(3);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sound {
+    /// The microphone is live.
+    Start,
+    /// The microphone is off.
+    Stop,
+    /// Something went wrong, or nothing was heard.
+    Error,
+}
+
 pub struct Deps {
     pub audio: Arc<dyn AudioSource>,
     pub wayland: Box<dyn Wayland>,
-    pub sound: Arc<dyn Fn() + Send + Sync>,
+    pub sound: Arc<dyn Fn(Sound) + Send + Sync>,
     pub niri_socket: Option<PathBuf>,
     pub timing: Timing,
 }
@@ -634,13 +644,19 @@ impl Core {
         let (id, generation) = (d.id, d.generation);
         self.pipeline.push_back(d);
         self.wayland(WaylandCmd::SnapshotClipboard { generation });
+        self.sound(Sound::Stop);
         info!("stopped {id}");
         Response::ok(format!("stopped {id}"))
     }
 
     fn cancel(&mut self) -> Response {
         let d = match self.recording.take() {
-            Some(d) => d,
+            Some(d) => {
+                if d.phase == Phase::Recording {
+                    self.sound(Sound::Stop);
+                }
+                d
+            }
             None => match self.pipeline.pop_back() {
                 Some(d) => d,
                 None => return Response::err("nothing to cancel"),
@@ -1167,7 +1183,7 @@ impl Core {
         d.backlog = Vec::new();
         let recording = matches!(d.phase, Phase::Starting | Phase::Recording);
         if recording {
-            self.sound();
+            self.sound(Sound::Error);
         }
     }
 
@@ -1221,9 +1237,10 @@ impl Core {
         d.frames += 1;
         d.level = level;
         let first = d.t_first_frame.is_none();
+        let live = first && d.phase == Phase::Starting;
         if first {
             d.t_first_frame = Some(Instant::now());
-            if d.phase == Phase::Starting {
+            if live {
                 d.phase = Phase::Recording;
             }
         }
@@ -1245,6 +1262,9 @@ impl Core {
         }
         let over_limit = d.frames * FRAME_MS as u64 >= d.max_recording_s as u64 * 1000;
         let stop_now = is_recording && ((first && d.stop_requested) || over_limit);
+        if live && is_recording {
+            self.sound(Sound::Start);
+        }
         if let Some((reason, close)) = lost {
             if close && let Some(client) = &self.client {
                 client.close();
@@ -1371,6 +1391,7 @@ impl Core {
             }
             self.report(&d, None);
             self.notice(OverlayState::NothingHeard, self.t.done_shown * 2);
+            self.sound(Sound::Error);
             return;
         }
         let finalized_at = Timestamp::now();
@@ -1559,12 +1580,12 @@ impl Core {
 
     fn error_notice(&mut self, message: &str) {
         self.notice(OverlayState::Error { message: message.into() }, self.t.notice_shown);
-        self.sound();
+        self.sound(Sound::Error);
     }
 
-    fn sound(&self) {
-        if self.cfg.sounds {
-            (self.deps.sound)();
+    fn sound(&self, sound: Sound) {
+        if self.cfg.sounds != Sounds::Off {
+            (self.deps.sound)(sound);
         }
     }
 
@@ -1612,7 +1633,7 @@ impl Core {
         let elapsed_s = rec.frames * FRAME_MS as u64 / 1000;
         let left = (rec.max_recording_s as u64).saturating_sub(elapsed_s);
         if left <= 30 {
-            return Some(OverlayState::LimitWarning { seconds_left: left as u32 });
+            return Some(OverlayState::LimitWarning { level: rec.level, seconds_left: left as u32 });
         }
         Some(match &rec.net {
             Net::Offline(reason) => OverlayState::Offline { level: rec.level, reason: reason.clone() },
@@ -1631,6 +1652,10 @@ impl Core {
             (Some(Some(OverlayState::Offline { reason: a, .. })), Some(OverlayState::Offline { reason: b, .. })) => {
                 a == b
             }
+            (
+                Some(Some(OverlayState::LimitWarning { seconds_left: a, .. })),
+                Some(OverlayState::LimitWarning { seconds_left: b, .. }),
+            ) => a == b,
             _ => false,
         };
         if level_only && self.overlay_at.elapsed() < Duration::from_millis(50) {

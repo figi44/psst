@@ -1,8 +1,10 @@
 use std::os::fd::{AsFd, OwnedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
-use psst_overlay::{Levels, OverlayState, Pixmap, Renderer};
+use calloop::RegistrationToken;
+use psst_overlay::{Meter, OverlayState, Pixmap, Renderer};
 use rustix::fs::{MemfdFlags, ftruncate, memfd_create};
 use wayland_client::globals::GlobalList;
 use wayland_client::protocol::{
@@ -54,9 +56,17 @@ impl Globals {
     }
 }
 
+/// The waveform redraws on the compositor's frame callbacks, but no more often than this: every
+/// callback at 60 Hz, every other one at 120 or 144 Hz.
+const WAVE_FRAME: Duration = Duration::from_millis(12);
+
 pub(crate) struct Overlay {
     renderer: Renderer,
-    levels: Levels,
+    meter: Meter,
+    /// When the meter last advanced.
+    advanced: Option<Instant>,
+    /// The next waveform frame, when it waits for [`WAVE_FRAME`] to pass.
+    tick: Option<RegistrationToken>,
     desired: Option<OverlayState>,
     surface: Option<Surface>,
     next_id: u64,
@@ -67,12 +77,18 @@ impl Overlay {
     pub(crate) fn new() -> Self {
         Self {
             renderer: Renderer::new(),
-            levels: Levels::new(),
+            meter: Meter::default(),
+            advanced: None,
+            tick: None,
             desired: None,
             surface: None,
             next_id: 1,
             warned: false,
         }
+    }
+
+    fn waving(&self) -> bool {
+        self.desired.as_ref().is_some_and(|s| s.level().is_some())
     }
 
     /// The connection is gone, and its objects with it.
@@ -125,10 +141,10 @@ impl State {
             return;
         };
         if self.overlay.desired.is_none() {
-            self.overlay.levels.clear();
+            self.overlay.meter = Meter::default();
         }
         if let Some(level) = state.level() {
-            self.overlay.levels.push(level);
+            self.overlay.meter.set(level);
         }
         self.overlay.desired = Some(state);
         if self.ensure_connected().is_err() {
@@ -145,10 +161,37 @@ impl State {
 
     pub(crate) fn overlay_hide(&mut self) {
         self.overlay.desired = None;
-        self.overlay.levels.clear();
+        if let Some(tick) = self.overlay.tick.take() {
+            self.lh.remove(tick);
+        }
         if let Some(surface) = self.overlay.surface.take() {
             surface.destroy();
         }
+    }
+
+    /// Called when a frame callback frees the surface for the next frame.
+    fn next_wave_frame(&mut self) {
+        if !self.overlay.waving() || self.overlay.tick.is_some() {
+            return;
+        }
+        let due = self.overlay.advanced.map(|at| at + WAVE_FRAME);
+        let wait = due.map_or(Duration::ZERO, |due| due.saturating_duration_since(Instant::now()));
+        if wait.is_zero() {
+            if let Some(s) = &mut self.overlay.surface {
+                s.dirty = true;
+            }
+            return;
+        }
+        let tick = self.after(wait, |st| {
+            st.overlay.tick = None;
+            if st.overlay.waving()
+                && let Some(s) = &mut st.overlay.surface
+            {
+                s.dirty = true;
+                st.draw_overlay();
+            }
+        });
+        self.overlay.tick = Some(tick);
     }
 
     fn create_surface(&mut self) {
@@ -206,7 +249,8 @@ impl State {
 
     fn draw_overlay(&mut self) {
         let Some(wl) = &self.wl else { return };
-        let Overlay { renderer, levels, desired: Some(state), surface: Some(s), .. } = &mut self.overlay else {
+        let Overlay { renderer, meter, advanced, desired: Some(state), surface: Some(s), .. } = &mut self.overlay
+        else {
             return;
         };
         if !s.configured || s.frame_pending || !s.dirty {
@@ -219,7 +263,10 @@ impl State {
             (Some(s120), Some(_)) => s120 as f64 / 120.0,
             _ => s.buffer_scale as f64,
         };
-        let pixmap = renderer.render(state, levels, &self.opts.overlay.style, w, h, scale);
+        let now = Instant::now();
+        let wave = meter.advance(advanced.map_or(Duration::ZERO, |at| now - at));
+        *advanced = Some(now);
+        let pixmap = renderer.render(state, wave, &self.opts.overlay.style, w, h, scale);
         let (pw, ph) = (pixmap.width(), pixmap.height());
         if s.buffers.as_ref().is_some_and(|b| (b.width, b.height) != (pw, ph))
             && let Some(old) = s.buffers.take()
@@ -443,6 +490,7 @@ impl Dispatch<WlCallback, SurfaceId> for State {
                 // Without wp_presentation, the first frame callback is the best sign it's shown.
                 st.mark_shown(*id);
             }
+            st.next_wave_frame();
             st.draw_overlay();
         }
     }

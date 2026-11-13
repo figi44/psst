@@ -35,7 +35,7 @@ fn main() {
         ("starting", OverlayState::Starting),
         ("recording", OverlayState::Recording { level: 0.0 }),
         ("offline", OverlayState::Offline { level: 0.0, reason: "server unreachable".into() }),
-        ("limit-warning", OverlayState::LimitWarning { seconds_left: 28 }),
+        ("limit-warning", OverlayState::LimitWarning { level: 0.0, seconds_left: 28 }),
         ("loading-model", OverlayState::LoadingModel),
         ("processing", OverlayState::Processing),
         ("sending", OverlayState::Sending),
@@ -53,13 +53,16 @@ fn main() {
         while shown_at.elapsed() < hold {
             // About 25 levels a second, like the daemon sends.
             let t = start.elapsed().as_secs_f32();
-            let level = (0.5 + 0.5 * (t * 7.0).sin() * (t * 1.3).cos()).powi(2) * 0.4;
+            let level = 0.2 + 0.45 * (0.5 + 0.5 * (t * 7.0).sin() * (t * 1.3).cos());
             let state = match &state {
                 OverlayState::Recording { .. } => OverlayState::Recording { level },
                 OverlayState::Offline { reason, .. } => OverlayState::Offline { level, reason: reason.clone() },
+                OverlayState::LimitWarning { seconds_left, .. } => {
+                    OverlayState::LimitWarning { level, seconds_left: *seconds_left }
+                }
                 other => other.clone(),
             };
-            if first || matches!(state, OverlayState::Recording { .. } | OverlayState::Offline { .. }) {
+            if first || state.level().is_some() {
                 wayland.send(WaylandCmd::Overlay(Some(state))).expect("the Wayland thread runs");
                 first = false;
             }

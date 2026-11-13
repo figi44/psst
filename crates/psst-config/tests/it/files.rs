@@ -2,8 +2,8 @@ use std::{fs, path::PathBuf};
 
 use psst_config::{
     AppRule, AudioCodec, AudioInput, ClientConfig, Color, ConfigError, ConfigFile, DecodePath, DictionaryFile,
-    PasteAction, PasteRule, ProfileSpec, ProfilesFile, Rule, ServerConfig, ServerFiles, TermLanguages, TermSpec,
-    TermsAs,
+    PasteAction, PasteRule, ProfileSpec, ProfilesFile, Rule, ServerConfig, ServerFiles, Sounds, TermLanguages,
+    TermSpec, TermsAs,
 };
 use psst_proto::Endpoint;
 
@@ -245,10 +245,22 @@ fn client_test_seams_read_audio_from_a_file_without_sounds() {
         "#,
     )
     .unwrap();
-    assert!(!config.sounds);
+    assert_eq!(config.sounds, Sounds::Off);
     assert_eq!(config.audio.input, AudioInput::File(PathBuf::from("/tmp/psst-test/clip.wav")));
     assert_eq!(config.server, Endpoint::Tcp { host: "desktop".into(), port: 7341 });
     assert_eq!(ClientConfig::from_toml_str(&config.to_toml_string()).unwrap(), config);
+}
+
+#[test]
+fn client_sounds_name_a_set_or_turn_them_off() {
+    let sounds = |s: &str| ClientConfig::from_toml_str(&format!("sounds = {s}")).map(|c| c.sounds);
+    assert_eq!(ClientConfig::default().sounds, Sounds::Snap);
+    assert_eq!(sounds("true").unwrap(), Sounds::Snap, "true still means the default");
+    assert_eq!(sounds("\"glass\"").unwrap(), Sounds::Glass);
+    assert_eq!(sounds("\"off\"").unwrap(), Sounds::Off);
+    invalid::<ClientConfig>("sounds = \"loud\"", "glass");
+    let glass = ClientConfig { sounds: Sounds::Glass, ..ClientConfig::default() };
+    assert_eq!(ClientConfig::from_toml_str(&glass.to_toml_string()).unwrap(), glass);
 }
 
 #[test]

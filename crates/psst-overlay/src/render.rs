@@ -9,7 +9,7 @@ use cosmic_text::{
 };
 use tiny_skia::{FillRule, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, Stroke, Transform};
 
-use crate::{Levels, OverlayState, Rgba, Style, physical_size};
+use crate::{OverlayState, Rgba, Style, Wave, physical_size};
 
 /// Inter 4.1 Medium, SIL Open Font License 1.1 (`fonts/Inter-LICENSE.txt`).
 static INTER: &[u8] = include_bytes!("../fonts/Inter-Medium.ttf");
@@ -50,7 +50,7 @@ impl Renderer {
     pub fn render(
         &mut self,
         state: &OverlayState,
-        levels: &Levels,
+        wave: Wave,
         style: &Style,
         width: u32,
         height: u32,
@@ -60,7 +60,7 @@ impl Renderer {
         let pixmap = Pixmap::new(pw, ph).expect("non-zero size");
         let (w, h) = (width.max(1) as f32, height.max(1) as f32);
         let mut frame = Frame { pixmap, w, h, sx: pw as f32 / w, sy: ph as f32 / h, renderer: self, style };
-        frame.draw(state, levels);
+        frame.draw(state, wave);
         frame.pixmap
     }
 }
@@ -85,7 +85,7 @@ struct Frame<'a> {
 enum Content<'s> {
     Label { text: &'s str, color: Rgba },
     Waveform { color: Rgba },
-    WaveAndText { wave: Rgba, text: &'s str, color: Rgba, align: Align },
+    WaveAndText { bars: Rgba, text: &'s str, color: Rgba, align: Align },
 }
 
 #[derive(Clone, Copy)]
@@ -104,23 +104,24 @@ enum Icon {
 }
 
 impl Frame<'_> {
-    fn draw(&mut self, state: &OverlayState, levels: &Levels) {
+    fn draw(&mut self, state: &OverlayState, wave: Wave) {
         let fg = self.style.foreground;
         let muted = fg.faded(0.62);
         let accent = self.style.accent;
-        let latest = levels.iter().last().unwrap_or(0.0);
         let countdown;
         let (tint, icon, content) = match state {
             OverlayState::Starting => {
                 (None, Icon::Ring(accent), Content::Label { text: "Starting\u{2026}", color: muted })
             }
-            OverlayState::Recording { .. } => {
-                (Some(accent.faded(0.16 + 0.5 * curve(latest))), Icon::Dot(accent), Content::Waveform { color: fg })
-            }
+            OverlayState::Recording { .. } => (
+                Some(accent.faded(0.16 + 0.5 * loudness(wave.level))),
+                Icon::Dot(accent),
+                Content::Waveform { color: fg },
+            ),
             OverlayState::Offline { reason, .. } => (
                 Some(WARNING.faded(0.18)),
                 Icon::Dot(WARNING),
-                Content::WaveAndText { wave: fg.faded(0.8), text: reason, color: muted, align: Align::Left },
+                Content::WaveAndText { bars: fg.faded(0.8), text: reason, color: muted, align: Align::Left },
             ),
             OverlayState::LoadingModel => {
                 (None, Icon::Arc, Content::Label { text: "Loading model\u{2026}", color: fg })
@@ -137,12 +138,12 @@ impl Frame<'_> {
                 (Some(ERROR.faded(0.22)), Icon::Bang, Content::Label { text: message, color: fg })
             }
             OverlayState::Flash { message } => (None, Icon::Info, Content::Label { text: message, color: fg }),
-            OverlayState::LimitWarning { seconds_left } => {
+            OverlayState::LimitWarning { seconds_left, .. } => {
                 countdown = format_countdown(*seconds_left);
                 (
                     Some(WARNING.faded(0.2)),
                     Icon::Dot(WARNING),
-                    Content::WaveAndText { wave: fg, text: &countdown, color: WARNING, align: Align::Right },
+                    Content::WaveAndText { bars: fg, text: &countdown, color: WARNING, align: Align::Right },
                 )
             }
         };
@@ -155,15 +156,15 @@ impl Frame<'_> {
             Content::Label { text, color } => {
                 self.text(text, x0, x1 - x0, color, Align::Left);
             }
-            Content::Waveform { color } => self.waveform(levels, x0, x1, color),
-            Content::WaveAndText { wave, text, color, align: Align::Left } => {
+            Content::Waveform { color } => self.waveform(wave, x0, x1, color),
+            Content::WaveAndText { bars, text, color, align: Align::Left } => {
                 let split = x0 + ((x1 - x0) * 0.3).max(self.h);
-                self.waveform(levels, x0, split, wave);
+                self.waveform(wave, x0, split, bars);
                 self.text(text, split + self.h * 0.25, x1 - split - self.h * 0.25, color, Align::Left);
             }
-            Content::WaveAndText { wave, text, color, align: Align::Right } => {
+            Content::WaveAndText { bars, text, color, align: Align::Right } => {
                 let used = self.text(text, x0, x1 - x0, color, Align::Right);
-                self.waveform(levels, x0, x1 - used - self.h * 0.3, wave);
+                self.waveform(wave, x0, x1 - used - self.h * 0.3, bars);
             }
         }
     }
@@ -300,28 +301,29 @@ impl Frame<'_> {
         }
     }
 
-    fn waveform(&mut self, levels: &Levels, x0: f32, x1: f32, color: Rgba) {
+    /// Bars that stay in place: tallest in the middle, bobbing with two standing waves, and
+    /// swelling with the level. Silence leaves a slow, low ripple.
+    fn waveform(&mut self, wave: Wave, x0: f32, x1: f32, color: Rgba) {
         let bar = (self.h * 0.068).max(2.0);
-        let gap = (self.h * 0.068).max(1.5);
+        let gap = (self.h * 0.08).max(1.5);
         let pitch = bar + gap;
         let n = ((x1 - x0 + gap) / pitch).floor().max(0.0) as usize;
         if n == 0 {
             return;
         }
-        let start = x1 - (n as f32 * pitch - gap);
+        let start = x0 + (x1 - x0 - (n as f32 * pitch - gap)) / 2.0;
         let mid = self.h / 2.0;
-        let max_h = self.h * 0.55;
-        let have: Vec<f32> = levels.iter().rev().take(n).collect();
+        let max_h = self.h * 0.62;
+        let swell = QUIET_SWELL + (1.0 - QUIET_SWELL) * loudness(wave.level);
         for i in 0..n {
-            let age = n - 1 - i;
+            let p = if n == 1 { 0.0 } else { 2.0 * i as f32 / (n - 1) as f32 - 1.0 };
+            let bell = (-(p * 1.6).powi(2)).exp();
+            let ripple =
+                0.5 + 0.3 * (p * 5.5).cos() * wave.phase.sin() + 0.2 * (p * 9.5).cos() * (0.6 * wave.phase + 1.3).sin();
+            let height = bar + (max_h - bar) * swell * (0.15 + 0.85 * bell) * ripple;
             let x = start + i as f32 * pitch;
-            let fade = 0.22 + 0.78 * ((i + 1) as f32 / n as f32).powf(1.3);
-            let (height, alpha) = match have.get(age) {
-                Some(&level) => ((curve(level) * max_h).max(bar), fade),
-                None => (bar, fade * 0.45),
-            };
             if let Some(p) = rounded_rect(x, mid - height / 2.0, bar, height, bar / 2.0) {
-                self.fill(&p, color.faded(alpha));
+                self.fill(&p, color.faded(0.4 + 0.6 * bell));
             }
         }
     }
@@ -366,9 +368,13 @@ impl Frame<'_> {
     }
 }
 
-/// So quiet speech still moves the bars.
-fn curve(level: f32) -> f32 {
-    level.clamp(0.0, 1.0).sqrt()
+/// How far the waveform swells in silence, out of its full height.
+const QUIET_SWELL: f32 = 0.3;
+
+/// Room noise (under about −52 dBFS) stays at the quiet swell; speech fills the rest.
+fn loudness(level: f32) -> f32 {
+    let t = ((level - 0.13) / 0.6).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 fn format_countdown(seconds: u32) -> String {
@@ -494,7 +500,7 @@ mod tests {
     #[test]
     fn outside_the_pill_stays_transparent() {
         let mut r = Renderer::new();
-        let p = r.render(&OverlayState::Done, &Levels::new(), &Style::default(), 240, 44, 1.0);
+        let p = r.render(&OverlayState::Done, Wave::default(), &Style::default(), 240, 44, 1.0);
         assert_eq!(p.pixel(0, 0).unwrap().alpha(), 0);
         assert_eq!(p.pixel(239, 43).unwrap().alpha(), 0);
         assert!(p.pixel(120, 22).unwrap().alpha() > 200);

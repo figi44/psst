@@ -10,7 +10,7 @@ use crate::{ConfigFile, DEFAULT_PROFILE};
 pub struct ClientConfig {
     pub server: Endpoint,
     pub profile: String,
-    pub sounds: bool,
+    pub sounds: Sounds,
     pub audio: AudioConfig,
     pub overlay: OverlayConfig,
     /// By Wayland app id.
@@ -25,7 +25,7 @@ impl Default for ClientConfig {
         Self {
             server: Endpoint::Unix(DEFAULT_SOCKET.into()),
             profile: DEFAULT_PROFILE.into(),
-            sounds: true,
+            sounds: Sounds::default(),
             audio: AudioConfig::default(),
             overlay: OverlayConfig::default(),
             apps: BTreeMap::new(),
@@ -68,6 +68,52 @@ pub const KNOWN_TERMINALS: &[&str] = &[
     "org.kde.konsole",
     "xterm",
 ];
+
+/// The chimes as recording starts and stops, and on an error or when nothing was heard.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "SoundsValue", into = "SoundsValue")]
+pub enum Sounds {
+    /// Two bubbly pops.
+    #[default]
+    Snap,
+    /// Two struck glass notes.
+    Glass,
+    Off,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum SoundsValue {
+    Named(String),
+    Enabled(bool),
+}
+
+impl TryFrom<SoundsValue> for Sounds {
+    type Error = String;
+
+    fn try_from(value: SoundsValue) -> Result<Self, Self::Error> {
+        match value {
+            SoundsValue::Enabled(true) => Ok(Self::default()),
+            SoundsValue::Enabled(false) => Ok(Self::Off),
+            SoundsValue::Named(name) => match name.as_str() {
+                "snap" => Ok(Self::Snap),
+                "glass" => Ok(Self::Glass),
+                "off" => Ok(Self::Off),
+                _ => Err(format!("sounds `{name}`: expected \"snap\", \"glass\" or false")),
+            },
+        }
+    }
+}
+
+impl From<Sounds> for SoundsValue {
+    fn from(sounds: Sounds) -> Self {
+        match sounds {
+            Sounds::Snap => Self::Named("snap".into()),
+            Sounds::Glass => Self::Named("glass".into()),
+            Sounds::Off => Self::Enabled(false),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -174,7 +220,7 @@ impl Default for OverlayConfig {
             margin: 130,
             width: 240,
             height: 44,
-            background: Color { r: 0x1c, g: 0x1c, b: 0x1e, a: 0xe6 },
+            background: Color { r: 0x00, g: 0x00, b: 0x00, a: 0xff },
             foreground: Color { r: 0xf5, g: 0xf5, b: 0xf7, a: 0xff },
             accent: Color { r: 0xff, g: 0x45, b: 0x3a, a: 0xff },
         }

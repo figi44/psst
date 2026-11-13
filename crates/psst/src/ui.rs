@@ -188,7 +188,9 @@ fn overlay_json(state: &OverlayState) -> Value {
         OverlayState::Done => json!({"kind": "done"}),
         OverlayState::Error { message } => json!({"kind": "error", "message": message}),
         OverlayState::Flash { message } => json!({"kind": "flash", "message": message}),
-        OverlayState::LimitWarning { seconds_left } => json!({"kind": "limit_warning", "seconds_left": seconds_left}),
+        OverlayState::LimitWarning { level, seconds_left } => {
+            json!({"kind": "limit_warning", "level": level, "seconds_left": seconds_left})
+        }
     }
 }
 

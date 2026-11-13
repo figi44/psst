@@ -10,7 +10,9 @@ use psst_testkit::{
     Sandbox, headless_sway, nested_niri,
     wayland::{ClipboardOwner, HostKeyboard, TEXT_MIMES, keys, read_clipboard, screenshot},
 };
-use psst_wayland::{Chord, DataControl, Options, OverlayState, WaylandCmd, WaylandEvent, WaylandThread};
+use psst_wayland::{
+    Chord, DataControl, Options, OverlayConfig, OverlayState, Rgba, Style, WaylandCmd, WaylandEvent, WaylandThread,
+};
 use serde_json::Value;
 use support::{App, now_us, pill_bounds};
 
@@ -393,7 +395,10 @@ fn the_overlay_shows_at_the_bottom_centre_on_sway() {
 }
 
 fn overlay_at_the_bottom_centre(sandbox: &Sandbox) {
-    let paster = Paster::new(sandbox, RESTORE);
+    // The default black pill would vanish on sway's black desktop.
+    let style = Style { background: Rgba::new(0x80, 0x80, 0x80, 0xff), ..Style::default() };
+    let overlay = OverlayConfig { style, ..OverlayConfig::default() };
+    let paster = Paster::with(sandbox, Options { restore_after: RESTORE, overlay, ..Options::default() });
     assert!(pill_bounds(&screenshot(sandbox)).is_none(), "the screen starts empty");
     // The first command also connects.
     let sent = Instant::now();
@@ -416,6 +421,16 @@ fn overlay_at_the_bottom_centre(sandbox: &Sandbox) {
     assert!((126..=134).contains(&bottom_margin), "{bottom_margin} px above the bottom");
     let dot = shot.pixel(x0 + h / 2, y0 + h / 2);
     assert!(dot[0] > 200 && dot[1] < 120 && dot[2] < 120, "the recording dot is {dot:?}");
+
+    // One update, then silence: the waveform keeps moving without any more.
+    paster.send(WaylandCmd::Overlay(Some(OverlayState::Recording { level: 0.0 })));
+    let bars = |shot: &psst_testkit::wayland::Screenshot| -> Vec<[u8; 4]> {
+        (x0 + h..x1 - h / 2).flat_map(|x| (y0..=y1).map(move |y| (x, y))).map(|(x, y)| shot.pixel(x, y)).collect()
+    };
+    thread::sleep(Duration::from_millis(300));
+    let before = bars(&screenshot(sandbox));
+    thread::sleep(Duration::from_millis(250));
+    assert_ne!(bars(&screenshot(sandbox)), before, "the waveform stopped in silence");
 
     paster.send(WaylandCmd::Overlay(None));
     thread::sleep(Duration::from_millis(300));

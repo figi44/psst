@@ -6,19 +6,19 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
 
 use psst::{
     audio::FileSource,
-    daemon::{self, DaemonHandle, Deps, Paths, Timing},
+    daemon::{self, DaemonHandle, Deps, Paths, Sound, Timing},
     ipc::{Request, Response, Status},
     store::{Last, Meta, RecState, Store},
     ui::{Wayland, WaylandEvents, WaylandSink},
 };
-use psst_config::{AppRule, ClientConfig, PasteAction};
+use psst_config::{AppRule, ClientConfig, PasteAction, Sounds};
 use psst_proto::{ErrorCode, SessionId};
 use psst_testkit::{
     fake_server::{FakeServer, FakeServerConfig, Outcome},
@@ -139,7 +139,7 @@ struct Daemon {
     handle: Option<DaemonHandle>,
     socket: PathBuf,
     wayland: FakeWayland,
-    sounds: Arc<AtomicUsize>,
+    sounds: Arc<Mutex<Vec<Sound>>>,
     store: Store,
     audio: Vec<i16>,
     _dir: Option<tempfile::TempDir>,
@@ -157,15 +157,13 @@ async fn daemon_in(root: &Path, server: &FakeServer, tweak: impl FnOnce(&mut Cli
     let wav = root.join("input.wav");
     write_wav(&wav, &audio);
     let wayland = FakeWayland::default();
-    let sounds = Arc::new(AtomicUsize::new(0));
-    let counter = sounds.clone();
-    let mut cfg = ClientConfig { server: server.endpoint(), sounds: true, ..ClientConfig::default() };
+    let sounds: Arc<Mutex<Vec<Sound>>> = Arc::default();
+    let played = sounds.clone();
+    let mut cfg = ClientConfig { server: server.endpoint(), sounds: Sounds::Snap, ..ClientConfig::default() };
     let mut deps = Deps {
         audio: Arc::new(FileSource { path: wav }),
         wayland: Box::new(wayland.clone()),
-        sound: Arc::new(move || {
-            counter.fetch_add(1, Ordering::SeqCst);
-        }),
+        sound: Arc::new(move |sound| played.lock().unwrap().push(sound)),
         niri_socket: None,
         timing: Timing::default(),
     };
@@ -222,6 +220,10 @@ impl Daemon {
     async fn stop(mut self) {
         self.handle.take().unwrap().shutdown().await;
     }
+
+    fn sounds(&self) -> Vec<Sound> {
+        self.sounds.lock().unwrap().clone()
+    }
 }
 
 async fn wait_until(mut check: impl FnMut() -> bool) {
@@ -262,7 +264,7 @@ async fn a_dictation_streams_live_and_is_pasted_then_forgotten() {
     assert!(d.wayland.showed(|s| matches!(s, OverlayState::Starting)));
     assert!(d.wayland.showed(|s| matches!(s, OverlayState::Recording { .. })));
     assert!(d.wayland.showed(|s| matches!(s, OverlayState::Done)));
-    assert_eq!(d.sounds.load(Ordering::SeqCst), 0);
+    assert_eq!(d.sounds(), [Sound::Start, Sound::Stop], "a chime as the microphone goes live, one as it goes off");
     d.stop().await;
 }
 
@@ -365,7 +367,7 @@ async fn an_unreachable_server_shows_offline_at_once_and_the_recording_is_upload
     };
     wait_until(|| d.wayland.showed(|s| matches!(s, OverlayState::Offline { .. }))).await;
     assert!(started.elapsed() < Duration::from_millis(1000), "offline after {:?}", started.elapsed());
-    assert_eq!(d.sounds.load(Ordering::SeqCst), 1, "the error sound");
+    assert_eq!(d.sounds().iter().filter(|s| **s == Sound::Error).count(), 1, "the error sound");
     tokio::time::sleep(Duration::from_millis(400)).await;
     server.set_listening(true);
     assert!(d.toggle().await.ok);
@@ -478,6 +480,7 @@ async fn cancel_discards_the_dictation_and_its_files() {
     assert!(d.store.list().is_empty());
     assert!(!d.store.wav_path(id).exists());
     assert!(!d.run(Request::Cancel).await.ok, "nothing left to cancel");
+    assert_eq!(d.sounds(), [Sound::Start, Sound::Stop], "cancelling turns the microphone off");
     d.stop().await;
 }
 
@@ -496,6 +499,12 @@ async fn an_empty_final_pastes_nothing_and_leaves_last_json_alone() {
     assert_eq!(d.store.read_last().unwrap(), before);
     assert!(d.store.list().is_empty());
     assert!(d.wayland.showed(|s| matches!(s, OverlayState::NothingHeard)));
+    let dictation = [Sound::Start, Sound::Stop];
+    assert_eq!(
+        d.sounds(),
+        [&dictation[..], &dictation, &[Sound::Error]].concat(),
+        "nothing heard sounds like an error"
+    );
     d.stop().await;
 }
 
@@ -512,7 +521,7 @@ async fn a_failed_paste_keeps_the_text_for_paste_last() {
     assert_eq!(status.retained[0].state, "transcribed");
     assert_eq!(status.retained[0].text.as_deref(), Some("again "));
     assert_eq!(status.retained[0].hint, format!("psst paste-last --session {id}"));
-    assert!(d.sounds.load(Ordering::SeqCst) >= 1);
+    assert!(d.sounds().contains(&Sound::Error));
 
     d.wayland.fail_inserts.store(false, Ordering::SeqCst);
     assert!(d.run(Request::PasteLast { session: Some(id) }).await.ok);
@@ -664,6 +673,7 @@ async fn the_recording_limit_warns_and_stops() {
     };
     d.idle().await;
     assert!(d.wayland.showed(|s| matches!(s, OverlayState::LimitWarning { .. })));
+    assert_eq!(d.sounds(), [Sound::Start, Sound::Stop], "the limit turns the microphone off");
     assert_eq!(d.wayland.inserted(), vec![paste("limited ")]);
     let samples = server.session(id).unwrap().stop_samples.unwrap();
     // Draining after the 1 s limit can add a few frames on a loaded machine; the server allows 5 s.

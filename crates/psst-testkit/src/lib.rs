@@ -17,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use psst_config::{ClientConfig, ConfigFile, DictionaryFile, ProfilesFile, ServerConfig, ServerFiles};
+use psst_config::{ClientConfig, ConfigFile, DictionaryFile, ProfilesFile, ServerConfig, ServerFiles, Sounds};
 use psst_engine_proto::fake::{self, LoggedRequest, Script};
 use psst_proto::Endpoint;
 use tempfile::TempDir;
@@ -216,7 +216,7 @@ pub struct TestDaemon {
 
 pub fn spawn_daemon(bin: &Path, sandbox: &Sandbox, cfg: TestClientConfig) -> TestDaemon {
     let mut client = cfg.client;
-    client.sounds = false;
+    client.sounds = Sounds::Off;
     client.audio.input = psst_config::AudioInput::File(cfg.wav);
     let config_dir = sandbox.dir("XDG_CONFIG_HOME").join("psst");
     fs::create_dir_all(&config_dir).expect("create config dir");

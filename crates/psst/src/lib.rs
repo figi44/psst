@@ -173,7 +173,7 @@ fn run_daemon() -> anyhow::Result<ExitCode> {
     let deps = daemon::Deps {
         audio: audio::source_for(&cfg.audio.input),
         wayland,
-        sound: Arc::new(sound::play_error),
+        sound: Arc::new(sound::player(cfg.sounds)),
         niri_socket: env::var_os("NIRI_SOCKET").filter(|s| !s.is_empty()).map(PathBuf::from),
         timing: daemon::Timing::default(),
     };

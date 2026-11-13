@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use psst_overlay::{Levels, OverlayState, Pixmap, Renderer, Style};
+use psst_overlay::{OverlayState, Pixmap, Renderer, Style, Wave};
 use tiny_skia::{Color, PixmapPaint, Transform};
 
 const WIDTH: u32 = 240;
@@ -19,45 +19,30 @@ fn out_dir() -> PathBuf {
     dir
 }
 
-fn speech() -> Levels {
-    let mut seed: u32 = 0x5eed;
-    (0..64)
-        .map(|i| {
-            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
-            let noise = (seed >> 16) as f32 / 65_536.0;
-            let envelope = match i % 16 {
-                0..=1 => 0.01,
-                2..=6 => 0.12,
-                7 => 0.02,
-                _ => 0.25,
-            };
-            envelope * (0.5 + noise)
-        })
-        .collect()
-}
+const SPEAKING: Wave = Wave { level: 0.55, phase: 1.0 };
 
-fn cases() -> Vec<(&'static str, OverlayState, Levels)> {
-    let none = Levels::new;
+fn cases() -> Vec<(&'static str, OverlayState, Wave)> {
+    let still = Wave::default();
     vec![
-        ("starting", OverlayState::Starting, none()),
-        ("recording", OverlayState::Recording { level: 0.2 }, speech()),
-        ("recording-just-started", OverlayState::Recording { level: 0.05 }, [0.05, 0.1, 0.08].into_iter().collect()),
-        ("offline", OverlayState::Offline { level: 0.2, reason: "server unreachable".into() }, speech()),
-        ("loading-model", OverlayState::LoadingModel, none()),
-        ("processing", OverlayState::Processing, none()),
-        ("sending", OverlayState::Sending, none()),
-        ("retrying", OverlayState::Retrying, none()),
-        ("waiting-for-server", OverlayState::WaitingForServer, none()),
-        ("nothing-heard", OverlayState::NothingHeard, none()),
-        ("done", OverlayState::Done, none()),
-        ("error", OverlayState::Error { message: "Saved \u{b7} psst retry".into() }, none()),
+        ("starting", OverlayState::Starting, still),
+        ("recording", OverlayState::Recording { level: 0.55 }, SPEAKING),
+        ("recording-silence", OverlayState::Recording { level: 0.0 }, Wave { level: 0.0, phase: 2.5 }),
+        ("offline", OverlayState::Offline { level: 0.55, reason: "server unreachable".into() }, SPEAKING),
+        ("loading-model", OverlayState::LoadingModel, still),
+        ("processing", OverlayState::Processing, still),
+        ("sending", OverlayState::Sending, still),
+        ("retrying", OverlayState::Retrying, still),
+        ("waiting-for-server", OverlayState::WaitingForServer, still),
+        ("nothing-heard", OverlayState::NothingHeard, still),
+        ("done", OverlayState::Done, still),
+        ("error", OverlayState::Error { message: "Saved \u{b7} psst retry".into() }, still),
         (
             "error-long",
             OverlayState::Error { message: "The server rejected the session: model unavailable (downloading)".into() },
-            none(),
+            still,
         ),
-        ("flash", OverlayState::Flash { message: "Recording had a gap".into() }, none()),
-        ("limit-warning", OverlayState::LimitWarning { seconds_left: 28 }, speech()),
+        ("flash", OverlayState::Flash { message: "Recording had a gap".into() }, still),
+        ("limit-warning", OverlayState::LimitWarning { level: 0.55, seconds_left: 28 }, SPEAKING),
     ]
 }
 
@@ -92,11 +77,11 @@ fn every_state_matches_its_snapshot() {
     let mut expected_files = Vec::new();
     let mut sheet = Vec::new();
 
-    for (name, state, levels) in cases() {
+    for (name, state, wave) in cases() {
         for scale in scales(name) {
             let file = file_name(name, scale);
             expected_files.push(file.clone());
-            let rendered = normalised(&renderer.render(&state, &levels, &style, WIDTH, HEIGHT, scale));
+            let rendered = normalised(&renderer.render(&state, wave, &style, WIDTH, HEIGHT, scale));
             if scale == 2.0 {
                 sheet.push(rendered.clone());
             }
@@ -183,11 +168,11 @@ fn renders_any_size_and_scale_without_panicking() {
     // Every state's icon at the degenerate sizes, and one state per layout (a label, a long label,
     // the waveform, and the waveform with text on either side) at every size too.
     let every_size = ["starting", "error-long", "recording", "offline", "limit-warning"];
-    for (name, state, levels) in cases() {
+    for (name, state, wave) in cases() {
         let sizes = if every_size.contains(&name) { &sizes[..] } else { &sizes[..2] };
         for &(w, h) in sizes {
             for scale in [0.5, 1.0, 1.75, 3.0, f64::NAN] {
-                let p = renderer.render(&state, &levels, &style, w, h, scale);
+                let p = renderer.render(&state, wave, &style, w, h, scale);
                 assert!(p.width() >= 1 && p.height() >= 1);
             }
         }
