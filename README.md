@@ -10,6 +10,16 @@ https://github.com/user-attachments/assets/a1673e5a-6b4c-4ca0-87cf-086785a7d08e
 > [!WARNING]
 > This app is fully vibe coded <img src="assets/old-man-hugging-claude.png" alt=":old-man-hugging-claude:" height="20">, you probably shouldn't use this.
 
+## Features
+
+- **Remote-first**: Whisper runs on your GPU box, and thin clients stream audio to it even over slow or lossy links. Dictations survive a dropped connection.
+- **Desktop (Wayland)**: press a hotkey to dictate into any app, with an overlay waveform and chimes. Double-tap the hotkey for a quick menu.
+- **Android**: a voice keyboard, plus a floating bubble that dictates into any keyboard.
+- **Easy pairing**: machines on your tailnet pair automatically, and a phone pairs by scanning a QR code.
+- **Custom dictionary** for names and jargon. Fix a misheard word straight from your history.
+- **Optional post-processing** on your ChatGPT plan, in Light, Polished or your own style, adapted to the app you're dictating into.
+- **Web UI** for settings, dictionary, history and paired devices.
+
 ## Android
 
 Install the app with [Obtainium](https://obtainium.imranr.dev), which follows the builds of `main`:
