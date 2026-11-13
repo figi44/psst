@@ -19,6 +19,7 @@ psst-proto = { version = "0.1.0", path = "../psst-proto" }
 psst-wayland = { version = "0.1.0", path = "../psst-wayland" }
 rtrb = "0.4.1"
 rubato = "5.0.1"
+rustix = { version = "1.1.6", features = ["event"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 thiserror = "2.0.21"

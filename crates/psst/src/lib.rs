@@ -11,6 +11,7 @@
 //! | [`audio`] | capture (cpal, or a WAV file), resampling, the recording file |
 //! | [`store`] | recordings, `last.json`, recovery and retention |
 //! | [`ipc`] | the command socket |
+//! | [`follow`] | `psst status --follow`, for status bars |
 //! | [`ui`] | the seam to the Wayland thread |
 //! | [`niri`] | the focused window, for the paste chord |
 //! | [`pair`] | `psst pair` and the credentials file |
@@ -19,6 +20,7 @@
 pub mod audio;
 pub mod daemon;
 pub mod dict;
+pub mod follow;
 pub mod ipc;
 mod logind;
 pub mod niri;
@@ -80,8 +82,13 @@ enum Command {
     },
     /// Show the daemon's state and saved recordings.
     Status {
+        /// The full status as JSON.
         #[arg(long)]
         json: bool,
+        /// Keep running for a status bar: a JSON line for waybar's `custom` module now and on
+        /// every change (with --json, the full status per line).
+        #[arg(long)]
+        follow: bool,
     },
     /// Pair this device with a server: `psst pair http://desktop:7341 <code>`.
     Pair { server: Endpoint, code: String },
@@ -104,7 +111,8 @@ pub fn main() -> ExitCode {
         Command::PasteLast { session } => command(Request::PasteLast { session }, false),
         Command::CopyLast { session } => command(Request::CopyLast { session }, false),
         Command::Discard { session } => command(Request::Discard { session }, false),
-        Command::Status { json } => command(Request::Status, json),
+        Command::Status { json, follow: true } => follow::main(json),
+        Command::Status { json, follow: false } => command(Request::Status, json),
     };
     match result {
         Ok(code) => code,
