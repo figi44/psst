@@ -1,4 +1,4 @@
-//! The dictionary stage (plan 6.4 step 4, 7.2): exact spellings, then fuzzy matches.
+//! The dictionary stage: exact spellings, then fuzzy matches.
 
 use std::ops::Range;
 

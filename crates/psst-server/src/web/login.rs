@@ -1,4 +1,4 @@
-//! Logging a browser in with a one-time link from `psst ui`, and out (plan 6.6).
+//! Logging a browser in with a one-time link from `psst ui`, and out.
 //!
 //! `GET /login?token=` only shows a form; posting it to `/api/login/redeem` uses the token up and
 //! sets the session cookie. A link preview that fetches the page changes nothing.

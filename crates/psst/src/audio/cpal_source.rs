@@ -1,10 +1,10 @@
-//! Capture through cpal, with its native PipeWire backend when PipeWire is running (plan 9.3).
+//! Capture through cpal, with its native PipeWire backend when PipeWire is running.
 //!
 //! It asks for 16 kHz mono `f32`; if the device can't provide that, it captures the device's
 //! default format and downmixes in the callback, and the recorder resamples.
 //!
-//! Gaps are found from the callbacks' capture timestamps ([`GapDetector`]): the one gap measured
-//! in Phase 0 came without an xrun.
+//! Gaps are found from the callbacks' capture timestamps ([`GapDetector`]): the one gap seen in
+//! testing came without an xrun.
 
 use std::time::Duration;
 
@@ -137,7 +137,7 @@ fn build<T: ToF32>(
 fn on_stream_error(shared: &FeedShared, err: &cpal::Error) {
     match err.kind() {
         ErrorKind::Xrun => shared.glitch(),
-        // RTKit said no, or its burst limit was hit (docs/decisions/desktop.md): capture goes on
+        // RTKit said no, or its burst limit was hit: capture goes on
         // at normal priority.
         ErrorKind::RealtimeDenied => info!("capturing at normal priority: {err}"),
         ErrorKind::DeviceChanged => debug!("capture: {err}"),

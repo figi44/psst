@@ -1,4 +1,4 @@
-//! Phase 0 mic spike: cpal 0.18 with its native PipeWire host.
+//! Mic spike: cpal 0.18 with its native PipeWire host.
 //!
 //!   mic-spike list        [--host pipewire|alsa]
 //!   mic-spike first-frame [--host ..] [--runs N] [--device ID-SUBSTRING] [--buffer FRAMES]

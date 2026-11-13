@@ -1,4 +1,4 @@
-//! The regression gate (plan 7.3): the pull request's replay against main's `baseline.json`, on
+//! The regression gate: the pull request's replay against main's `baseline.json`, on
 //! the case ids present in both, and the absolute floors.
 //!
 //! Going past a tolerance on purpose needs the `baseline-change` label on the pull request,
@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use crate::{
     baseline::{Baseline, CaseResult, Group, StressResult, group_counts},
-    cases::{Source, Split},
+    cases::Split,
     metrics::Counts,
 };
 
@@ -26,11 +26,9 @@ pub const FALSE_CORRECTIONS_RISE: f64 = 0.2;
 /// Largest allowed rise of WER, in percentage points.
 pub const WER_RISE: f64 = 0.2;
 
-/// Whether the absolute floors fail the gate. They're computed and printed either way, and
-/// enforced from the end of Phase 2 (plan 7.3); `--floors` enforces them before that.
+/// Whether the absolute floors fail the gate. They're computed and printed either way;
+/// `--floors` enforces them while this is off.
 pub const FLOORS_ENFORCED: bool = false;
-/// Phase 2 acceptance on the author's clips starts once there are this many.
-pub const OWN_FLOOR_MIN_CLIPS: usize = 50;
 /// Most false corrections per 1,000 words a floor allows.
 pub const FLOOR_FALSE_CORRECTIONS: f64 = 2.0;
 /// The share of raw's term errors the dictionary has to remove.
@@ -133,16 +131,12 @@ pub fn compare_stress(main: &[StressResult], pr: &[StressResult]) -> Vec<String>
     failures
 }
 
-/// Phase 2 acceptance as absolute floors, on the held-out half per source and language,
-/// compared with raw. the author's clips count once there are [`OWN_FLOOR_MIN_CLIPS`].
+/// Acceptance as absolute floors, on the held-out half per source and language,
+/// compared with raw.
 pub fn case_floors(pr: &Baseline) -> Vec<String> {
-    let own_clips = pr.cases.iter().filter(|c| c.source == Source::Own).count();
     let holdout = pr.cases.iter().filter(|c| c.split == Split::Holdout);
     let mut failures = Vec::new();
     for (group, (_, output, raw)) in group_counts(holdout) {
-        if group.source == Source::Own && own_clips < OWN_FLOOR_MIN_CLIPS {
-            continue;
-        }
         if let (Some(raw_recall), Some(recall)) = (raw.term_recall(), output.term_recall()) {
             let (raw_errors, errors) = (100.0 - raw_recall, 100.0 - recall);
             if raw_errors <= EPSILON && errors > EPSILON {

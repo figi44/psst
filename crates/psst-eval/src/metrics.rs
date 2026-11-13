@@ -1,4 +1,4 @@
-//! The metrics of plan 7.3, counted per output so they can be summed over any set of cases.
+//! The eval metrics, counted per output so they can be summed over any set of cases.
 //!
 //! - **Term recall:** the share of term occurrences in the reference that the output has with the
 //!   exact spelling ([`text::count_term`]).
@@ -79,7 +79,7 @@ pub struct Scoring<'a> {
 /// Scores one pipeline output.
 ///
 /// Fails when a listed term doesn't occur in the reference, or when the output's edits, applied
-/// to `raw_text` in order, don't give its `text` (the pipeline's contract, docs/protocol.md).
+/// to `raw_text` in order, don't give its `text` (the pipeline's contract).
 pub fn score(scoring: &Scoring, output: &Final) -> anyhow::Result<Counts> {
     let reference = text::normalise(scoring.reference, scoring.fillers);
     let words = text::normalise(&output.text, scoring.fillers);

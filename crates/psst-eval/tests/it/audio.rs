@@ -3,7 +3,7 @@
 //!
 //! The end-to-end tests here run `audio::run` against `psst_server::serve_in_process` with the
 //! fake engine and a few fixture clips, so they need no GPU. The real run, with the real engine
-//! and `evals/clips`, stays local (docs/evals.md).
+//! and `evals/clips`, stays local.
 
 use crate::common;
 

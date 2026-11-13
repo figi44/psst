@@ -1,4 +1,4 @@
-"""Shared helpers for the Phase 0 engine benchmarks: eval cases, test audio, bias, metrics, VRAM sampling."""
+"""Shared helpers for the engine benchmarks: eval cases, test audio, bias, metrics, VRAM sampling."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ import numpy as np
 SR = 16000
 REPO = Path(__file__).resolve().parents[2]
 EVALS = REPO / "evals"
-MAX_BIAS_TOKENS = 223  # plan 5.3: style and terms together, prompt or hotwords
+MAX_BIAS_TOKENS = 223  # style and terms together, prompt or hotwords
 MODEL = "large-v3-turbo"
 
 
@@ -117,7 +117,7 @@ def term_composites(cases: list[Case]) -> list[Composite]:
     return out
 
 
-# --- bias (plan 5.3 and 7.2) ----------------------------------------------------------------------------------------
+# --- bias ----------------------------------------------------------------------------------------
 
 
 def load_profiles() -> dict:
@@ -152,7 +152,7 @@ class Bias:
 
 
 def build_bias(tokenizer, lang: str, path: str, terms_as: str | None) -> Bias:
-    """terms_as None: no bias at all. Otherwise style plus as many terms as fit in 223 tokens (plan 5.3).
+    """terms_as None: no bias at all. Otherwise style plus as many terms as fit in 223 tokens.
 
     Tokens are counted as each path encodes them: the sequential path adds a leading space to the prompt, the batched
     path doesn't, and both add one to hotwords.
@@ -178,7 +178,7 @@ def build_bias(tokenizer, lang: str, path: str, terms_as: str | None) -> Bias:
     raise ValueError("style alone is over the budget")
 
 
-# --- metrics (plan 7.3) ---------------------------------------------------------------------------------------------
+# --- metrics ---------------------------------------------------------------------------------------------
 
 _BOUNDARY = r"\s.,;:!?()\[\]{}\"'"
 
@@ -263,7 +263,7 @@ def transcribe(model, batched, audio: np.ndarray, *, lang: str, path: str, bias:
                 initial_prompt=bias.initial_prompt, hotwords=bias.hotwords)
     t0 = time.perf_counter()
     if path == "sequential":
-        # With hotwords, the previous text and the hotwords would share the decoder's positions (plan 5.3).
+        # With hotwords, the previous text and the hotwords would share the decoder's positions.
         segments, info = model.transcribe(audio, condition_on_previous_text=bias.hotwords is None, **opts)
     else:
         segments, info = batched.transcribe(audio, batch_size=batch_size, **opts)

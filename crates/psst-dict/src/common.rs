@@ -1,4 +1,4 @@
-//! The 5,000 most frequent word forms per language (plan 7.2), from Common Voice's CC0 sentences.
+//! The 5,000 most frequent word forms per language, from Common Voice's CC0 sentences.
 //! `data/derive-common-words.py` generates the lists, and `evals/SOURCES.md` records their source.
 
 use std::{collections::HashMap, sync::LazyLock};

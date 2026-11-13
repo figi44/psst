@@ -1,4 +1,4 @@
-//! The dictionary page (plan 6.8): search; add, edit, hide or reset terms; never rules; export.
+//! The dictionary page: search; add, edit, hide or reset terms; never rules; export.
 //! Every change goes through the same functions as `/api/dictionary`.
 
 use std::{collections::BTreeSet, sync::Arc};

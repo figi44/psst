@@ -1,4 +1,4 @@
-//! The audio eval (plan 7.3, layer 4): transcribes every clip with the worktree's server and
+//! The audio eval: transcribes every clip with the worktree's server and
 //! engine, and records the traces in `cases.jsonl`.
 //!
 //! The server runs in this process (`psst_server::serve_in_process`) with the eval set's
@@ -6,7 +6,7 @@
 //! the shared model cache. Each clip is uploaded twice, normally and with `eval.bias = false`;
 //! two clips also go through a live session, paced in real time, as a smoke test. Then the
 //! recorded traces must pass the stale-trace check, and `baseline.json` is rewritten. Last, it
-//! prints the server's stop→final latency of the biased uploads (plan 10).
+//! prints the server's stop→final latency of the biased uploads.
 //!
 //! It uses the GPU, so it runs only inside `scripts/gpu-session.sh`.
 
@@ -73,7 +73,7 @@ impl Spread {
 }
 
 /// [`LatencyRow`]s for the ranges that have any of `timings`. Dictations that waited for the
-/// model are left out: the targets assume a loaded engine (plan 10).
+/// model are left out: the targets assume a loaded engine.
 pub fn latency_rows(timings: &[ServerTimings]) -> Vec<LatencyRow> {
     let mut bounds: Vec<(u32, Option<u32>)> = Vec::new();
     let mut over = 0;
@@ -372,7 +372,7 @@ async fn transcribe(
 }
 
 /// Whether a `model_unavailable` error says the model failed, rather than that it's still
-/// downloading (docs/protocol.md).
+/// downloading.
 fn model_failed(err: &ErrorMsg) -> bool {
     err.detail.as_ref().and_then(|detail| detail.get("reason")).and_then(|reason| reason.as_str()) == Some("failed")
 }

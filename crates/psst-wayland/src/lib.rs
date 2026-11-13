@@ -1,4 +1,4 @@
-//! The daemon's one Wayland thread (plan 5.4, 9.2, 9.5, 9.6): the overlay surface, the whole
+//! The daemon's one Wayland thread: the overlay surface, the whole
 //! clipboard flow, and the virtual keyboard, on a single connection and one calloop loop.
 //!
 //! The thread owns the clipboard flow: the snapshot, re-snapshotting on external selection

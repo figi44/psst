@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Derives the common-word lists in common-words/ (plan 7.2) and the stress-test sentences in
-evals/stress/ (plan 7.3) from Common Voice's CC0 sentences.
+"""Derives the common-word lists in common-words/ and the stress-test sentences in
+evals/stress/ from Common Voice's CC0 sentences.
 
     python3 -I derive-common-words.py <download dir>
 

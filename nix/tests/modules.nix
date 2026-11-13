@@ -1,4 +1,4 @@
-# `checks.modules`: evaluates both modules the way the host config would use them, checks what they
+# `checks.modules`: evaluates both modules the way a NixOS config would use them, checks what they
 # generate, and that psst-server check-config rejects bad settings at build time. Only the config
 # files are built: the CUDA engine is evaluated, never built.
 {
@@ -28,7 +28,7 @@ let
       ];
     };
 
-  # The desktop: the CUDA engine (unfree), the author on the socket.
+  # The desktop: the CUDA engine (unfree), alice on the socket.
   desktop = nixos {
     nixpkgs.config.allowUnfree = true;
     services.psst-server = {
@@ -52,7 +52,7 @@ let
     };
   };
 
-  # The ThinkPad's daemon, which reaches the desktop over the tailnet.
+  # A laptop's daemon, which reaches the desktop over the tailnet.
   home = home-manager.lib.homeManagerConfiguration {
     inherit pkgs;
     modules = [
@@ -65,7 +65,7 @@ let
         };
         services.psst = {
           enable = true;
-          settings.server = "http://nixos:7341";
+          settings.server = "http://desktop:7341";
         };
       }
     ];
@@ -127,7 +127,7 @@ pkgs.runCommand "psst-modules"
   ''
     grep -Fx 'local_users = ["alice"]' $serverConfig/server.toml
     grep -Fx 'socket = "/run/psst/client.sock"' $serverConfig/server.toml
-    grep -Fx 'server = "http://nixos:7341"' $clientToml
+    grep -Fx 'server = "http://desktop:7341"' $clientToml
     grep -F 'profiles.toml' $rejected/testBuildFailure.log
     touch $out
   ''

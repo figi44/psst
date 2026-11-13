@@ -1,4 +1,4 @@
-//! The daemon's side of the Wayland thread (plan 5.4): it sends [`WaylandCmd`]s and receives
+//! The daemon's side of the Wayland thread: it sends [`WaylandCmd`]s and receives
 //! [`WaylandEvent`]s, and nothing else. The thread itself lives in `psst-wayland`.
 //!
 //! The daemon asks [`Wayland`] for a sink when it has none: at the first command, and again

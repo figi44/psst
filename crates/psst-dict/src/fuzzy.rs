@@ -1,8 +1,8 @@
-//! Fuzzy matching (plan 7.2 steps 3–7): spans of up to four tokens in an English session, scored
+//! Fuzzy matching: spans of up to four tokens in an English session, scored
 //! against the match keys of the `fuzzy` terms by edit distance and Double Metaphone.
 //!
-//! Three rules go beyond the plan's initial values. They were tuned on Common Voice split B
-//! sentences outside `evals/stress/`, where the plan's rules alone made about 5 false corrections
+//! Three rules go beyond plain edit distance and Double Metaphone. They were tuned on Common Voice
+//! split B sentences outside `evals/stress/`, where those alone made about 5 false corrections
 //! per 1,000 words without probabilities:
 //!
 //! - sounding alike only helps a span whose letters are already close ([`PHONETIC_MAX_DISTANCE`]);

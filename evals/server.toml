@@ -1,8 +1,8 @@
-# The eval server (plan 7.3): what `psst-eval audio` runs in-process, and what replay recomputes
-# each case's engine request from. Every key not set here takes its default (docs/config.md), so
+# The eval server: what `psst-eval audio` runs in-process, and what replay recomputes
+# each case's engine request from. Every key not set here takes its default, so
 # the eval follows the production model and options; changing them, here or in psst-config, means
-# re-running the audio eval (docs/evals.md). Those defaults are Phase 0's decisions
-# (docs/decisions/engine.md): large-v3-turbo, int8_float16, and the options below.
+# re-running the audio eval. Those defaults are what the engine benchmarks chose: large-v3-turbo,
+# int8_float16, and the options below.
 #
 #   [model.options]
 #   path = "batched"

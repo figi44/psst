@@ -1,4 +1,4 @@
-//! The engine supervisor (plan 5.3, 6.2): crashes, budgets, `oom`, failure, unload and the load
+//! The engine supervisor: crashes, budgets, `oom`, failure, unload and the load
 //! deadline.
 
 use std::time::{Duration, Instant};
@@ -56,7 +56,7 @@ async fn a_request_that_runs_out_of_its_budget_twice_fails_with_timeout() {
     wait_model(&server, ModelState::Loaded).await;
 }
 
-/// An engine that replies `oom` has made sure it can run again (docs/protocol.md), so the retry
+/// An engine that replies `oom` has made sure it can run again, so the retry
 /// goes to the same process.
 #[tokio::test]
 async fn out_of_memory_gets_one_more_attempt_in_the_same_engine_with_batch_size_one() {

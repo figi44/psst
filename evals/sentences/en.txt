@@ -1,4 +1,4 @@
-# English sentences for the eval set (plan 7.3). One entry per line: `<id> <text>`.
+# English sentences for the eval set. One entry per line: `<id> <text>`.
 #
 # - Dictionary terms are marked [[Term]]. In [[Term|spoken]], `spoken` is only what text-to-speech reads so that it
 #   says the term the way a person would; the reference text and the recording prompt show `Term`.

@@ -12,7 +12,7 @@ pub struct DictionaryFile {
     pub terms: Vec<TermSpec>,
 }
 
-/// One `[[terms]]` entry (plan 7.1).
+/// One `[[terms]]` entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TermSpec {

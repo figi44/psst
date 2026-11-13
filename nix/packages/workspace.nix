@@ -15,7 +15,7 @@ in
       (root + "/Cargo.toml")
       (root + "/Cargo.lock")
       (root + "/crates")
-      # The web UI's templates and assets, embedded in psst-server from Phase 3 (plan 6.8).
+      # The web UI's templates and assets, embedded in psst-server.
       (lib.fileset.maybeMissing (root + "/web"))
     ];
   };

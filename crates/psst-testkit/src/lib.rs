@@ -1,4 +1,4 @@
-//! Test fixtures for psst (plan 5.7, 12): a server with the scripted fake engine, a daemon in a
+//! Test fixtures for psst: a server with the scripted fake engine, a daemon in a
 //! sandbox, and the nested-niri sandbox.
 //!
 //! Tests pass freshly built binaries: `psst-e2e` gives `env!("CARGO_BIN_EXE_psst-server-e2e")`

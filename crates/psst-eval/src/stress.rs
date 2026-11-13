@@ -1,4 +1,4 @@
-//! The stress test (plan 7.3, layer 3): ordinary sentences that contain no dictionary terms, as
+//! The stress test: ordinary sentences that contain no dictionary terms, as
 //! engine results without probabilities, through the pipeline with the dictionary. Every
 //! dictionary edit is a false correction.
 //!

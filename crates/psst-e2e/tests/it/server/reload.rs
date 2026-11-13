@@ -1,4 +1,4 @@
-//! `SIGHUP` reloads `profiles.toml` and `dictionary.toml` (plan 6.5), keeping a file's old
+//! `SIGHUP` reloads `profiles.toml` and `dictionary.toml`, keeping a file's old
 //! version when the new one fails validation.
 
 use std::{fs, time::Duration};

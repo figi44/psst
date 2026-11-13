@@ -1,4 +1,4 @@
-//! `psst ui` (plan 9.1): asks the server for a one-time login link to its web UI (plan 6.6) and
+//! `psst ui`: asks the server for a one-time login link to its web UI and
 //! opens it with `xdg-open`, or prints it with `--print`. The server is the one `client.toml`
 //! names ([`crate::server_api`]); the link is valid for a minute and logs in once.
 

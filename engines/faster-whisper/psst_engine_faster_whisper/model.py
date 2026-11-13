@@ -1,4 +1,4 @@
-"""faster-whisper 1.2.1 behind the engine's ``Model`` interface (docs/protocol.md, "Server ↔ engine").
+"""faster-whisper 1.2.1 behind the engine's ``Model`` interface.
 
 faster-whisper, huggingface_hub and numpy are imported at the first ``load``, after the engine has
 claimed stdout and said hello. ``Backend`` is everything used from them.
@@ -30,11 +30,11 @@ from .engine import (
 SAMPLE_RATE = 16_000
 
 PATH = "batched"
-"""The one decoding path: faster-whisper's ``BatchedInferencePipeline``, which Phase 0 chose for
-every length (docs/decisions/engine.md)."""
+"""The one decoding path: faster-whisper's ``BatchedInferencePipeline``, which the engine benchmarks
+chose for every length."""
 
 DEFAULT_BATCH_SIZE = 8
-"""Batch size when ``options.batch_size`` is unset, as in docs/config.md."""
+"""Batch size when ``options.batch_size`` is unset, as in ``psst-config``."""
 
 RECOVERY_RUNS = 2
 """Throwaway runs after the GPU ran out of memory, until one works (``FasterWhisperModel._recover``)."""
@@ -42,7 +42,7 @@ RECOVERY_RUNS = 2
 
 @dataclass(frozen=True)
 class Options:
-    """``transcribe.options``, from ``[model.options]``, with the defaults in docs/config.md."""
+    """``transcribe.options``, from ``[model.options]``, with the defaults in ``psst-config``."""
 
     path: str = PATH
     beam_size: int = 5
@@ -262,7 +262,7 @@ class FasterWhisperModel:
         retry (with ``batch_size = 1``) doesn't fail for this run's sake.
 
         After CTranslate2 runs out of memory, its next call fails with ``cudaErrorInvalidDevice``
-        and the one after works (docs/decisions/engine.md). The warm-up's second of silence is
+        and the one after works. The warm-up's second of silence is
         that next call: it runs until it works, at most ``RECOVERY_RUNS`` times. Raises ``Fatal``
         when none works, so the engine exits as for any other CUDA error.
         """

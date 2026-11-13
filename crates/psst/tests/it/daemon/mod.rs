@@ -1,4 +1,4 @@
-//! The daemon's behaviour (plan 9.1–9.4) through its command interface, with the scripted
+//! The daemon's behaviour through its command interface, with the scripted
 //! server, audio replayed from a WAV, and a fake Wayland thread that records what it's asked.
 
 mod follow;

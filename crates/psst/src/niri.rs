@@ -1,5 +1,5 @@
 //! The focused window's app id from niri's IPC socket (`$NIRI_SOCKET`), for choosing the paste
-//! chord (plan 9.5). One request per connection, as `niri msg` does, so nothing stays open.
+//! chord. One request per connection, as `niri msg` does, so nothing stays open.
 
 use std::{path::Path, time::Duration};
 

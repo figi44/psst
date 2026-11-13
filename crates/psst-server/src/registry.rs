@@ -1,4 +1,4 @@
-//! The session registry (plan 5.1): every session by (device, `session_id`), its state, which
+//! The session registry: every session by (device, `session_id`), its state, which
 //! connection is attached to it, and finished results for 2 minutes.
 //!
 //! Every state change happens under one lock, and whoever changes a session's state to an

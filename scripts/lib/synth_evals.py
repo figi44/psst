@@ -1,4 +1,4 @@
-"""Render the synthetic eval clips with Piper and write evals/cases.jsonl (plan 7.3).
+"""Render the synthetic eval clips with Piper and write evals/cases.jsonl.
 
 Run through scripts/synth-evals.sh, which provides Piper, Python and flac from the pinned nixpkgs.
 
@@ -6,7 +6,7 @@ What it does:
 - Reads evals/sentences/{en,cs}.txt and checks them against evals/dictionary.toml.
 - Downloads the Piper voices (pinned commit, checked by sha256) into the psst cache.
 - Renders every entry with one voice, plus a few silence and noise cases, as 16 kHz mono FLAC in evals/clips/.
-- Rewrites the synthetic lines of evals/cases.jsonl, and keeps every other line (the author's recordings).
+- Rewrites the synthetic lines of evals/cases.jsonl, and keeps any other line.
 
 Determinism: Piper adds random noise inside the ONNX model. Each segment seeds onnxruntime from the clip id before
 its session is created, so the same inputs give byte-identical audio. Each clip carries a PSST_SYNTH tag (a hash of
@@ -75,7 +75,7 @@ EN_VOICES = ["lj", "norman", "cori"]
 
 LEAD_IN_S = 0.3  # silence before speech, as if the recording started a moment before speaking
 TAIL_S = 0.5  # silence after speech
-LONG_TAIL_S = 4.0  # the silent tail of long must-pass clips (plan 7.3)
+LONG_TAIL_S = 4.0  # the silent tail of long must-pass clips
 SENTENCE_GAP_S = 0.2  # between sentences inside one segment
 PEAK = 10 ** (-1 / 20)  # normalise speech to -1 dBFS peak
 
@@ -194,7 +194,7 @@ def check_entries(entries: list[Entry], dictionary: dict[str, str]) -> None:
 
 
 def load_dictionary(path: Path) -> dict[str, str]:
-    """Term text -> its `languages`: "any" or one language code (docs/config.md)."""
+    """Term text -> its `languages`: "any" or one language code."""
     terms = tomllib.loads(path.read_text(encoding="utf-8"))["terms"]
     return {t["text"]: t.get("languages", "any") for t in terms}
 
@@ -207,7 +207,7 @@ def voice_for(e: Entry) -> str:
     return "jirka-fast" if fast else "jirka-slow"
 
 
-# Silence and noise cases: the guard must leave them empty (plan 6.4). (id suffix, kind, seconds)
+# Silence and noise cases: the guard must leave them empty. (id suffix, kind, seconds)
 NOISE_CASES = {
     "en": [("silence", "silence", 5.0), ("roomtone", "roomtone", 8.0), ("fan", "fan", 6.0),
            ("white", "white", 4.0), ("hum", "hum", 6.0), ("typing", "typing", 6.0)],
@@ -410,7 +410,7 @@ def main() -> int:
             print(f"removing {stale}", file=sys.stderr)
             stale.unlink()
 
-    # cases.jsonl: keep the author's lines, and a synthetic line as it is (engine outputs included) if its clip and fields
+    # cases.jsonl: keep non-synthetic lines, and a synthetic line as it is (engine outputs included) if its clip and fields
     # are unchanged; everything else is rewritten from the plan.
     cases_path = evals / "cases.jsonl"
     old = {}

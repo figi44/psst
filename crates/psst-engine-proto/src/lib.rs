@@ -1,4 +1,4 @@
-//! The server ↔ engine protocol (plan 5.3): typed messages and the frame codec used on the
+//! The server ↔ engine protocol: typed messages and the frame codec used on the
 //! engine's stdin and stdout.
 //!
 //! A frame is an 8-byte prefix (header length, then payload length, both `u32` little-endian),
@@ -9,8 +9,6 @@
 //! - [`ToEngine`] / [`FromEngine`]: the messages in each direction; [`decode`] and [`encode`]
 //!   convert between them and frame headers.
 //! - [`fake`]: the scripted engine behind `psst-server __fake-engine`.
-//!
-//! `docs/protocol.md` is the prose version; a change to one updates the other.
 
 pub mod fake;
 pub mod frame;

@@ -1,4 +1,4 @@
-//! A whole dictation on the desktop, end to end in the nested-niri sandbox (plan 13, Phase 1):
+//! A whole dictation on the desktop, end to end in the nested-niri sandbox:
 //! the real server (`psst-server-e2e` with the scripted fake engine), the real daemon
 //! (`psst-e2e-daemon`) with a WAV replayed in place of the microphone and its real Wayland
 //! thread, and `psst-paste-target` focused. A [`Watcher`] takes screenshots to see the overlay.
@@ -7,7 +7,7 @@
 //! `cargo nextest run -p psst-e2e -E 'test(=desktop::dictation_timings)' --no-capture`.
 //!
 //! `on_the_gpu` repeats the dictation with the real faster-whisper engine and large-v3-turbo on
-//! a Phase 0 clip. It's ignored by default (CI has no GPU) and refuses to run outside
+//! an eval clip. It's ignored by default (CI has no GPU) and refuses to run outside
 //! `scripts/gpu-session.sh`:
 //!
 //! ```sh
@@ -41,7 +41,7 @@ const SERVER: &str = env!("CARGO_BIN_EXE_psst-server-e2e");
 const WAIT: Duration = Duration::from_secs(15);
 /// What the app had copied before dictating.
 const ORIGINAL: &str = "copied before dictating ✓";
-/// The clipboard is restored this long after the paste (plan 9.5).
+/// The clipboard is restored this long after the paste.
 const RESTORE: Duration = Duration::from_secs(5);
 /// How often the [`Watcher`] looks at the screen.
 const LOOK: Duration = Duration::from_millis(30);
@@ -320,7 +320,7 @@ fn a_connection_dropped_while_recording_is_uploaded_with_resume_at_stop() {
 
 // ---------------------------------------------------------------------- timings
 
-/// The client's timings over several dictations, as the daemon measures them (plan 6.7, 10).
+/// The client's timings over several dictations, as the daemon measures them.
 #[test]
 fn dictation_timings() {
     const RUNS: usize = 8;
@@ -346,7 +346,7 @@ fn dictation_timings() {
     for (key, p50, p95, max) in &summary {
         eprintln!("{key} over {RUNS} dictations (fake engine, nested niri): p50 {p50}, p95 {p95}, max {max}");
     }
-    // Generous bounds for loaded CI machines; the targets are in plan section 10.
+    // Generous bounds for loaded CI machines.
     let p95 = |key: &str| summary.iter().find(|s| s.0 == key).unwrap().2;
     assert!(p95("toggle_to_overlay_ms") < 500, "{summary:?}");
     assert!(p95("toggle_to_first_frame_ms") < 500, "{summary:?}");
@@ -355,7 +355,7 @@ fn dictation_timings() {
 
 // ---------------------------------------------------------------------- the GPU
 
-/// The Phase 0 clip the GPU run dictates.
+/// The eval clip the GPU run dictates.
 const GPU_CLIP: (&str, &str) =
     ("syn-en-007-lj", "Thanks for the quick review, I'll merge it as soon as the build goes green.");
 

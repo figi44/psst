@@ -1,4 +1,4 @@
-//! Sessions on `/v1/client` (plan 5.1): the normal flow, resume, cancel, disconnects and limits.
+//! Sessions on `/v1/client`: the normal flow, resume, cancel, disconnects and limits.
 
 use std::time::{Duration, Instant};
 

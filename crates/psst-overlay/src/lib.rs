@@ -1,5 +1,4 @@
-//! The overlay's pure renderer: (`OverlayState`, recent levels, style, size, scale) → RGBA pixels
-//! (plan 9.6).
+//! The overlay's pure renderer: (`OverlayState`, recent levels, style, size, scale) → RGBA pixels.
 //!
 //! The overlay is a pill, centred at the bottom of the screen by default. A round "well" on its
 //! left holds the status icon; the rest shows a live level waveform while recording, or a short
@@ -84,7 +83,7 @@ impl Rgba {
     }
 }
 
-/// The overlay's colours: `[overlay]` in `client.toml`. The defaults match `docs/config.md`.
+/// The overlay's colours: `[overlay]` in `client.toml`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Style {
     pub background: Rgba,

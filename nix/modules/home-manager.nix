@@ -1,5 +1,4 @@
-# `homeManagerModules.psst`: the desktop daemon as a user service (plan 9.1 and 11), documented
-# in docs/nix.md.
+# `homeManagerModules.psst`: the desktop daemon as a user service.
 overlay:
 {
   config,
@@ -33,7 +32,7 @@ in
         }
       '';
       description = ''
-        `client.toml`; docs/config.md lists every key with its default. A change restarts the
+        `client.toml`; `psst-config` documents every key and its default. A change restarts the
         daemon.
       '';
     };

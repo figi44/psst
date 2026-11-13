@@ -1,4 +1,4 @@
-//! The database layer on top of `dictionary.toml` (plan 7.1 "Layers"): add, replace, hide, reset
+//! The database layer on top of `dictionary.toml`: add, replace, hide, reset
 //! and rename, conflicts, and never rules.
 
 use psst_config::{ConfigFile, DictionaryFile, TermLanguages, TermSpec};

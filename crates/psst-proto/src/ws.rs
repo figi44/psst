@@ -1,4 +1,4 @@
-//! Messages on the client ↔ server WebSocket, `/v1/client` (plan 5.1).
+//! Messages on the client ↔ server WebSocket, `/v1/client`.
 //!
 //! Text frames carry one JSON message each, tagged by `type`. Binary frames carry audio:
 //! 20 ms of `pcm_s16le` (640 bytes) per frame. Receivers ignore fields they don't know.

@@ -51,7 +51,7 @@ impl Default for ProfileSpec {
     }
 }
 
-/// Built-in post-processing rules (plan 8).
+/// Built-in post-processing rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Rule {

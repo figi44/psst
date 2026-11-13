@@ -1,11 +1,9 @@
 //! Wire types shared by the psst server and its clients.
 //!
-//! - [`types`]: the shared result, timing and error types (plan 5.6).
-//! - [`ws`]: the client ↔ server WebSocket messages on `/v1/client` (plan 5.1).
-//! - [`api`]: the HTTP routes and their request and response bodies (plan 5.2).
+//! - [`types`]: the shared result, timing and error types.
+//! - [`ws`]: the client ↔ server WebSocket messages on `/v1/client`.
+//! - [`api`]: the HTTP routes and their request and response bodies.
 //! - [`endpoint`]: where a client finds the server, and the device token it presents.
-//!
-//! `docs/protocol.md` is the prose version of this crate; a change to one updates the other.
 
 pub mod api;
 pub mod endpoint;

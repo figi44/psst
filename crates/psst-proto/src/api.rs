@@ -1,5 +1,5 @@
-//! HTTP routes and their bodies (plan 5.2): Phase 1, the dictionary routes of Phase 2, and the
-//! profile and login routes of Phase 3. All bodies are JSON, except the login redemption, which
+//! HTTP routes and their bodies: pairing, devices, history and the model, the dictionary, and the
+//! profile and login routes. All bodies are JSON, except the login redemption, which
 //! is a browser form.
 //!
 //! Errors from `/api/*` come back with a non-2xx status and an [`ApiError`] body.
@@ -248,7 +248,7 @@ pub struct HistoryRow {
 }
 
 /// A dictionary term as the API carries it: the keys of a `[[terms]]` entry in
-/// `dictionary.toml` (plan 7.1), each with the same default. Keys at their default are left out.
+/// `dictionary.toml`, each with the same default. Keys at their default are left out.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Term {
     /// The exact spelling to produce. Its identity ([`TermId`]) is this after NFC and case folding.
@@ -348,7 +348,7 @@ pub enum TermLayer {
 }
 
 /// The answer to a change of one term: the identity's entry afterwards, and what the change set
-/// off in the plan 7.1 checks. A change that the checks reject gets `400 bad_request` instead,
+/// off in the dictionary's conflict checks. A change that the checks reject gets `400 bad_request` instead,
 /// and changes nothing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TermChange {
@@ -370,7 +370,7 @@ pub struct NewNeverRule {
     pub span: String,
 }
 
-/// A never rule (plan 7.1): it vetoes `term` replacing a span whose fuzzy key is `span_key`, both
+/// A never rule: it vetoes `term` replacing a span whose fuzzy key is `span_key`, both
 /// exactly and fuzzily.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NeverRule {
@@ -388,8 +388,8 @@ pub struct NeverRule {
 /// `GET /api/dictionary/export`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DictionaryExport {
-    /// The database layer in `dictionary.toml`'s format, for moving into the file (the host config's
-    /// `settings.dictionary`): the added and replaced terms as `[[terms]]`, and hidden terms and
+    /// The database layer in `dictionary.toml`'s format, for moving into the file (the NixOS
+    /// module's `settings.dictionary`): the added and replaced terms as `[[terms]]`, and hidden terms and
     /// never rules, which the file can't express, as comments.
     pub toml: String,
 }
@@ -476,7 +476,7 @@ pub struct ProfileChange {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProfilesExport {
     /// `profiles.toml` with the database's profiles in place of the file's, for moving into the
-    /// file (the host config's `settings.profiles`).
+    /// file (the NixOS module's `settings.profiles`).
     pub toml: String,
 }
 

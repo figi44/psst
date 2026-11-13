@@ -1,44 +1,23 @@
 #!/usr/bin/env bash
-# Tests for scripts/gpu-session.sh, in a sandbox: a fake `localwhisper` first on PATH, a fake runtime directory and a
-# private cache directory, so neither the real localwhisper service nor the real GPU lock is touched. No GPU needed.
+# Tests for scripts/gpu-session.sh, with a private cache directory, so the real GPU lock is never touched. No GPU
+# needed.
 #
 #   scripts/tests/gpu-session.sh
 # shellcheck disable=SC2016,SC2034 # checks are single-quoted on purpose and expanded by the eval in check()
 set -u
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 T=$(mktemp -d "${TMPDIR:-/tmp}/psst-gpu-session-test.XXXXXX")
-trap 'kill "$FAKE" 2>/dev/null; rm -rf "$T"' EXIT
-export PSST_CACHE_DIR=$T/cache XDG_RUNTIME_DIR=$T/run
-mkdir -p "$T/bin" "$XDG_RUNTIME_DIR/localwhisper"
-mkfifo "$XDG_RUNTIME_DIR/localwhisper/recording_control"
-cat > "$T/bin/localwhisper" <<'F'
-#!/usr/bin/env bash
-echo "fake localwhisper $*" >> "$XDG_RUNTIME_DIR/calls"
-[[ "$*" == "model unload" ]] || { echo "unexpected: $*"; exit 9; }
-( sleep 0.5; touch "$XDG_RUNTIME_DIR/localwhisper/model_unloaded" ) &
-F
-chmod +x "$T/bin/localwhisper"
-export PATH=$T/bin:$PATH
-# a process that looks like the localwhisper service (pgrep -f 'localwhisper/lib/main\.py')
-mkdir -p "$T/fake/localwhisper/lib"
-echo "while :; do sleep 1; done" >"$T/fake/localwhisper/lib/main.py"
-bash "$T/fake/localwhisper/lib/main.py" >/dev/null 2>&1 &
-FAKE=$!
+trap 'rm -rf "$T"' EXIT
+export PSST_CACHE_DIR=$T/cache
 G=$REPO/scripts/gpu-session.sh
 pass=0 fail=0
 check() { if eval "$2"; then echo "ok   $1"; pass=$((pass+1)); else echo "FAIL $1"; fail=$((fail+1)); fi; }
 
-# 1. runs the command, unloads localwhisper once, propagates exit status, removes the marker
-$G bash -c 'cat "$PSST_CACHE_DIR/gpu-session.marker" > "$PSST_CACHE_DIR/seen"; exit 3' 2>"$T/err1"; rc=$?
+# 1. runs the command with a marker naming it, propagates exit status, removes the marker
+$G bash -c 'cat "$PSST_CACHE_DIR/gpu-session.marker" > "$PSST_CACHE_DIR/seen"; exit 3' 2>/dev/null; rc=$?
 check "exit status propagated" '[[ $rc == 3 ]]'
-check "marker recorded localwhisper unload" 'grep -q "^localwhisper=unloaded" "$PSST_CACHE_DIR/seen"'
+check "marker names the command" 'grep -q "^command=.*bash" "$PSST_CACHE_DIR/seen"'
 check "marker removed" '[[ ! -e $PSST_CACHE_DIR/gpu-session.marker ]]'
-check "localwhisper model unload called once" '[[ $(grep -c "model unload" "$XDG_RUNTIME_DIR/calls") == 1 ]]'
-check "never reload" '! grep -q reload "$XDG_RUNTIME_DIR/calls"'
-check "reminder printed" 'grep -q "localwhisper model reload" "$T/err1"'
-# 2. already unloaded: not called again
-$G true 2>/dev/null
-check "no second unload" '[[ $(grep -c "model unload" "$XDG_RUNTIME_DIR/calls") == 1 ]]'
 # 3. stdin and stdout pass through
 out=$(echo hello | $G cat 2>/dev/null)
 check "stdin/stdout pass through" '[[ $out == hello ]]'
@@ -102,14 +81,5 @@ check "carried-over unload kept during next command" '[[ $rc == 0 ]]'
 check "psst restored by the next run" '[[ $(cat "$T/psst") == loaded ]]'
 check "marker gone after repair" '[[ ! -e $PSST_CACHE_DIR/gpu-session.marker ]]'
 check "load/unload sequence" '[[ $(tr "\n" " " < "$T/psst.log") == "unload load unload load unload load unload load " ]]'
-# 8. localwhisper refuses (busy): times out with 75 and runs nothing
-rm -f "$XDG_RUNTIME_DIR/localwhisper/model_unloaded"
-cat > "$T/bin/localwhisper" <<'F'
-#!/usr/bin/env bash
-echo "fake localwhisper $*" >> "$XDG_RUNTIME_DIR/calls"
-F
-PSST_GPU_UNLOAD_TIMEOUT=1 $G touch "$T/ran" 2>/dev/null; rc=$?
-check "busy localwhisper -> 75" '[[ $rc == 75 ]]'
-check "command not run" '[[ ! -e $T/ran ]]'
 echo "passed $pass, failed $fail"
 ((fail == 0))

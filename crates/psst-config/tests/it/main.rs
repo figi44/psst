@@ -2,5 +2,4 @@
 //!
 //! One binary for all of them, so the crate's tests compile and link once.
 
-mod docs;
 mod files;

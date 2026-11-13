@@ -1,4 +1,4 @@
-//! The text pipeline (plan 6.4): guard → dictionary → rules. Pure; the server and every eval
+//! The text pipeline: guard → dictionary → rules. Pure; the server and every eval
 //! call the same [`run`].
 //!
 //! 1. **`raw_text`** is the segment texts, each trimmed, joined with single spaces. It's built
@@ -11,7 +11,7 @@
 //! 4. **The dictionary** (with [`PipelineOptions::dictionary`]) replaces exact spellings, then,
 //!    in English, spans close to a `fuzzy` term, and protects every token it accepts. The
 //!    tokens' `prob` sets how close a fuzzy match has to be.
-//! 5. **Rules** (plan 8) run in the profile's order and leave protected tokens alone.
+//! 5. **Rules** run in the profile's order and leave protected tokens alone.
 //! 6. **Assembly:** [`Final::text`] is the tokens with their spacing.
 //!
 //! The session's language, which picks the dictionary's terms, the common words and the guard's

@@ -1,9 +1,4 @@
-//! Fuzzy matching (plan 7.2 steps 3–7) and never rules, through `run`.
-//!
-//! Cases marked "Handy" are adapted from Handy's `src-tauri/src/audio_toolkit/text.rs`
-//! (github.com/cjpais/Handy, MIT), and cases marked "t3code" from t3code's
-//! `apps/server/src/speech/SpeechService.test.ts` (github.com/pingdotgg/t3code, MIT). Where psst's
-//! rules give a different result, the comment says why.
+//! Fuzzy matching and never rules, through `run`.
 //!
 //! `said` has no word probabilities, which is the medium band; `said_p` and `said_words` give the
 //! engine's probabilities.
@@ -27,18 +22,18 @@ fn a_term_heard_as_several_words_is_joined_back() {
     assert_eq!(out.text, "I switched to Hyprland last week. ");
     assert_eq!(out.edits[0], fuzzy(14..24, "hyprland", "hyper land", "Hyprland", (1.0 / 9.0 * 0.3) as f32));
 
-    // Handy: n-grams of up to four words.
-    assert_eq!(text(&said("using Mac Book Pro"), &terms(&["MacBook Pro"])), "Using MacBook Pro ");
-    assert_eq!(text(&said("use Chat G P T for this"), &terms(&["ChatGPT"])), "Use ChatGPT for this ");
-    assert_eq!(text(&said("Open AI GPT model"), &terms(&["OpenAI", "GPT"])), "OpenAI GPT model ");
+    // n-grams of up to four words.
+    assert_eq!(text(&said("using Power Shell Core"), &terms(&["PowerShell Core"])), "Using PowerShell Core ");
+    assert_eq!(text(&said("use Web G P U for this"), &terms(&["WebGPU"])), "Use WebGPU for this ");
+    assert_eq!(text(&said("Git Lab CI runner"), &terms(&["GitLab", "CI"])), "GitLab CI runner ");
     assert_eq!(
-        text(&said("its name is Charge B, which lets you bill"), &terms(&["ChargeBee"])),
-        "Its name is ChargeBee, which lets you bill "
+        text(&said("we send it with Mail Chim, which lets you email"), &terms(&["Mailchimp"])),
+        "We send it with Mailchimp, which lets you email "
     );
-    // Handy keeps the spoken case ("CHARGEBEE"); psst always writes the term's text.
-    assert_eq!(text(&said("CHARGE B is great"), &terms(&["ChargeBee"])), "ChargeBee is great ");
-    // Handy: a trailing digit is part of the key, so it's never written twice ("GPT-44").
-    assert_eq!(text(&said("use GPT4 for this"), &terms(&["GPT-4"])), "Use GPT-4 for this ");
+    // The term's text is written whatever the spoken case.
+    assert_eq!(text(&said("MAIL CHIM is great"), &terms(&["Mailchimp"])), "Mailchimp is great ");
+    // A trailing digit is part of the key, so it's never written twice ("Llama-33").
+    assert_eq!(text(&said("use Llama3 for this"), &terms(&["Llama-3"])), "Use Llama-3 for this ");
 }
 
 #[test]
@@ -59,8 +54,8 @@ fn diacritics_fold_away_in_the_key() {
 fn leading_and_trailing_punctuation_stays() {
     assert_eq!(text(&said("(hyper-land),"), HYPRLAND), "(Hyprland), ");
     assert_eq!(text(&said("...hyper land..."), HYPRLAND), "...Hyprland... ");
-    // Handy: punctuation outside ASCII.
-    assert_eq!(text(&said("「Handee。」"), &terms(&["Handy"])), "「Handy。」 ");
+    // Punctuation outside ASCII.
+    assert_eq!(text(&said("«hyperland»"), HYPRLAND), "«Hyprland» ");
 }
 
 #[test]
@@ -69,8 +64,8 @@ fn only_letters_digits_hyphens_and_apostrophes_may_sit_inside_a_span() {
     assert_eq!(text(&said("the Cuber-Netes team"), KUBERNETES), "The Kubernetes team ");
     assert_eq!(text(&said("the cuber. Netes team"), KUBERNETES), "The cuber. Netes team ");
     assert_eq!(text(&said_p("not hyper. Land", 0.3), HYPRLAND), "Not hyper. Land ");
-    // t3code: punctuation between the words keeps them apart.
-    assert_eq!(text(&said("(git hub), git (hub)."), &terms(&["GitHub"])), "(GitHub), git (hub). ");
+    // Punctuation between the words keeps them apart.
+    assert_eq!(text(&said("(pipe wire), pipe (wire)."), &terms(&["PipeWire"])), "(PipeWire), pipe (wire). ");
 }
 
 #[test]
@@ -86,16 +81,17 @@ fn a_suffix_stays_on_when_the_bare_word_matches_better() {
     // A term that ends in "s" doesn't get a second one.
     assert_eq!(text(&said("on kubernetis"), KUBERNETES), "On Kubernetes ");
 
-    // t3code: possessives.
-    assert_eq!(text(&said("git hub's API, git hub’s API."), &terms(&["GitHub"])), "GitHub's API, GitHub’s API. ");
-    let dict = terms(&["McDonald’s", "King’s Cross"]);
-    assert_eq!(text(&said("mac donald's menu at king's cross"), &dict), "McDonald’s menu at King’s Cross ");
+    // Possessives.
+    let dict = terms(&["PipeWire"]);
+    assert_eq!(text(&said("pipe wire's graph, pipe wire’s graph."), &dict), "PipeWire's graph, PipeWire’s graph. ");
+    let dict = terms(&["Domino’s", "Earl’s Court"]);
+    assert_eq!(text(&said("domino's menu near earl's court"), &dict), "Domino’s menu near Earl’s Court ");
 }
 
 #[test]
 fn a_possessive_inside_a_span_keeps_its_words_apart() {
-    // t3code: "git’s hub" is not GitHub.
-    assert_eq!(text(&said("git’s hub"), &terms(&["GitHub"])), "Git’s hub ");
+    // "pipe’s wire" is not PipeWire.
+    assert_eq!(text(&said("pipe’s wire"), &terms(&["PipeWire"])), "Pipe’s wire ");
     let dict = terms(&["Claude Code"]);
     assert_eq!(text(&said("check claude's code"), &dict), "Check claude's code ");
     assert_eq!(text(&said("check cloud code"), &dict), "Check Claude Code ");
@@ -193,20 +189,19 @@ fn sounding_alike_only_helps_a_spelling_that_is_already_close() {
     let dict = terms(&["Tailscale"]);
     assert_eq!(text(&said_p("restart Taleskill", 0.3), &dict), "Restart Taleskill ");
     assert_eq!(text(&said_p("restart tail scale", 0.9), &dict), "Restart Tailscale ");
-    // Handy: "helo" is one letter off. Handy also fixes "wrold", but a swap is two edits out of
-    // five letters.
-    assert_eq!(text(&said("helo wrold"), &terms(&["hello", "world"])), "hello wrold ");
+    // "rediz" is one letter off; a swap is two edits out of five letters.
+    assert_eq!(text(&said("rediz ngnix"), &terms(&["Redis", "Nginx"])), "Redis ngnix ");
 }
 
 #[test]
 fn keys_need_four_characters_and_a_similar_length() {
     assert_eq!(text(&said_p("run k 3 s here", 0.3), &terms(&["k3s"])), "Run k 3 s here ");
-    // Handy matches R&D to "RD" and "R and D". Here "rd" is too short, and "rand" two letters off.
-    let dict = terms(&["R&D"]);
-    assert_eq!(text(&said_p("send it to RD for review", 0.3), &dict), "Send it to RD for review ");
-    assert_eq!(text(&said_p("send it to R and D for review", 0.3), &dict), "Send it to R and D for review ");
-    // Handy: other scripts get no fuzzy matching here either (and the key is too short).
-    assert_eq!(text(&said_p("你好。", 0.3), &terms(&["你号"])), "你好。 ");
+    // AT&T's key "att" is too short, so neither "ATT" nor "A T and T" matches it.
+    let dict = terms(&["AT&T"]);
+    assert_eq!(text(&said_p("call ATT about it", 0.3), &dict), "Call ATT about it ");
+    assert_eq!(text(&said_p("call A T and T about it", 0.3), &dict), "Call A T and T about it ");
+    // Keys in other scripts need four characters too: two Han characters are too short.
+    assert_eq!(text(&said_p("早安。", 0.3), &terms(&["早案"])), "早安。 ");
     // "hyperolande" sounds like Hyprland with three letters more, more than 2 apart.
     assert_eq!(text(&said_p("on hyperolande", 0.3), HYPRLAND), "On hyperolande ");
     assert_eq!(text(&said_p("on hyper o land", 0.3), HYPRLAND), "On Hyprland ");

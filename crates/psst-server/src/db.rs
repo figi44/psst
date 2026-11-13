@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
--- The dictionary's database layer (plan 7.1): one entry per term identity.
+-- The dictionary's database layer: one entry per term identity.
 CREATE TABLE IF NOT EXISTS dictionary_terms (
     id TEXT PRIMARY KEY,
     -- The term (an API `Term` as JSON), which adds it or replaces the file's; NULL hides the file's.
@@ -67,14 +67,14 @@ CREATE TABLE IF NOT EXISTS dictionary_never (
     UNIQUE (term, span_key)
 );
 -- Whole profiles by name, each replacing profiles.toml's profile with that name or adding one
--- (plan 6.5).
+--.
 CREATE TABLE IF NOT EXISTS profiles (
     name TEXT PRIMARY KEY,
     -- An API `Profile` as JSON.
     profile TEXT NOT NULL,
     updated_ms INTEGER NOT NULL
 );
--- The web UI's browser sessions (plan 6.6), by the SHA-256 of their cookie.
+-- The web UI's browser sessions, by the SHA-256 of their cookie.
 CREATE TABLE IF NOT EXISTS web_sessions (
     token_hash TEXT PRIMARY KEY,
     -- Who asked for the login link: `local:<user>`, or a paired device's id.

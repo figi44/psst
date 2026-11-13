@@ -27,7 +27,7 @@ use crate::dc::{Bytes, DcDevice, DcHandler, DcManager, DcOffer, DcSource, Proto,
 use crate::overlay::{Globals as SurfaceGlobals, Overlay};
 use crate::{Chord, DataControl, Options, WaylandCmd, WaylandEvent, keymap};
 
-/// A snapshot keeps at most this much (plan 9.5).
+/// A snapshot keeps at most this much.
 const READ_CAP: usize = 10 * 1024 * 1024;
 /// A snapshot read gives up after this long.
 const READ_TIMEOUT: Duration = Duration::from_secs(2);

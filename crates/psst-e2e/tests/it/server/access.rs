@@ -1,4 +1,4 @@
-//! Access (plan 6.6): local users by peer credentials, paired devices by token, pairing codes.
+//! Access: local users by peer credentials, paired devices by token, pairing codes.
 
 use psst_engine_proto::fake::Script;
 use psst_proto::{

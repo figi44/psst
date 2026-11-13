@@ -1,4 +1,4 @@
-//! Resume from suspend, from logind's `PrepareForSleep(false)` on the system bus (plan 5.1): the
+//! Resume from suspend, from logind's `PrepareForSleep(false)` on the system bus: the
 //! daemon reconnects once after it. Without a system bus (tests, containers) this does nothing.
 
 use futures_util::StreamExt;

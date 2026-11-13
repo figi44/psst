@@ -1,8 +1,8 @@
-# Czech sentences for the eval set (plan 7.3). The format is the same as en.txt.
+# Czech sentences for the eval set. The format is the same as en.txt.
 #
 # - Dictionary terms are marked [[Term]] or [[Term|spoken]] (`spoken` is only for text-to-speech).
 # - Terms appear only in forms without a case ending (nominative, or after a word like "nástroj"), because Czech
-#   gets exact spellings and no fuzzy matching in this plan.
+#   gets exact spellings and no fuzzy matching.
 # - Ids: cs-NNN ordinary, cs-long-NN and cs-short-NN must-pass. Odd numbers tune, even numbers holdout.
 # - No numbers.
 

@@ -1,4 +1,4 @@
-//! Exact spellings (plan 7.2 step 2): one leftmost-longest, case-insensitive matcher over every
+//! Exact spellings: one leftmost-longest, case-insensitive matcher over every
 //! term's `text` and `sounds_like`.
 
 use std::{cmp::Reverse, collections::HashMap, ops::Range};

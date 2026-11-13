@@ -361,14 +361,14 @@ enum ModelAction {
 #[derive(Debug, Subcommand)]
 enum DictAction {
     /// Print the database layer in dictionary.toml's format, for moving it into the file
-    /// (the host config's settings.dictionary).
+    /// (the NixOS module's settings.dictionary).
     Export,
 }
 
 #[derive(Debug, Subcommand)]
 enum ProfilesAction {
     /// Print profiles.toml with the database's profiles in place of the file's, for moving into
-    /// the file (the host config's settings.profiles).
+    /// the file (the NixOS module's settings.profiles).
     Export,
 }
 

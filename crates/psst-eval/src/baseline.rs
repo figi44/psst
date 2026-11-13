@@ -71,7 +71,7 @@ pub struct CaseResult {
     pub lang: String,
     pub split: Split,
     pub must_pass: bool,
-    /// `engine_output` through the pipeline with the dictionary: what the author would get.
+    /// `engine_output` through the pipeline with the dictionary: what the user gets.
     pub output: CaseOutput,
     /// `engine_output_raw` through the pipeline without the dictionary.
     pub raw: CaseOutput,

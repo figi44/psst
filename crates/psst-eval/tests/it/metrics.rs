@@ -1,4 +1,4 @@
-//! The metric definitions of plan 7.3.
+//! The metric definitions.
 
 use psst_eval::{
     metrics::{Counts, Scoring, score},

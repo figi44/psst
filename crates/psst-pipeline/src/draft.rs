@@ -1,4 +1,4 @@
-//! The text as the stages see it (plan 6.4 steps 1, 2 and 6): `raw_text`, its tokens with their
+//! The text as the stages see it: `raw_text`, its tokens with their
 //! word annotations, and the edits made so far.
 
 use std::ops::Range;
@@ -192,7 +192,7 @@ mod tests {
         (text.into(), Some(prob), Some(start), Some(end))
     }
 
-    // These annotations are what Phase 2's confidence gate reads; Phase 1 output doesn't depend on
+    // These annotations are what the confidence gate reads; the final text doesn't depend on
     // them, so they're checked at the token seam.
     #[test]
     fn a_number_split_into_two_words_annotates_one_token_with_the_weaker_word() {

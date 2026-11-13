@@ -1,4 +1,4 @@
-//! Profiles stored in the database over `profiles.toml` (plan 6.5), and the `/api/profiles`
+//! Profiles stored in the database over `profiles.toml`, and the `/api/profiles`
 //! operations.
 //!
 //! The database holds whole profiles by name: each replaces the file's profile with that name, or
@@ -93,8 +93,8 @@ impl ProfileLayers {
 
         let mut out = format!(
             "# profiles.toml with the psst server's profiles, exported by psst-server {}.\n\
-             # Use it as the host config's settings.profiles (builtins.fromTOML reads it); once the server runs\n\
-             # with it, reset each profile marked below in the web UI.\n",
+             # Use it as the NixOS module's settings.profiles (builtins.fromTOML reads it); once the\n\
+             # server runs with it, reset each profile marked below in the web UI.\n",
             env!("CARGO_PKG_VERSION")
         );
         let effective = self.effective();

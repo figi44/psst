@@ -1,4 +1,4 @@
-//! The daemon (plan 9.1–9.4): one task that owns every dictation, the connection to the server
+//! The daemon: one task that owns every dictation, the connection to the server
 //! and the Wayland seam, fed by the command socket, the recorder threads, the sessions and the
 //! Wayland thread.
 //!
@@ -55,7 +55,7 @@ use crate::{
     ui::{Wayland, WaylandSink},
 };
 
-/// The daemon's time limits. [`Timing::default`] is the plan's; tests shorten them.
+/// The daemon's time limits. [`Timing::default`] is production's; tests shorten them.
 #[derive(Debug, Clone)]
 pub struct Timing {
     /// `ready` must arrive this soon after `start` goes out, or the recording goes offline.
@@ -934,7 +934,7 @@ impl Core {
         matches!(self.cfg.server, Endpoint::Tcp { .. })
     }
 
-    /// The network state of a recording that starts now (plan 5.1, 9.4).
+    /// The network state of a recording that starts now.
     fn begin_check(&mut self) -> Net {
         let resumed = self.resumed_at.is_some_and(|at| at.elapsed() < self.t.resume_window);
         let budget = if resumed { self.t.resume_budget } else { self.t.start_budget };

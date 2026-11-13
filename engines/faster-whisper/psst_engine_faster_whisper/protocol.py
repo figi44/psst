@@ -1,4 +1,4 @@
-"""Frame codec of the psst engine protocol (docs/protocol.md, "Server ↔ engine").
+"""Frame codec of the psst engine protocol.
 
 A frame is an 8-byte prefix (header length, then payload length, both u32 little-endian), a
 UTF-8 JSON header with a ``type``, and an optional payload. Audio payloads are f32 little-endian

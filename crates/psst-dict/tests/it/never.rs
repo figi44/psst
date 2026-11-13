@@ -1,4 +1,4 @@
-//! Never rules as data on the dictionary (plan 7.1), and the match keys they compare.
+//! Never rules as data on the dictionary, and the match keys they compare.
 
 use psst_config::{ConfigFile, DictionaryFile};
 use psst_dict::{Dictionary, NeverRule, fuzzy_key};

@@ -1,4 +1,4 @@
-//! Shared types (plan 5.6): what an engine returns, what the pipeline makes of it, timings and
+//! Shared types: what an engine returns, what the pipeline makes of it, timings and
 //! error codes.
 
 use std::ops::Range;
@@ -76,7 +76,7 @@ pub struct Edit {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub term: Option<TermId>,
     /// UTF-8 byte offsets into [`Final::raw_text`]. A dictionary edit covers exactly the characters
-    /// it replaced, a rules edit the raw span of every token it touches (`docs/protocol.md`).
+    /// it replaced, a rules edit the raw span of every token it touches.
     pub raw_span: Range<usize>,
     pub before: String,
     pub after: String,
@@ -93,7 +93,7 @@ pub enum Stage {
     Rules,
 }
 
-/// A dictionary term's identity key: its `text` after NFC and case folding (plan 7.1).
+/// A dictionary term's identity key: its `text` after NFC and case folding.
 pub type TermId = String;
 
 /// Server-side stage durations for one dictation, in milliseconds.

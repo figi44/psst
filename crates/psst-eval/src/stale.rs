@@ -1,4 +1,4 @@
-//! The stale-trace check (plan 7.3): recompute each case's engine request from the current code
+//! The stale-trace check: recompute each case's engine request from the current code
 //! and `evals/*.toml`, and compare it with what the recorded traces say was used.
 //!
 //! A trace records the model, the effective options and the prompt the engine built, not the
@@ -10,7 +10,7 @@
 //! - **Options:** every requested option is in `trace.options` with the requested value. The
 //!   engine may add options.
 //! - **Bias:** with `eval.bias = false` the prompt is empty. Otherwise it's the style and the
-//!   first `k` terms, rendered as in docs/protocol.md (`style + " " + terms.join(", ") + "."`),
+//!   first `k` terms, rendered as the engine does (`style + " " + terms.join(", ") + "."`),
 //!   or a tail of the style alone when the style is over the budget. Since the engine drops terms
 //!   only to fit 223 tokens, and a token is at least one byte, dropping a term whose prompt would
 //!   have been under 223 bytes is stale too: the trace was recorded with a different term list.
@@ -28,7 +28,7 @@ use serde_json::Value;
 
 use crate::cases::EvalSet;
 
-/// The prompt budget in tokens, shared by style and terms (plan 5.3).
+/// The prompt budget in tokens, shared by style and terms.
 pub const PROMPT_BUDGET_TOKENS: usize = 223;
 
 /// The parts of a `transcribe` request that shape the engine's output.
@@ -39,7 +39,7 @@ pub struct EngineRequest {
     pub options: Value,
 }
 
-/// The request the server sends for a dictation with `profile` (plan 6.1 step 2): the profile's
+/// The request the server sends for a dictation with `profile`: the profile's
 /// language, its style and the dictionary's bias terms, or no bias at all for
 /// `eval.bias = false`, and `[model.options]`.
 pub fn engine_request(profile: &Profile, dictionary: &Dictionary, model: &ModelConfig, bias: bool) -> EngineRequest {
@@ -108,7 +108,7 @@ fn check_options(requested: &Value, recorded: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// The prompt the faster-whisper engine builds from a bias (docs/protocol.md), before its
+/// The prompt the faster-whisper engine builds from a bias, before its
 /// token budget.
 pub fn render_prompt(style: &str, terms: &[String]) -> String {
     let terms = (!terms.is_empty()).then(|| format!("{}.", terms.join(", ")));

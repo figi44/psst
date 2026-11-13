@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the Phase 0 engine benchmarks (plan 13) inside scripts/gpu-session.sh.
+# Run the engine benchmarks inside scripts/gpu-session.sh.
 #
 #   scripts/bench/run.sh all                       quality, prompt, long-terms, latency and batch
 #   scripts/bench/run.sh <experiment> [options]    one experiment; options go to engine.py
@@ -8,16 +8,16 @@
 # Results go to $PSST_BENCH_OUT (default: ~/.cache/psst/bench/<date>), one <experiment>.jsonl each, and
 # report.md. The model is cached in ~/.cache/psst/hf.
 #
-# Phase 0 has no engine package yet, so this uses localwhisper's Python environment (faster-whisper 1.2.1,
-# ctranslate2 4.8.4 with CUDA; plan 2) and the CUDA library path from its wrapper (plan 11, "Fallback"). Override
-# with PSST_BENCH_PYTHON and PSST_BENCH_CUDA_LIBS.
+# The Python environment and CUDA library path come from the flake's CUDA engine package, as for
+# `psst-engine-dev`. Override with PSST_BENCH_PYTHON and PSST_BENCH_CUDA_LIBS.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 cache=${PSST_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/psst}
-python=${PSST_BENCH_PYTHON:-/nix/store/ph6w4fnslmcbzn78808ykdyy84m2h08y-python3-3.14.8-env/bin/python}
-cuda_libs=${PSST_BENCH_CUDA_LIBS:-/run/opengl-driver/lib:/nix/store/lc13g3zl4s8a6kwrsnhwrrcl8nh0lhgr-cuda13.4-libcublas-13.8.2.12-lib/lib:/nix/store/r349f0nfkzbq089wswnv23yhvakp415v-cuda13.4-cudnn-9.27.0.42-lib/lib}
+engine_pkg="$repo#psst-engine-faster-whisper-cuda"
+python=${PSST_BENCH_PYTHON:-$(nix build --no-link --print-out-paths "$engine_pkg.pythonEnv")/bin/python}
+cuda_libs=${PSST_BENCH_CUDA_LIBS:-$(nix eval --raw "$engine_pkg.libraryPath")}
 export PSST_BENCH_OUT=${PSST_BENCH_OUT:-$cache/bench/$(date +%Y%m%d)}
 # Always the psst cache, even if HF_HOME or HF_HUB_CACHE is set in the environment.
 export HF_HOME=$cache/hf HF_HUB_CACHE=$cache/hf/hub HF_HUB_DISABLE_TELEMETRY=1

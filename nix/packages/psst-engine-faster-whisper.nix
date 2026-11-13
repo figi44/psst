@@ -1,5 +1,5 @@
 # The faster-whisper engine (engines/faster-whisper). The flake exports only the CUDA build,
-# `psst-engine-faster-whisper-cuda`; `cudaSupport` stays for other hosts (plan 11).
+# `psst-engine-faster-whisper-cuda`; `cudaSupport` stays for other hosts.
 {
   lib,
   config,
@@ -9,9 +9,8 @@
   cudaSupport ? config.cudaSupport,
 }:
 let
-  # Exactly the host config's override (localwhisper.nix:9-15). With the same nixpkgs and
-  # `allowUnfree`, the CUDA ctranslate2 is the derivation localwhisper already uses and the Flox
-  # cache serves, so it is substituted rather than compiled.
+  # ctranslate2 with CUDA. With the pinned nixpkgs and `allowUnfree`, it's the derivation the
+  # Flox cache serves, so it is substituted rather than compiled.
   python = python3.override {
     packageOverrides =
       final: prev:
@@ -22,7 +21,7 @@ let
       };
   };
 
-  # As localwhisper.nix:65 puts on its wrapper: the driver's libcuda, then cuBLAS and cuDNN.
+  # The driver's libcuda, then cuBLAS and cuDNN.
   libraryPath = lib.optionalString cudaSupport "/run/opengl-driver/lib:${
     lib.makeLibraryPath [
       cudaPackages.libcublas

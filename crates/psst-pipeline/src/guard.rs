@@ -1,4 +1,4 @@
-//! The hallucination guard (plan 6.4 step 3).
+//! The hallucination guard.
 
 use std::{
     collections::{HashMap, HashSet},

@@ -1,4 +1,4 @@
-//! The eval set on disk (plan 7.3): `cases.jsonl`, and the config snapshots in `evals/`.
+//! The eval set on disk: `cases.jsonl`, and the config snapshots in `evals/`.
 
 use std::{
     collections::BTreeSet,
@@ -19,20 +19,17 @@ use serde::{Deserialize, Serialize};
 pub enum Source {
     /// Piper text-to-speech (`scripts/synth-evals.sh`).
     Synthetic,
-    /// the author's own recordings (`scripts/record-evals.sh`).
-    Own,
 }
 
 impl fmt::Display for Source {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Synthetic => "synthetic",
-            Self::Own => "alice",
         })
     }
 }
 
-/// Tuning happens only on `tune`; Phase 2 acceptance is measured on `holdout`.
+/// Tuning happens only on `tune`; acceptance is measured on `holdout`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Split {

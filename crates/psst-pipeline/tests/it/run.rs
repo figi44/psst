@@ -1,4 +1,4 @@
-//! `raw_text`, assembly, edits and options (plan 6.4 steps 1, 2 and 6).
+//! `raw_text`, assembly, edits and options.
 
 use crate::support;
 

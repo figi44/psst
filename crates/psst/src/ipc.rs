@@ -1,4 +1,4 @@
-//! The daemon's command socket, `$XDG_RUNTIME_DIR/psst/daemon.sock` (plan 9.1): one JSON
+//! The daemon's command socket, `$XDG_RUNTIME_DIR/psst/daemon.sock`: one JSON
 //! request line, one JSON response line, then the connection closes. The CLI side is blocking
 //! std I/O, so a command costs a connect and a round trip.
 //!

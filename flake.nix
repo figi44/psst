@@ -1,10 +1,9 @@
 {
   description = "psst: self-hosted dictation for Linux";
 
-  # Pinned to the revision the host config uses, so builds hit derivations already in the local store and
-  # in the caches the host config uses (plan section 11).
+  # Pinned, so builds hit derivations the binary caches already have.
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/1d060086d60cb76a40cf37109f979d88a5bd6396";
-  # Only for evaluating the Home Manager module in `checks`; pinned to the host config's revision too.
+  # Only for evaluating the Home Manager module in `checks`.
   inputs.home-manager = {
     url = "github:nix-community/home-manager/b787c48e2ec57a9d098f5c2721882a3bc1e16f97";
     inputs.nixpkgs.follows = "nixpkgs";
@@ -22,7 +21,7 @@
         "x86_64-linux"
         "aarch64-linux"
       ];
-      # nixpkgs as the host config configures it (only `allowUnfree`, for the CUDA engine), plus psst.
+      # nixpkgs with `allowUnfree` (for the CUDA engine), plus psst.
       pkgsFor = lib.genAttrs systems (
         system:
         import nixpkgs {
@@ -35,7 +34,7 @@
     in
     {
       overlays.default = import ./nix/overlay.nix;
-      # Both build psst from the host's pkgs through the overlay (docs/nix.md).
+      # Both build psst from the host's pkgs through the overlay.
       nixosModules.psst-server = import ./nix/modules/nixos.nix self.overlays.default;
       homeManagerModules.psst = import ./nix/modules/home-manager.nix self.overlays.default;
 

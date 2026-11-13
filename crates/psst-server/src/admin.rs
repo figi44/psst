@@ -1,4 +1,4 @@
-//! The admin subcommands: thin clients of `/api` over the Unix socket (plan 5.2). None of them
+//! The admin subcommands: thin clients of `/api` over the Unix socket. None of them
 //! touch the database.
 
 use std::{path::Path, process::ExitCode, time::Duration};

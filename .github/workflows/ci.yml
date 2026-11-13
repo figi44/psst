@@ -21,8 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: cachix/install-nix-action@v31
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
       - name: Check the flake
         run: nix flake check --no-build
 
@@ -31,8 +31,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: cachix/install-nix-action@v31
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
       # The compositor tests' sway, niri and mesa (psst-testkit's tools.rs), the same `nix build`
       # the first of those tests would run, but while the dev shell and the cache download. A
       # test that gets there first waits for this download instead of starting another.
@@ -43,7 +43,7 @@ jobs:
       # Only main saves the cache. A pull request's cache is visible only to that pull request,
       # pushes main's out of the 10 GB limit, and its later runs restore it over main's newer one.
       # v1: v0 had grown to 1 GB with what it kept from every older Cargo.lock (see the sweep).
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         id: cache
         with:
           prefix-key: v1-rust

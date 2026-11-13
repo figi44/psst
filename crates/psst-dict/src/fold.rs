@@ -17,7 +17,7 @@ pub(crate) fn match_key(text: &str) -> String {
     text.nfc().default_case_fold().collect()
 }
 
-/// A term's identity key (plan 7.1): its `text` after NFC and case folding. Punctuation and
+/// A term's identity key: its `text` after NFC and case folding. Punctuation and
 /// diacritics are kept, so `C`, `C++` and `C#` are three terms, and `GPU` and `gpu` are one.
 pub fn term_id(text: &str) -> TermId {
     fold(text)

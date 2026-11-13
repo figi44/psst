@@ -1,4 +1,4 @@
-//! The HTTP API (`/api/*`, plan 5.2) at the same endpoint as `/v1/client`: the Unix socket on the
+//! The HTTP API (`/api/*`) at the same endpoint as `/v1/client`: the Unix socket on the
 //! server's machine, TCP with the device token elsewhere. One request per connection, which is all
 //! the CLI needs. Like the rest of this crate, it reports problems and never retries.
 

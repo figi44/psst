@@ -1,4 +1,4 @@
-//! The four config files and their single implementation (plan 5.5).
+//! The four config files and their single implementation.
 //!
 //! | File | Type | Read by |
 //! |---|---|---|
@@ -8,7 +8,6 @@
 //! | `client.toml` | [`ClientConfig`] | client |
 //!
 //! Every key has a default, so a missing file or key means its default. Unknown keys are errors.
-//! `docs/config.md` documents every key with its default; a test keeps the two in step.
 
 mod client;
 mod dictionary;

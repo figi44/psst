@@ -1,5 +1,5 @@
-//! What `Dictionary::fuzzy_matches` reports (plan 7.2 steps 3–7). The rules themselves are tested
-//! through the pipeline, in `psst-pipeline/tests/it/fuzzy.rs`.
+//! What `Dictionary::fuzzy_matches` reports. The rules themselves are tested through the
+//! pipeline, in `psst-pipeline/tests/it/fuzzy.rs`.
 
 use std::ops::Range;
 

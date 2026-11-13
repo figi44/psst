@@ -1,4 +1,4 @@
-//! Never rules (plan 7.1): a term that must never replace a span.
+//! Never rules: a term that must never replace a span.
 
 use psst_proto::TermId;
 

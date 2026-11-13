@@ -97,8 +97,8 @@ impl Default for ModelConfig {
     }
 }
 
-/// Decoding options sent with every `transcribe` (plan 6.3), with the defaults Phase 0 measured
-/// (docs/decisions/engine.md).
+/// Decoding options sent with every `transcribe`, with the defaults the engine benchmarks
+/// (`scripts/bench/`) chose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ModelOptions {
@@ -132,8 +132,8 @@ impl ModelOptions {
     }
 }
 
-/// faster-whisper's decoding path. Phase 0 chose the batched one for every length and deleted
-/// the others (docs/decisions/engine.md).
+/// faster-whisper's decoding path: the batched one, which the engine benchmarks chose for every
+/// length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DecodePath {

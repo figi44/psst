@@ -47,7 +47,7 @@ class FakeWhisper:
     """Raised while the next transcription's segments are read, as faster-whisper does."""
     after_oom: list[Exception] = field(default_factory=lambda: [INVALID_DEVICE])
     """Raised by the next calls into the model after it ran out of memory, one per call. By
-    default the first call fails, as CTranslate2's does (docs/decisions/engine.md)."""
+    default the first call fails, as CTranslate2's does."""
     segments: list[Any] = field(default_factory=lambda: [default_segment()])
     duration_after_vad: float = 2.5
     language: str = "en"

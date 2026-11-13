@@ -1,4 +1,4 @@
-//! Restarting the engine after the machine wakes up (plan 5.3, step 5): logind's
+//! Restarting the engine after the machine wakes up: logind's
 //! `PrepareForSleep(false)` on the system bus.
 
 use futures_util::StreamExt;

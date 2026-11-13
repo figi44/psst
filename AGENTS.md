@@ -1,14 +1,11 @@
 # Working on psst
 
 psst is a dictation system: a Rust server that runs the speech model on a GPU machine, an engine
-process per model, and a thin Linux desktop client. `docs/protocol.md` and `docs/config.md` are
-the contracts everything else is built against.
+process per model, and a thin Linux desktop client. There are no prose docs: the code and its doc
+comments are the reference, starting with the contract crates below.
 
 ## Hard rules
 
-- **Never touch localwhisper or `/etc/nixos`.** Never stop, uninstall, reload or reconfigure
-  localwhisper, and never edit anything under the host config. The only exception is in
-  `scripts/gpu-session.sh`, which may unload localwhisper's model and never reloads it.
 - **All GPU work runs inside `scripts/gpu-session.sh`.** Nothing else uses the GPU.
 - **Never apply the `baseline-change` label.** Only a maintainer applies it.
 - **Tests never touch the live Wayland session.** No `wl-copy`, `wtype`, clipboard or input tools
@@ -47,25 +44,20 @@ CI's Rust job runs the same recipes.
   `env!("CARGO_BIN_EXE_psst-server-e2e")` and `env!("CARGO_BIN_EXE_psst-e2e-daemon")` through
   `psst-testkit`, so they always run freshly built binaries. Evals run the server in-process with
   `psst_server::serve_in_process`.
-- **Regenerate `evals/baseline.json` after a rebase:** `cargo run -p psst-eval -- replay --write`
-  (`docs/evals.md`).
+- **Regenerate `evals/baseline.json` after a rebase:** `cargo run -p psst-eval -- replay --write`.
 - Add dependencies with `cargo add`, not by editing manifests.
 
 ## Contracts
 
-Plan section 5 is implemented by:
+| Contract | Code |
+|---|---|
+| Client ↔ server messages, HTTP bodies, shared types | `psst-proto` |
+| Server ↔ engine messages and framing | `psst-engine-proto`, `engines/faster-whisper/psst_engine_faster_whisper/protocol.py` |
+| Config files and the resolved `Profile` | `psst-config` |
+| Daemon ↔ Wayland thread | `psst-wayland` (`OverlayState` in `psst-overlay`) |
+| Library seams | `psst-dict`, `psst-pipeline`, `psst-client`, `psst-server`, `psst-testkit` |
 
-| Contract | Code | Doc |
-|---|---|---|
-| Client ↔ server messages, HTTP bodies, shared types | `psst-proto` | `docs/protocol.md` |
-| Server ↔ engine messages and framing | `psst-engine-proto`, `engines/faster-whisper/psst_engine_faster_whisper/protocol.py` | `docs/protocol.md` |
-| Config files and the resolved `Profile` | `psst-config` | `docs/config.md` |
-| Daemon ↔ Wayland thread | `psst-wayland` (`OverlayState` in `psst-overlay`) | the crate docs |
-| Library seams | `psst-dict`, `psst-pipeline`, `psst-client`, `psst-server`, `psst-testkit` | the crate docs |
-
-- **A change to a contract updates its doc in the same pull request.** Tests parse every `psst:`
-  example in both docs into the real types, and compare the defaults in `docs/config.md` with the
-  code.
+- **A change to a contract updates its crate docs in the same pull request.**
 - **Golden frames** in `engines/faster-whisper/tests/golden/` check the engine contract in both
   directions: pytest writes `from-engine/`, a Rust test in `psst-engine-proto` writes
   `to-engine/`, and each side decodes the other's. Running the tests regenerates them; commit the

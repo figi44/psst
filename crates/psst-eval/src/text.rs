@@ -1,4 +1,4 @@
-//! Text handling for the metrics (plan 7.3): normalisation, words and exact term occurrences.
+//! Text handling for the metrics: normalisation, words and exact term occurrences.
 
 use std::ops::Range;
 
@@ -24,7 +24,7 @@ pub fn tokens(text: &str) -> Vec<Range<usize>> {
     tokens
 }
 
-/// The normalised words of `text` (plan 7.3):
+/// The normalised words of `text`:
 ///
 /// - NFC, then lowercase;
 /// - apostrophes and hyphens are kept only inside words (`’` counts as an apostrophe);

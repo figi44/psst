@@ -5,8 +5,8 @@ Where the data in this repository comes from, and its licences.
 ## Common-word lists and stress sentences
 
 `crates/psst-dict/data/common-words/en.txt` and `cs.txt` hold the 5,000 most frequent word forms
-of each language (plan 7.2), and `evals/stress/en.txt` and `cs.txt` the ordinary sentences of the
-stress test (plan 7.3). Both come from Common Voice's sentence collection, which is **CC0 1.0**
+of each language, and `evals/stress/en.txt` and `cs.txt` the ordinary sentences of the
+stress test. Both come from Common Voice's sentence collection, which is **CC0 1.0**
 (`server/data/en/LICENSE` in the repository).
 
 - **Repository:** [common-voice/common-voice](https://github.com/common-voice/common-voice),
@@ -64,8 +64,7 @@ stress test (plan 7.3). Both come from Common Voice's sentence collection, which
 ## The eval set
 
 Everything in `evals/` is scripted: the sentences were written for psst, and the synthetic clips are rendered from
-them. Nothing here is a recording of a real person, apart from the author's own clips once `scripts/record-evals.sh` adds
-them.
+them. Nothing here is a recording of a real person.
 
 ### Synthetic clips (`clips/syn-*.flac`)
 
@@ -90,11 +89,11 @@ The exact files and their sha256 sums are pinned in `scripts/lib/synth_evals.py`
 attribution or share-alike terms. Voices with non-commercial data (`ryan`, `hfc_*`, `semaine`), with unclear terms
 (`amy`, `alan`, `jenny_dioco`, `kusal`) or fine-tuned from `lessac` (`joe`, `lessac` itself) were left out.
 
-**The Czech voice is a caveat to settle before the repository goes public.** Piper has only one Czech voice. Its data
+**The Czech voice's licence is unsettled.** Piper has only one Czech voice. Its data
 is CC0 and the model is published under MIT, but it was fine-tuned from the `lessac` checkpoint, whose data (Blizzard
 2013, Voice Factory and Lessac Technologies) is under a [research-only licence](https://www.cstr.ed.ac.uk/projects/blizzard/2013/lessac_blizzard2013/license.html).
-Whether that reaches audio rendered by the fine-tuned model is unclear. If it's a problem, the 36 Czech clips
-(`syn-cs-*`) can be dropped or replaced by the author's own recordings without touching anything else.
+Whether that reaches audio rendered by the fine-tuned model is unclear. If it's a problem, the 33 clips in that voice
+(`syn-cs-*-jirka-*`) can be dropped without touching anything else.
 
 ### What is in the set
 
@@ -103,7 +102,7 @@ Whether that reaches audio rendered by the fine-tuned model is unclear. If it's 
 - Silence and noise cases (`syn-<lang>-silence`, `-roomtone`, `-fan`, `-white`, `-hum`, `-typing`), generated with
   seeded NumPy noise. They must transcribe to nothing.
 - `dictionary.toml` and `profiles.toml`: fixed snapshots, written for psst.
-- `cases.jsonl`: one line per clip, in the format of `docs/evals.md`.
+- `cases.jsonl`: one line per clip, in the format `psst-eval` reads (`crates/psst-eval/src/cases.rs`).
 
 The audio is fully reproducible: Piper's noise is seeded from each clip id, so `scripts/synth-evals.sh --force`
 renders byte-identical files with the same nixpkgs and voices. Checked on 2026-11-06 by rendering the whole set twice.

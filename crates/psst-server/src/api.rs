@@ -1,4 +1,4 @@
-//! HTTP routes (plan 5.2): `/health`, the client WebSocket, pairing, the Phase 1 `/api`, the
+//! HTTP routes: `/health`, the client WebSocket, pairing, the core `/api`, the
 //! dictionary and the profiles.
 
 use std::{collections::BTreeMap, sync::Arc};
@@ -195,7 +195,7 @@ pub(crate) enum Caller {
     },
 }
 
-/// Authenticates an `/api` or web UI request (plan 5.2): over the socket by peer credentials;
+/// Authenticates an `/api` or web UI request: over the socket by peer credentials;
 /// over TCP by a device token, or else by a browser session cookie. A cookie-authenticated request
 /// that changes something must come from the web UI's own origin.
 pub(crate) fn authenticate(state: &AppState, parts: &Parts) -> Result<Caller, Refusal> {
@@ -265,7 +265,7 @@ pub(crate) fn same_origin(state: &AppState, headers: &HeaderMap) -> bool {
     same_host || web_url.is_some_and(|url| url.eq_ignore_ascii_case(origin))
 }
 
-/// An authenticated `/api` caller. Local users are admins; so are paired devices (plan 5.2), and
+/// An authenticated `/api` caller. Local users are admins; so are paired devices, and
 /// browsers they logged in.
 struct Admin(#[allow(dead_code)] Caller);
 
@@ -348,7 +348,7 @@ async fn login_link(
     Ok(Json(LoginLink { url: format!("{base}/login?token={token}"), expires_at }))
 }
 
-/// Where a login link starts (plan 6.6): `web_url`; else, over TCP, the address the client reached
+/// Where a login link starts: `web_url`; else, over TCP, the address the client reached
 /// the server by; else (over the socket) a TCP listener this machine reaches on loopback.
 fn link_base(state: &AppState, peer: &Peer, headers: &HeaderMap) -> Result<String, ApiErr> {
     if let Some(url) = state.server.web_url.as_deref().and_then(psst_config::web_origin) {
@@ -539,7 +539,7 @@ async fn reset_profile(
     profiles::change(&state.live, &state.db, &name, None).map(Json)
 }
 
-/// p50/p95 per timing field (plan 6.7). `network_estimate_ms` is the client's stop→final minus
+/// p50/p95 per timing field. `network_estimate_ms` is the client's stop→final minus
 /// the server's.
 pub fn compute_stats(rows: &[(ServerTimings, Option<ClientTimings>)]) -> Stats {
     let mut fields: BTreeMap<String, Vec<u32>> = BTreeMap::new();

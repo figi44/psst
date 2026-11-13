@@ -1,4 +1,4 @@
-//! The offscreen Wayland sandbox (plan 12; `docs/decisions/desktop.md` §1).
+//! The offscreen Wayland sandbox.
 //!
 //! [`nested_niri`] starts headless sway (`WLR_BACKENDS=headless`, pixman) in a private runtime
 //! directory, then niri nested inside it with `nix/test-niri.kdl`, rendering with mesa's
@@ -32,7 +32,7 @@ use tempfile::TempDir;
 
 use crate::{guard, tools::tools};
 
-/// The test niri config (plan 12): spawns nothing, no XWayland, layouts `us,cz(qwerty)`.
+/// The test niri config: spawns nothing, no XWayland, layouts `us,cz(qwerty)`.
 const NIRI_CONFIG: &str = include_str!("../../../nix/test-niri.kdl");
 /// Headless sway: one output, no bar, no binds, no XWayland. No borders or title bar, so the
 /// nested niri's window keeps the size it starts with (1280×800) instead of being resized just
@@ -73,9 +73,8 @@ pub struct Sandbox {
     live: Vec<PathBuf>,
 }
 
-/// Starts nested niri 26.04 with `nix/test-niri.kdl` inside headless sway and returns its sandbox
-/// (plan 12). Panics if it can't start, or if any client variable would point at the live
-/// session.
+/// Starts nested niri 26.04 with `nix/test-niri.kdl` inside headless sway and returns its sandbox.
+/// Panics if it can't start, or if any client variable would point at the live session.
 pub fn nested_niri() -> Sandbox {
     Sandbox::start(Compositor::NestedNiri).unwrap_or_else(|err| panic!("nested niri sandbox: {err}"))
 }

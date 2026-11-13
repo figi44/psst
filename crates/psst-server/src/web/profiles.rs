@@ -1,4 +1,4 @@
-//! The profiles page (plan 6.8): every profile, each editable, reset for the database's versions,
+//! The profiles page: every profile, each editable, reset for the database's versions,
 //! a form to add one, and the export. Every change goes through the same function as
 //! `/api/profiles`.
 

@@ -1,4 +1,4 @@
-//! The database layer on top of `dictionary.toml` (plan 7.1 "Layers"), and how the two resolve
+//! The database layer on top of `dictionary.toml`, and how the two resolve
 //! into the dictionary sessions use.
 //!
 //! The database can **add** a term, **replace** a file term with the same identity, or **hide**

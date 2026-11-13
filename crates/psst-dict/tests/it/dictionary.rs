@@ -1,4 +1,4 @@
-//! Loading, identity, the checks of plan 7.1, and bias order.
+//! Loading, identity, the conflict checks, and bias order.
 
 use psst_config::{ConfigFile, DictionaryFile, TermLanguages};
 use psst_dict::{Dictionary, Error, term_id};

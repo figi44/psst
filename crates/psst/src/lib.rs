@@ -1,5 +1,5 @@
 //! The psst desktop client: the daemon (audio, recordings, delivery, niri IPC) and the CLI that
-//! talks to it over `$XDG_RUNTIME_DIR/psst/daemon.sock` (plan 9).
+//! talks to it over `$XDG_RUNTIME_DIR/psst/daemon.sock`.
 //!
 //! [`main`] is the whole `psst` program, so the thin binary and `psst-e2e`'s `psst-e2e-daemon`
 //! run the same code. [`daemon::spawn`] runs the daemon inside another program with its

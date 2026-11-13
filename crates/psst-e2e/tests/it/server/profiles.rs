@@ -1,4 +1,4 @@
-//! Profiles stored in the server's database over `profiles.toml` (plan 6.5, 5.2 Phase 3): whole
+//! Profiles stored in the server's database over `profiles.toml`: whole
 //! profiles by name through `/api/profiles`, checked like `check-config`, reaching new sessions
 //! without an engine restart, and exported with `psst-server profiles export` to fold back into
 //! the file.

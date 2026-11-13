@@ -1,7 +1,7 @@
-//! Capture discontinuities, found from the capture timestamps of consecutive buffers (plan 9.3).
+//! Capture discontinuities, found from the capture timestamps of consecutive buffers.
 //!
-//! Phase 0 measured a gap that came with no error from cpal at all (docs/decisions/desktop.md), so
-//! an xrun isn't the only sign of lost audio. A buffer that starts more than half a buffer after
+//! Testing found a gap that came with no error from cpal at all, so an xrun isn't the only sign
+//! of lost audio. A buffer that starts more than half a buffer after
 //! the previous one ended is a discontinuity: the samples in between are missing, and are filled
 //! with silence in their place.
 //!
@@ -16,7 +16,7 @@ use cpal::StreamInstant;
 
 use super::Feed;
 
-/// The longest discontinuity filled with silence. Phase 0's was 32 ms; a jump of more than this
+/// The longest discontinuity filled with silence. The one seen in testing was 32 ms; a jump of more than this
 /// is the timestamps' clock jumping rather than audio lost, and filling it would put that much
 /// silence into the middle of the recording. It still counts as a glitch.
 pub const MAX_FILL: Duration = Duration::from_secs(1);
@@ -116,7 +116,7 @@ mod tests {
 
     #[test]
     fn a_buffer_that_starts_late_follows_the_samples_missing_before_it() {
-        // Phase 0's gap: 32 ms lost between two buffers, with no xrun.
+        // The gap seen in testing: 32 ms lost between two buffers, with no xrun.
         let mut buffers: Vec<(u64, usize)> = (0..10).map(|i| (start(i, QUANTUM), QUANTUM)).collect();
         let resumed = start(10, QUANTUM) + 32_000;
         buffers.extend((0..10).map(|i| (resumed + start(i, QUANTUM), QUANTUM)));

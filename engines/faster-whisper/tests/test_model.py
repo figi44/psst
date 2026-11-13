@@ -21,7 +21,7 @@ STYLE = "I'm updating the NixOS config."
 TERMS = ["Hyprland", "psst", "t3code"]
 PROMPT = "I'm updating the NixOS config. Hyprland, psst, t3code."
 OPTIONS = {"path": "batched", "beam_size": 5, "word_timestamps": True, "vad_filter": True, "terms_as": "prompt", "batch_size": 8}
-"""The defaults in docs/config.md, as every trace records them."""
+"""The defaults in ``psst-config``, as every trace records them."""
 
 
 def transcribe(request_id: int = 1, *, seconds: float = 3.0, style=STYLE, terms=TERMS, language="en", **options):

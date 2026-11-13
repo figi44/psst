@@ -1,4 +1,4 @@
-//! Recordings, `last.json` and credentials on disk (plan 9.3), under `$XDG_STATE_HOME/psst/`.
+//! Recordings, `last.json` and credentials on disk, under `$XDG_STATE_HOME/psst/`.
 //!
 //! - `recordings/<session_id>.wav`: 16 kHz mono s16, written as audio is captured. Its length
 //!   comes from the file size, so a header that was never finalised doesn't matter.
@@ -202,7 +202,7 @@ impl Store {
             .unwrap_or(0)
     }
 
-    /// Repairs what a crash may have left, at daemon start (plan 9.3). Nothing is sent or
+    /// Repairs what a crash may have left, at daemon start. Nothing is sent or
     /// pasted, and nothing undelivered is deleted.
     ///
     /// - Recordings still `recording` become `incomplete`, with `samples` from the WAV.

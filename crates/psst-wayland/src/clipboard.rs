@@ -1,4 +1,4 @@
-//! The clipboard state machine (plan 5.4, 9.5). Pure: no Wayland, no clock. The Wayland thread
+//! The clipboard state machine. Pure: no Wayland, no clock. The Wayland thread
 //! feeds it [`Input`]s and carries out the [`Action`]s it returns.
 //!
 //! The rules:

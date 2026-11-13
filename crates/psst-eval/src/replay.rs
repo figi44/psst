@@ -1,4 +1,4 @@
-//! Replay (plan 7.3, layer 2): every case's recorded traces through `psst_pipeline::run`.
+//! Replay: every case's recorded traces through `psst_pipeline::run`.
 
 use anyhow::Context;
 use psst_pipeline::{PipelineOptions, run};

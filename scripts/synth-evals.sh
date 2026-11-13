@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Render the synthetic eval clips with Piper text-to-speech (plan 7.3).
+# Render the synthetic eval clips with Piper text-to-speech.
 #
 #   scripts/synth-evals.sh [--force] [--check]
 #
@@ -8,7 +8,7 @@
 # because rendering is seeded, a --force re-run produces the same bytes. --check only validates the sentences and
 # prints the plan. Voices and licences: evals/SOURCES.md. The logic is in scripts/lib/synth_evals.py.
 #
-# Tools come from the nixpkgs revision the host config pins (plan 11): piper-tts 1.8.0, flac and Python with onnxruntime.
+# Tools come from the flake's pinned nixpkgs: piper-tts 1.8.0, flac and Python with onnxruntime.
 # Voices are downloaded once (checked by sha256) into ${PSST_CACHE_DIR:-~/.cache/psst}/piper.
 set -euo pipefail
 

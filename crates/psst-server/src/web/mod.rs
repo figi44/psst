@@ -1,4 +1,4 @@
-//! The web UI (plan 6.8) and the browser login (plan 6.6): server-rendered HTML from the
+//! The web UI and the browser login: server-rendered HTML from the
 //! templates in `web/templates`, with the stylesheet and scripts in `web/static`, all embedded in
 //! the binary.
 //!

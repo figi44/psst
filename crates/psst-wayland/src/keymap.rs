@@ -1,5 +1,4 @@
-//! psst's own small virtual-keyboard keymap, uploaded once per connection
-//! (`docs/decisions/desktop.md`, "Keymap and chord").
+//! psst's own small virtual-keyboard keymap, uploaded once per connection.
 //!
 //! wtype-style (`include "complete"`), but with the real evdev keycodes (`KEY_V`, `KEY_LEFTCTRL`,
 //! `KEY_LEFTSHIFT`) and keysyms `[v, V]`, so Ctrl+Shift+V reaches an app the way a real

@@ -1,5 +1,5 @@
-//! `psst-eval`: the replay, stress and audio runners of plan 7.3. `docs/evals.md` describes the
-//! eval set, the metrics and the gate.
+//! `psst-eval`: the replay, stress and audio runners, the metrics and the regression gate. The eval
+//! set is in `evals/`; `evals/SOURCES.md` says where its data comes from.
 //!
 //! - [`replay`]: every case's recorded engine traces through `psst_pipeline::run`, scored with
 //!   [`metrics`] into a [`baseline::Baseline`]; the [`stale`] trace check; and the [`gate`]
@@ -41,7 +41,7 @@ const DEFAULT_EVALS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../evals");
 const REWRITE: &str = "run `cargo run -p psst-eval -- replay --write` and commit the result";
 
 #[derive(Debug, Parser)]
-#[command(name = "psst-eval", version, about = "psst regression evals (docs/evals.md)")]
+#[command(name = "psst-eval", version, about = "psst regression evals")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -100,7 +100,7 @@ struct GateArgs {
     /// regressions against --against pass.
     #[arg(long, value_name = "EVENT_JSON")]
     event: Option<PathBuf>,
-    /// Enforce the absolute floors, which are otherwise enforced from the end of Phase 2.
+    /// Enforce the absolute floors, which are otherwise only reported.
     #[arg(long)]
     floors: bool,
 }
@@ -143,7 +143,7 @@ fn replay_command(evals: &Path, write: bool, gate: &GateArgs) -> anyhow::Result<
     if !stale.is_empty() {
         eprintln!(
             "{} recorded traces don't match the requests the current code and evals/*.toml make; \
-             re-run the audio eval (docs/evals.md)",
+             re-run the audio eval",
             stale.len()
         );
     }
@@ -288,7 +288,7 @@ fn floors(floor_failures: Vec<String>, gate: &GateArgs, failures: &mut Vec<Strin
         failures.extend(floor_failures.into_iter().map(|f| format!("floor: {f}")));
     } else {
         for failure in floor_failures {
-            println!("floor (enforced from the end of Phase 2): {failure}");
+            println!("floor (not enforced yet): {failure}");
         }
     }
 }

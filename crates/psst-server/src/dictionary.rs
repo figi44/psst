@@ -1,4 +1,4 @@
-//! The dictionary's database layer (plan 7.1 "Layers") and the `/api/dictionary` operations.
+//! The dictionary's database layer and the `/api/dictionary` operations.
 //!
 //! [`Layered`] holds `dictionary.toml` (its last valid version), the database's entries and never
 //! rules, and which entries resolution leaves out. It lives in `LiveConfig` behind one mutex, which
@@ -150,8 +150,8 @@ impl Layered {
     pub fn export(&self) -> String {
         let mut out = format!(
             "# The psst dictionary's database layer, exported by psst-server {}.\n\
-             # Move these terms into dictionary.toml (the host config's settings.dictionary), in place of the\n\
-             # file's versions of replaced terms; then `psst dict reset <term>` drops each entry.\n",
+             # Move these terms into dictionary.toml (the NixOS module's settings.dictionary), in place\n\
+             # of the file's versions of replaced terms; then `psst dict reset <term>` drops each entry.\n",
             env!("CARGO_PKG_VERSION")
         );
         let mut hidden = Vec::new();

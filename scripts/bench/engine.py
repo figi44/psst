@@ -1,4 +1,4 @@
-"""Phase 0 engine benchmarks for faster-whisper (plan 6.3 and 13). Run through scripts/bench/run.sh.
+"""Engine benchmarks for faster-whisper. Run through scripts/bench/run.sh.
 
 Every experiment loads large-v3-turbo (int8_float16, CUDA), uses beam 5 and vad_filter, and writes one JSON record per
 transcription to --out. scripts/bench/report.py turns the records into tables.

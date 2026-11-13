@@ -1,4 +1,4 @@
-//! `psst pair <url> <code>` (plan 6.6) and the device token it stores in
+//! `psst pair <url> <code>` and the device token it stores in
 //! `$XDG_STATE_HOME/psst/credentials` (mode 0600).
 
 use std::{

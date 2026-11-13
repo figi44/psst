@@ -1,4 +1,4 @@
-//! One client connection on `/v1/client` (plan 5.1): `hello`/`welcome`, then one active session
+//! One client connection on `/v1/client`: `hello`/`welcome`, then one active session
 //! at a time. The connection buffers its session's audio; outcomes come back from the registry
 //! as [`ConnEvent`]s, and `progress` goes out every 500 ms while a session is active.
 
@@ -509,7 +509,7 @@ impl Conn {
     }
 }
 
-/// Whether a new recording may begin, from the model's state (plan 6.2).
+/// Whether a new recording may begin, from the model's state.
 fn admit(state: &AppState) -> Result<(), Rejection> {
     let status = state.engine.status();
     let unavailable =

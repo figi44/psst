@@ -1,4 +1,4 @@
-# Fixed profiles snapshot for the eval set (plan 7.3, docs/evals.md), in the format of docs/config.md. The engine
+# Fixed profiles snapshot for the eval set, in the server's profiles.toml format. The engine
 # benchmarks in scripts/bench/ take the bias style (prompt_style) from here too.
 
 [profiles.default]

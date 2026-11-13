@@ -1,4 +1,4 @@
-//! Refuses any client environment that could reach the live session (plan 12, AGENTS.md).
+//! Refuses any client environment that could reach the live session.
 //!
 //! Every path a client uses must resolve inside the sandbox root and outside
 //! `/run/user/<uid>`, the Wayland and niri sockets must not be the live ones (compared by device

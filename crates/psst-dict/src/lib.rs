@@ -1,8 +1,8 @@
-//! The dictionary (plan 7): loading, checks, bias terms, the common-word lists, never rules, and
+//! The dictionary: loading, checks, bias terms, the common-word lists, never rules, and
 //! exact and fuzzy matching. Pure; no I/O.
 //!
 //! - [`Dictionary::from_file`] builds the dictionary from `dictionary.toml` and rejects the
-//!   conflicts of plan 7.1; [`Dictionary::warnings`] lists what is allowed but probably unintended.
+//!   conflicts between terms; [`Dictionary::warnings`] lists what is allowed but probably unintended.
 //!   `psst-server check-config` reports both.
 //! - [`Dictionary::resolve`] puts the server's database [`Layer`] (added, replaced and hidden
 //!   terms, and never rules) on top of the file, deterministically ([`layers`]).
@@ -140,7 +140,7 @@ impl Dictionary {
         &self.terms
     }
 
-    /// Terms to bias the engine with for a session in `lang` (plan 7.2 step 1): pinned terms,
+    /// Terms to bias the engine with for a session in `lang`: pinned terms,
     /// then the rest, each group alphabetical. The engine drops terms from the end to fit.
     pub fn bias_terms(&self, lang: &str) -> Vec<String> {
         let mut terms: Vec<&Term> = self.terms.iter().filter(|t| t.languages.includes(lang)).collect();
@@ -148,7 +148,7 @@ impl Dictionary {
         terms.into_iter().map(|t| t.text.clone()).collect()
     }
 
-    /// Exact spellings of `lang`'s terms in `text` (plan 7.2 step 2), in text order and never
+    /// Exact spellings of `lang`'s terms in `text`, in text order and never
     /// overlapping.
     ///
     /// Every term's `text` and `sounds_like` take part, compared ignoring case. A match starts and
@@ -166,7 +166,7 @@ impl Dictionary {
             .find(&self.terms, text, lang, |range, term| !self.vetoes(&term.id, &text[range.clone()]) && allow(range))
     }
 
-    /// Spans of `tokens` close to one of the `fuzzy` terms (plan 7.2 steps 3–7), in text order and
+    /// Spans of `tokens` close to one of the `fuzzy` terms, in text order and
     /// never overlapping. Only English sessions ([`FUZZY_LANGUAGE`]) have any.
     ///
     /// - **Candidates** are 1–4 consecutive available tokens holding only letters, digits, spaces,
@@ -201,7 +201,7 @@ impl Dictionary {
         self.fuzzy.find(&self.terms, text, tokens, |term, span| self.vetoes(&term.id, span))
     }
 
-    /// Things the file allows but probably doesn't intend (plan 7.1): a spelling that's a common
+    /// Things the file allows but probably doesn't intend: a spelling that's a common
     /// word in a language the term applies to, and pinned terms that alone take more than about
     /// 150 prompt tokens.
     pub fn warnings(&self) -> Vec<Warning> {

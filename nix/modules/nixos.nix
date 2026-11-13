@@ -1,5 +1,4 @@
-# `nixosModules.psst-server`: the server as a system service (plan 6.5, 6.6 and 11), documented
-# in docs/nix.md.
+# `nixosModules.psst-server`: the server as a system service.
 overlay:
 {
   config,
@@ -104,7 +103,7 @@ in
         };
         default = { };
         description = ''
-          `server.toml`; docs/config.md lists every key with its default. A change restarts the
+          `server.toml`; `psst-config` documents every key and its default. A change restarts the
           server.
         '';
       };

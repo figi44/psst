@@ -254,11 +254,7 @@ fn floors_are_reported_and_enforced_only_on_request() {
     }]);
     let run = evals.run("replay", &["--write"]);
     run.success();
-    assert!(
-        run.stdout().contains("floor (enforced from the end of Phase 2): synthetic/en/holdout: WER is 14.29%"),
-        "{}",
-        run.stdout()
-    );
+    assert!(run.stdout().contains("floor (not enforced yet): synthetic/en/holdout: WER is 14.29%"), "{}", run.stdout());
     evals.run("replay", &["--floors"]).fails_with("floor: synthetic/en/holdout: WER is 14.29%");
 }
 

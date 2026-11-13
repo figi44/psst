@@ -1,9 +1,4 @@
-//! The dictionary stage with exact spellings (plan 7.2 step 2), through `run`.
-//!
-//! Cases marked "Handy" are adapted from Handy's `src-tauri/src/audio_toolkit/text.rs`
-//! (github.com/cjpais/Handy, MIT) and cases marked "t3code" from t3code's
-//! `apps/server/src/speech/SpeechService.test.ts` (github.com/pingdotgg/t3code, MIT). Their fuzzy
-//! cases are in `fuzzy.rs`.
+//! The dictionary stage with exact spellings, through `run`.
 
 use crate::support;
 
@@ -20,9 +15,8 @@ fn only_the_matched_characters_are_replaced_and_punctuation_stays() {
         ("\"Hyper Land\"?", "\"Hyprland\"? "),
         ("hyper land's config", "Hyprland's config "),
         ("hyper land’s config", "Hyprland’s config "),
-        // Handy: punctuation around a word.
-        ("!hyprland?", "!Hyprland? "),
-        ("...hyprland...", "...Hyprland... "),
+        ("[hyprland]!", "[Hyprland]! "),
+        ("«hyper land»", "«Hyprland» "),
     ] {
         assert_eq!(text(&said(spoken), HYPRLAND), expected, "{spoken}");
     }
@@ -57,8 +51,8 @@ fn a_common_word_is_neither_changed_nor_protected() {
     assert_eq!(out.text, "Go home ");
     assert_eq!(out.edits, [rule("capitalize", 0..2, "go", "Go"), rule("trailing_space", 7..7, "", " ")]);
     assert_eq!(text(&said("use go modules"), go), "Use go modules ");
-    // Handy: "world" is a common word, "hello" isn't.
-    assert_eq!(text(&said("hello world"), "[[terms]]\ntext = \"Hello\"\n[[terms]]\ntext = \"World\""), "Hello world ");
+    // "water" is a common word, "gitea" isn't.
+    assert_eq!(text(&said("gitea water"), "[[terms]]\ntext = \"Gitea\"\n[[terms]]\ntext = \"Water\""), "Gitea water ");
 }
 
 #[test]
@@ -66,9 +60,9 @@ fn a_match_that_changes_nothing_is_protected_without_an_edit() {
     let out = run_with(&said("psst is quiet"), "[[terms]]\ntext = \"psst\"");
     assert_eq!(out.text, "psst is quiet ");
     assert_eq!(out.edits, [rule("trailing_space", 13..13, "", " ")]);
-    // Handy: R&D is matched whole, since `&` isn't a boundary.
-    let out = run_with(&said("send it to R&D for review"), "[[terms]]\ntext = \"R&D\"\n[[terms]]\ntext = \"D\"");
-    assert_eq!(out.text, "Send it to R&D for review ");
+    // AT&T is matched whole, since `&` isn't a boundary.
+    let out = run_with(&said("call AT&T about it"), "[[terms]]\ntext = \"AT&T\"\n[[terms]]\ntext = \"T\"");
+    assert_eq!(out.text, "Call AT&T about it ");
 }
 
 #[test]
@@ -107,26 +101,25 @@ fn dot_net_and_cd_dot_dot_are_untouched() {
 
 #[test]
 fn spellings_with_quotes_and_phrases_match_only_as_written() {
-    // t3code: exact aliases and phrase boundaries.
     let dict = r#"
         [[terms]]
-        text = "AI"
-        sounds_like = ["ay eye"]
+        text = "ML"
+        sounds_like = ["em el"]
         [[terms]]
-        text = "Bob"
-        sounds_like = ["Robert"]
+        text = "Ted"
+        sounds_like = ["Edward"]
         [[terms]]
-        text = "Roberts"
+        text = "Edwards"
         [[terms]]
-        text = "O'Reilly"
-        sounds_like = ['"the publisher"']
+        text = "D'Angelo"
+        sounds_like = ['"the singer"']
         [[terms]]
-        text = "GitHub"
-        sounds_like = ["git hub"]
+        text = "GitLab"
+        sounds_like = ["git lab"]
     "#;
-    let spoken = "a test with ay eye. Robert, Roberts. \"the publisher\" and the publisher. (git hub), git (hub). \
-                  git hub's API, git hub’s API, git’s hub.";
-    let expected = "A test with AI. Bob, Roberts. O'Reilly and the publisher. (GitHub), git (hub). \
-                    GitHub's API, GitHub’s API, git’s hub. ";
+    let spoken = "we ship em el. Edward, Edwards. \"the singer\" and the singer. (git lab), git (lab). \
+                  git lab's CI, git lab’s CI, git’s lab.";
+    let expected = "We ship ML. Ted, Edwards. D'Angelo and the singer. (GitLab), git (lab). \
+                    GitLab's CI, GitLab’s CI, git’s lab. ";
     assert_eq!(text(&said(spoken), dict), expected);
 }

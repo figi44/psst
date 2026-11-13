@@ -1,4 +1,4 @@
-//! The engine supervisor (plan 5.3, 6.3): one engine process for the one model, a first-in
+//! The engine supervisor: one engine process for the one model, a first-in
 //! first-out queue of transcriptions, and every budget, retry and restart decision.
 //!
 //! The supervisor is an actor: [`Supervisor`] is a cheap handle that sends it commands, and the

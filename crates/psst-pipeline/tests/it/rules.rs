@@ -1,9 +1,5 @@
-//! The built-in rules (plan 8).
-//!
-//! Cases marked "Handy" are adapted from Handy's `src-tauri/src/audio_toolkit/text.rs`
-//! (github.com/cjpais/Handy, MIT) and cases marked "t3code" from t3code's
-//! `apps/server/src/speech/SpeechService.test.ts` (github.com/pingdotgg/t3code, MIT), to psst's
-//! rules: only the first letter of the text is capitalised, and only listed fillers go.
+//! The built-in rules: only the first letter of the text is capitalised, and only listed
+//! fillers go.
 
 use crate::support;
 
@@ -22,14 +18,12 @@ fn a_filler_goes_with_the_one_comma_attached_to_it() {
     for (spoken, expected) in [
         ("I, um, think", "I, think "),
         ("So um, I think", "So I think "),
-        // Handy
-        ("So uh I was thinking uh about this", "So I was thinking about this "),
-        ("UH this is UH a test", "This is a test "),
-        ("Well, erm, I think, uh, that's right", "Well, I think, that's right "),
-        ("  Uh, so I was, uh, thinking about this  ", "So I was, thinking about this "),
-        ("Um, so I think we should ship it.", "So I think we should ship it. "),
-        // t3code
-        ("Uh, Make it red, um, blue.", "Make it red, blue. "),
+        ("Then uh we merge it uh tomorrow", "Then we merge it tomorrow "),
+        ("UM the build is UM green", "The build is green "),
+        ("Okay, erm, the tests pass, uh, mostly", "Okay, the tests pass, mostly "),
+        ("  Um, the deploy is, uh, finished  ", "The deploy is, finished "),
+        ("Uh, let's merge it after lunch.", "Let's merge it after lunch. "),
+        ("Um, Paint it green, uh, yellow.", "Paint it green, yellow. "),
     ] {
         assert_eq!(text(&said(spoken), ""), expected, "{spoken}");
     }
@@ -45,30 +39,29 @@ fn only_standalone_fillers_go() {
 
 #[test]
 fn fillers_come_from_the_profile() {
-    // Handy: "mm" isn't a filler, and Portuguese has no list, so its "um" ("a") stays.
-    assert_eq!(text(&said("the screw is 5 mm long"), ""), "The screw is 5 mm long ");
-    assert_eq!(with(&profile("pt"), "um gato bonito"), "Um gato bonito ");
-    // Handy: a custom list, and an empty one.
+    // "ehm" is a filler only in Czech, and German has no list, so its "um" ("at") stays.
+    assert_eq!(text(&said("ehm is a Czech filler"), ""), "Ehm is a Czech filler ");
+    assert_eq!(with(&profile("de"), "um acht Uhr"), "Um acht Uhr ");
+    // A custom list, and an empty one.
     let rules = [Rule::Fillers, Rule::Whitespace, Rule::Capitalize];
     assert_eq!(
-        with(&profile_with("en", &rules, &["okay", "right"]), "okay so I think right this works"),
-        "So I think this works"
+        with(&profile_with("en", &rules, &["basically", "like"]), "basically the fix like works"),
+        "The fix works"
     );
-    assert_eq!(with(&profile_with("en", &rules, &[]), "So uh I was thinking"), "So uh I was thinking");
+    assert_eq!(with(&profile_with("en", &rules, &[]), "Then uh it works"), "Then uh it works");
     // Czech fillers in a Czech session.
     assert_eq!(text(&said_cs("no ehm, já nevím, eee"), ""), "No já nevím, ");
 }
 
 #[test]
 fn a_protected_filler_stays() {
-    // t3code: a dictionary term for the filler keeps it.
-    assert_eq!(text(&said("Make it red, um, blue."), "[[terms]]\ntext = \"um\""), "Make it red, um, blue. ");
+    // A dictionary term for the filler keeps it.
+    assert_eq!(text(&said("Set it to ten, uh, twelve."), "[[terms]]\ntext = \"uh\""), "Set it to ten, uh, twelve. ");
 }
 
 #[test]
 fn whitespace_collapses_runs_of_spaces_and_nothing_else() {
-    // Handy
-    assert_eq!(text(&said("Hello    world   test"), ""), "Hello world test ");
+    assert_eq!(text(&said("Ship    it   today"), ""), "Ship it today ");
     // Spaces before punctuation are kept, and so are tabs and newlines.
     assert_eq!(text(&said("Wait , what ?"), ""), "Wait , what ? ");
     assert_eq!(text(&said("one\n\ntwo\t three"), ""), "One\n\ntwo\t three ");

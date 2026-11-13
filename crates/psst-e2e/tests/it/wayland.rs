@@ -1,4 +1,4 @@
-//! The Wayland thread end to end, in the offscreen sandbox (plan 9.5, 12): pasting into a real
+//! The Wayland thread end to end, in the offscreen sandbox: pasting into a real
 //! app (`psst-paste-target`), the clipboard it sees during and after the 5 s window, the
 //! overlay on screen, keyboard layouts, and the paste latency.
 //!

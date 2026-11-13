@@ -1,5 +1,5 @@
 //! `psst dict add|rm|reset|list|never|test`: the dictionary's database layer, through the server's
-//! API (plan 5.2 Phase 2), at the server `client.toml` names ([`crate::server_api`]).
+//! API, at the server `client.toml` names ([`crate::server_api`]).
 
 use std::{fmt::Write as _, process::ExitCode};
 

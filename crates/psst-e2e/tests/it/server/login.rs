@@ -1,4 +1,4 @@
-//! Browser login (plan 6.6, 5.2 Phase 3): one-time links from `POST /api/login/link`, their
+//! Browser login: one-time links from `POST /api/login/link`, their
 //! redemption, the session cookie on `/api` over TCP, cross-site refusal, logout and revocation.
 
 use jiff::Timestamp;

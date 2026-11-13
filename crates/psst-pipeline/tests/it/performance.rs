@@ -1,4 +1,4 @@
-//! Plan 7.1's performance target: a 200-word dictation against 500 terms in under 5 ms, with exact
+//! The performance target: a 200-word dictation against 500 terms in under 5 ms, with exact
 //! spellings, and with fuzzy matching at its most expensive.
 
 use std::time::Duration;

@@ -1,4 +1,4 @@
-//! The client side of `/v1/client` (plan 5.1, 5.7): a connection and its sessions, live and
+//! The client side of `/v1/client`: a connection and its sessions, live and
 //! upload. Used by the `psst` daemon and by `psst-eval`.
 //!
 //! The library reports problems and never retries or reconnects on its own; the daemon decides.
@@ -106,7 +106,7 @@ impl Client {
         &self.endpoint
     }
 
-    /// The check at `start` over TCP (plan 5.1): if nothing arrived in the last 10 s, pings and
+    /// The check at `start` over TCP: if nothing arrived in the last 10 s, pings and
     /// expects a pong within `budget`.
     pub async fn check_alive(&mut self, budget: Duration) -> Result<(), ClientError> {
         if self.is_closed() {

@@ -1,4 +1,4 @@
-//! Compile-time guarantees the daemon relies on (plan 5.7).
+//! Compile-time guarantees the daemon relies on.
 
 use psst_client::{FRAME_BUFFER, FrameSender, Session};
 use psst_proto::{FRAME_MS, FRAME_SAMPLES};

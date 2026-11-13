@@ -1,4 +1,4 @@
-# The replay eval and the stress test (plan 7.3, docs/evals.md), gated against main's
+# The replay eval and the stress test, gated against main's
 # evals/baseline.json. Runs only when something the evals read changes, and again when a label is
 # added or removed, which is how the `baseline-change` label takes effect. Both run in one job, so
 # the dev shell and the build are paid for once.
@@ -50,12 +50,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: cachix/install-nix-action@v31
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
       - name: Enter the dev shell
         uses: nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a # v1.2.1
       # Only main saves the cache, and only what the build used, as in ci.yml.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         id: cache
         with:
           prefix-key: v1-rust
@@ -63,7 +63,7 @@ jobs:
       - name: Build psst-eval
         id: build
         run: cargo build -p psst-eval --locked
-      # The gate compares with main's baseline, not the copy in the pull request (plan 7.3).
+      # The gate compares with main's baseline, not the copy in the pull request.
       - name: Fetch main's baseline
         if: github.event_name == 'pull_request'
         run: |

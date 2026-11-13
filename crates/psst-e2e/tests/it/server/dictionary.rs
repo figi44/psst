@@ -1,4 +1,4 @@
-//! The dictionary's database layer through `/api/dictionary` (plan 5.2 Phase 2, 7.1): adding,
+//! The dictionary's database layer through `/api/dictionary`: adding,
 //! replacing, hiding and resetting terms, never rules, the checks on every change, export, the
 //! test route, and what sessions see.
 

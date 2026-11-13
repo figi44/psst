@@ -1,4 +1,4 @@
-//! The error sound (plan 9.3): two short falling tones on the default output device, played on a
+//! The error sound: two short falling tones on the default output device, played on a
 //! thread of its own so nothing waits for it. `sounds = false` turns it off.
 
 use std::{

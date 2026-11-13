@@ -1,4 +1,4 @@
-//! The built-in post-processing rules (plan 8), applied in the profile's order. Rules leave
+//! The built-in post-processing rules, applied in the profile's order. Rules leave
 //! protected tokens alone.
 
 use psst_config::Rule;

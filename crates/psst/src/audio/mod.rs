@@ -1,4 +1,4 @@
-//! Audio capture (plan 9.2, 9.3).
+//! Audio capture.
 //!
 //! An [`AudioSource`] captures mono `f32` at its own rate into a lock-free ring buffer (the
 //! [`Feed`]). The recorder thread ([`recorder::start`]) drains it, resamples to 16 kHz with

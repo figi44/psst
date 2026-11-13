@@ -1,4 +1,4 @@
-//! The exact-spelling matcher (plan 7.2 step 2) and the common-word lists.
+//! The exact-spelling matcher and the common-word lists.
 
 use psst_config::{ConfigFile, DictionaryFile};
 use psst_dict::{Dictionary, Outcome, common_words, is_common_word};

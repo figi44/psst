@@ -1,4 +1,4 @@
-# Phrases Whisper writes over silence and noise in English (plan 6.4). The guard drops a segment
+# Phrases Whisper writes over silence and noise in English. The guard drops a segment
 # that is exactly one of these, ignoring case and punctuation, and only when its speech evidence
 # is weak. One phrase per line.
 you

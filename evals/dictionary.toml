@@ -1,14 +1,14 @@
-# Fixed dictionary snapshot for the eval set (plan 7.3).
+# Fixed dictionary snapshot for the eval set.
 #
 # It's large on purpose: the bias terms (pinned first, then the rest alphabetically) overflow the 223-token budget
-# for style plus terms (plan 5.3), so evals exercise dropping terms from the end. Every [[Term]] in
+# for style plus terms, so evals exercise dropping terms from the end. Every [[Term]] in
 # evals/sentences/*.txt must be here (scripts/synth-evals.sh checks it). Changing this file means re-running the audio
-# eval (plan 7.3).
+# eval.
 #
-# The format is docs/config.md's. Defaults: sounds_like = [], languages = "any" ("en" or "cs" restricts a term),
+# The format is the server's dictionary.toml. Defaults: sounds_like = [], languages = "any" ("en" or "cs" restricts a term),
 # fuzzy = true (English only), pin = false.
 #
-# sounds_like holds spellings Whisper actually produced for these terms during Phase 0. Common words that a term
+# sounds_like holds spellings Whisper actually produced for these terms during the engine benchmarks. Common words that a term
 # sounds like (Traefik → "traffic", Flox → "flocks") are left out on purpose: as exact spellings they would rewrite
 # every ordinary use of the word.
 

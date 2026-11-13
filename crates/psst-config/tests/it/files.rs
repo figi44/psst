@@ -97,7 +97,7 @@ fn server_rejects_settings_that_cannot_work() {
     invalid::<ServerConfig>("[limits]\nmax_active_sessions = 0", "limits");
     invalid::<ServerConfig>("listen = [\"desktop:7341\"]", "listen");
     invalid::<ServerConfig>("[model.options]\npath = \"parallel\"", "parallel");
-    // Phase 0 deleted the other decoding paths.
+    // The other decoding paths are gone.
     invalid::<ServerConfig>("[model.options]\npath = \"sequential\"", "sequential");
     invalid::<ServerConfig>("[model.options]\npath = \"auto\"", "auto");
 }

@@ -1,4 +1,4 @@
-//! Who is calling: local users by their peer credentials, other devices by token (plan 6.6), the
+//! Who is calling: local users by their peer credentials, other devices by token, the
 //! pairing that hands out tokens, and the one-time links that log browsers in.
 
 use std::{
@@ -194,7 +194,7 @@ impl Pairings {
     }
 }
 
-/// Pending login links (plan 6.6), by the SHA-256 of their token, and the rate limit of their
+/// Pending login links, by the SHA-256 of their token, and the rate limit of their
 /// redemption. They live only in memory: a link outlives neither its minute nor a restart.
 #[derive(Debug, Default)]
 pub struct LoginLinks {

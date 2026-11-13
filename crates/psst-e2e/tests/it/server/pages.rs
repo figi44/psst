@@ -1,4 +1,4 @@
-//! The web UI's pages (plan 6.8) at the HTTP level, as a logged-in browser uses them: every
+//! The web UI's pages at the HTTP level, as a logged-in browser uses them: every
 //! dictionary action through its forms, escaping, and what a page needs to be shown.
 
 use psst_client::api::{ApiClient, Method};

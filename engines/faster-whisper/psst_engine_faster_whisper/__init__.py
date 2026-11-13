@@ -1,3 +1,3 @@
-"""psst engine for faster-whisper (docs/protocol.md, "Server ↔ engine")."""
+"""psst engine for faster-whisper."""
 
 __version__ = "0.1.0"

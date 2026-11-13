@@ -1,6 +1,6 @@
-//! ext-data-control-v1 and wlr-data-control-unstable-v1 behind one API (`docs/decisions/desktop.md`:
-//! both behave identically on niri and sway). The two protocols have the same shape, so a macro
-//! generates the dispatch for both. ext is preferred when both are offered.
+//! ext-data-control-v1 and wlr-data-control-unstable-v1 behind one API: both behave identically on
+//! niri and sway. The two protocols have the same shape, so a macro generates the dispatch for
+//! both. ext is preferred when both are offered.
 
 use std::os::fd::{BorrowedFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, Ordering};

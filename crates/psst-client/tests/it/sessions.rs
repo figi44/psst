@@ -1,5 +1,5 @@
 //! `psst-client` against a scripted server: connecting, live and upload sessions, and every way a
-//! session can end (plan 5.1, 5.7).
+//! session can end.
 
 use std::time::Duration;
 
