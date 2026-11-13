@@ -111,6 +111,14 @@ impl fmt::Debug for Pending {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct SignIn {
+    pub pending: Option<Pending>,
+    /// Bumped by a cancel or a disconnect: a sign-in already past taking `pending` saves its
+    /// credentials only if this hasn't changed since.
+    generation: u64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Model {
     pub slug: String,
@@ -165,8 +173,10 @@ pub fn credentials(state: &AppState) -> Option<Credentials> {
 }
 
 pub async fn disconnect(state: &AppState) -> Result<()> {
-    // A refresh in flight would save its tokens after this, and sign the plan back in.
+    // A refresh in flight would save its tokens after this, and sign the plan back in; so would a
+    // sign-in in its token exchange.
     let _no_refresh = state.tidy.refresh.lock().await;
+    state.tidy.sign_in().generation += 1;
     forget(state)
 }
 
@@ -217,12 +227,15 @@ pub async fn start(state: &Arc<AppState>, back: Option<String>) -> Result<()> {
 
     let listening = listener.is_some();
     let listener = listener.map(|l| tokio::spawn(listen(state.clone(), l, csrf.clone())).abort_handle());
-    *state.tidy.pending() = Some(Pending { url, listening, csrf, verifier, nonce, redirect_uri, back, listener });
+    state.tidy.sign_in().pending =
+        Some(Pending { url, listening, csrf, verifier, nonce, redirect_uri, back, listener });
     Ok(())
 }
 
 pub fn cancel(state: &AppState) {
-    if let Some(pending) = state.tidy.pending().take()
+    let mut sign_in = state.tidy.sign_in();
+    sign_in.generation += 1;
+    if let Some(pending) = sign_in.pending.take()
         && let Some(listener) = pending.listener
     {
         listener.abort();
@@ -238,14 +251,14 @@ pub async fn paste(state: &AppState, pasted: &str) -> Result<String> {
 
 /// The listener finishes its own sign-in, so it mustn't be stopped from within.
 async fn finish(state: &AppState, params: &HashMap<String, String>, stop_listener: bool) -> Result<String> {
-    let pending = {
-        let mut slot = state.tidy.pending();
-        match slot.as_ref() {
+    let (pending, generation) = {
+        let mut sign_in = state.tidy.sign_in();
+        match sign_in.pending.as_ref() {
             None => bail!("No sign-in is waiting. Start one with Continue with ChatGPT."),
             Some(p) if params.get("state") != Some(&p.csrf) => {
                 bail!("That address is from another sign-in. Paste the one this sign-in ended on.")
             }
-            Some(_) => slot.take().expect("checked above"),
+            Some(_) => (sign_in.pending.take().expect("checked above"), sign_in.generation),
         }
     };
     if stop_listener && let Some(listener) = &pending.listener {
@@ -313,7 +326,13 @@ async fn finish(state: &AppState, params: &HashMap<String, String>, stop_listene
         scopes,
     };
     let _no_refresh = state.tidy.refresh.lock().await;
-    save(state, CREDENTIALS_KEY, &creds)?;
+    {
+        let sign_in = state.tidy.sign_in();
+        if sign_in.generation != generation {
+            bail!("The sign-in was cancelled.");
+        }
+        save(state, CREDENTIALS_KEY, &creds)?;
+    }
     *state.tidy.models() = None;
     tracing::info!("post-processing: signed in to ChatGPT as {}", creds.email);
     Ok(creds.email)
@@ -340,7 +359,7 @@ async fn listen(state: Arc<AppState>, listener: TcpListener, csrf: String) {
             reply(&mut stream, "400 Bad Request", None, "This sign-in was replaced by a newer one.", None).await;
             continue;
         }
-        let back = state.tidy.pending().as_ref().and_then(|p| p.back.clone());
+        let back = state.tidy.sign_in().pending.as_ref().and_then(|p| p.back.clone());
         match finish(&state, &params, false).await {
             Ok(email) => match &back {
                 Some(back) => reply(&mut stream, "303 See Other", Some(back), "Signed in.", None).await,
@@ -356,9 +375,9 @@ async fn listen(state: Arc<AppState>, listener: TcpListener, csrf: String) {
         }
         return;
     }
-    let mut pending = state.tidy.pending();
-    if pending.as_ref().is_some_and(|p| p.csrf == csrf) {
-        *pending = None;
+    let mut sign_in = state.tidy.sign_in();
+    if sign_in.pending.as_ref().is_some_and(|p| p.csrf == csrf) {
+        sign_in.pending = None;
     }
 }
 

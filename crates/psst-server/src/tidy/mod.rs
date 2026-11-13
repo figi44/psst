@@ -18,7 +18,7 @@ use psst_proto::{Final, ws::Target};
 use serde::{Deserialize, Serialize};
 
 use crate::state::AppState;
-use chatgpt::{Answer, ApiError, Ask, Model, Pending};
+use chatgpt::{Answer, ApiError, Ask, Model, SignIn};
 use https::Https;
 use prompts::Variant;
 
@@ -27,7 +27,7 @@ const KEPT_RUNS: usize = 50;
 #[derive(Debug)]
 pub struct Lab {
     https: Https,
-    pending: Mutex<Option<Pending>>,
+    sign_in: Mutex<SignIn>,
     refresh: tokio::sync::Mutex<()>,
     models: Mutex<Option<(Instant, Vec<Model>)>>,
     runs: Mutex<VecDeque<Run>>,
@@ -39,7 +39,7 @@ impl Default for Lab {
     fn default() -> Lab {
         Lab {
             https: Https::new(),
-            pending: Mutex::default(),
+            sign_in: Mutex::default(),
             refresh: tokio::sync::Mutex::default(),
             models: Mutex::default(),
             runs: Mutex::default(),
@@ -54,8 +54,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Lab {
-    pub fn pending(&self) -> MutexGuard<'_, Option<Pending>> {
-        lock(&self.pending)
+    pub fn sign_in(&self) -> MutexGuard<'_, SignIn> {
+        lock(&self.sign_in)
     }
 
     fn models(&self) -> MutexGuard<'_, Option<(Instant, Vec<Model>)>> {
