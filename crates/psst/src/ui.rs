@@ -159,8 +159,11 @@ struct RecordingSink {
 
 impl WaylandSink for RecordingSink {
     fn send(&mut self, cmd: WaylandCmd) {
-        let line = record(&cmd);
-        let _ = writeln!(self.file, "{line}");
+        // One write per line, so a reader never sees half of one: `writeln!` formats a JSON value
+        // in many small writes.
+        let mut line = record(&cmd).to_string();
+        line.push('\n');
+        let _ = self.file.write_all(line.as_bytes());
         let reply = match cmd {
             WaylandCmd::Overlay(Some(_)) if !self.visible => {
                 self.visible = true;

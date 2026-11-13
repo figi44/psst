@@ -111,11 +111,10 @@ impl Client {
 
     /// The commands the daemon sent its stand-in Wayland thread.
     fn commands(&self) -> Vec<Value> {
-        fs::read_to_string(&self.inserted)
-            .unwrap_or_default()
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect()
+        let text = fs::read_to_string(&self.inserted).unwrap_or_default();
+        // A line the daemon is still writing has no newline yet; leave it for the next look.
+        let complete = text.rfind('\n').map_or("", |end| &text[..end]);
+        complete.lines().map(|line| serde_json::from_str(line).unwrap()).collect()
     }
 
     fn inserted_texts(&self, cmd: &str) -> Vec<String> {
