@@ -1,7 +1,7 @@
 # The replay eval and the stress test (plan 7.3, docs/evals.md), gated against main's
-# evals/baseline.json. Runs only when something the evals read changes, and again when the
-# `baseline-change` label is added or removed. Both run in one job, so the dev shell and the
-# build are paid for once.
+# evals/baseline.json. Runs only when something the evals read changes, and again when a label is
+# added or removed, which is how the `baseline-change` label takes effect. Both run in one job, so
+# the dev shell and the build are paid for once.
 name: Evals
 
 on:
@@ -42,11 +42,8 @@ permissions:
 jobs:
   evals:
     name: Replay and stress
-    # Other labels change nothing here, so they don't start (or cancel) a run.
-    if: >-
-      github.event_name == 'push'
-      || (github.event.action != 'labeled' && github.event.action != 'unlabeled')
-      || github.event.label.name == 'baseline-change'
+    # Every label event runs the gate, even for other labels: a skipped run would count as a
+    # passing check and hide an earlier failure on the same commit.
     concurrency:
       group: evals-${{ github.event.pull_request.number || github.ref }}
       cancel-in-progress: true
