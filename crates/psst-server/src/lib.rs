@@ -7,7 +7,9 @@
 //! - `listen`: the Unix socket (from systemd or bound here) and TCP listeners.
 //! - `api`: HTTP routes; `conn`: one client WebSocket; `registry`: the session registry.
 //! - `engine`: the engine supervisor; `db`: SQLite; `auth`: identities, tokens and pairing.
+//! - `admin`: the admin subcommands, as thin clients of `/api` over the socket.
 
+mod admin;
 mod api;
 mod auth;
 mod conn;
@@ -335,23 +337,32 @@ enum DevicesAction {
 
 /// The `psst-server` program.
 pub fn main() -> ExitCode {
+    let admin = |connection: Connection, action| admin::run(&connection.socket, connection.json, action);
     match Cli::parse().command {
         Command::Serve { config_dir, state_dir, cache_dir, socket } => {
             serve(ServeConfig { config_dir, state_dir, cache_dir, socket })
         }
         Command::CheckConfig { dir } => check_config(&dir),
         Command::FakeEngine { script } => psst_engine_proto::fake::main(&script),
-        Command::Model { .. } => not_implemented("model"),
-        Command::Pair { .. } => not_implemented("pair"),
-        Command::Devices { .. } => not_implemented("devices"),
-        Command::Stats { .. } => not_implemented("stats"),
-        Command::History { .. } => not_implemented("history"),
+        Command::Model { action, connection } => admin(
+            connection,
+            match action {
+                ModelAction::Load => admin::Action::ModelLoad,
+                ModelAction::Unload => admin::Action::ModelUnload,
+                ModelAction::Status => admin::Action::ModelStatus,
+            },
+        ),
+        Command::Pair { name, connection } => admin(connection, admin::Action::Pair { name }),
+        Command::Devices { action, connection } => admin(
+            connection,
+            match action {
+                DevicesAction::List => admin::Action::DevicesList,
+                DevicesAction::Revoke { id } => admin::Action::DevicesRevoke { id },
+            },
+        ),
+        Command::Stats { connection } => admin(connection, admin::Action::Stats),
+        Command::History { limit, connection } => admin(connection, admin::Action::History { limit }),
     }
-}
-
-fn not_implemented(command: &str) -> ExitCode {
-    eprintln!("psst-server: `{command}` is not implemented yet");
-    ExitCode::FAILURE
 }
 
 fn serve(cfg: ServeConfig) -> ExitCode {
