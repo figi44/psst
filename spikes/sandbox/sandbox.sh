@@ -14,7 +14,8 @@
 # XDG_CONFIG_HOME and PSST_SANDBOX_ROOT pointing into the sandbox,
 # WAYLAND_SOCKET and DISPLAY cleared, the session bus disabled, and guard.sh
 # must pass before the command runs. PSST_SANDBOX_HOST_SOCKET is the
-# headless sway's socket (niri's host, used to simulate physical keys).
+# headless sway's socket (niri's host, used to simulate physical keys);
+# PSST_SANDBOX_SWAY_PID and PSST_SANDBOX_NIRI_PID are the compositors' pids.
 #
 # Env overrides: PSST_SWAY, PSST_NIRI (binaries), PSST_MESA_EGL_VENDOR (glvnd
 # json), PSST_SANDBOX_TMP (parent dir, default $TMPDIR or /tmp; socket paths
@@ -30,7 +31,7 @@ while [ $# -gt 0 ]; do
     --compositor) compositor=$2; shift 2 ;;
     --keep) keep=1; shift ;;
     --) shift; break ;;
-    -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
+    -h|--help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
     -*) echo "sandbox: unknown option $1" >&2; exit 2 ;;
     *) break ;;
   esac
@@ -149,6 +150,7 @@ export XDG_RUNTIME_DIR="$client_rt" WAYLAND_DISPLAY="${client_sock##*/}"
 export XDG_STATE_HOME="$root/state" XDG_CONFIG_HOME="$root/config"
 [ -n "$niri_sock" ] && export NIRI_SOCKET="$niri_sock"
 export PSST_SANDBOX_ROOT="$root" PSST_SANDBOX_COMPOSITOR="$compositor" PSST_SANDBOX_HOST_SOCKET="$host_sock"
+export PSST_SANDBOX_SWAY_PID="$sway_pid" PSST_SANDBOX_NIRI_PID="$niri_pid"
 export PSST_LIVE_WAYLAND_SOCKET="$live_wl" PSST_LIVE_NIRI_SOCKET="$live_niri"
 
 "$here/guard.sh" || die "guard refused the client environment"
