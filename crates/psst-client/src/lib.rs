@@ -106,6 +106,12 @@ impl Client {
         &self.endpoint
     }
 
+    /// The longest of the last four round trips measured on this connection: `hello`→`welcome`
+    /// at connect, then each ping→pong of [`Client::check_alive`].
+    pub fn round_trip(&self) -> Duration {
+        self.shared.round_trip()
+    }
+
     /// The check at `start` over TCP: if nothing arrived in the last 10 s, pings and
     /// expects a pong within `budget`.
     pub async fn check_alive(&mut self, budget: Duration) -> Result<(), ClientError> {

@@ -9,8 +9,8 @@
 //!
 //! **The connection.** One [`Client`] at a time, used by one session at a time (the "slot").
 //! There are no reconnect timers: the daemon connects at start-up, once after the connection
-//! closes, once after resume, at `start` (within 700 ms, or 3 s just after resume), and within
-//! the 10 s window after `stop` when a recording has to be uploaded.
+//! closes, once after resume, at `start` (within 700 ms, or 3 s just after resume; up to 3 s on a
+//! slow link), and within the 10 s window after `stop` when a recording has to be uploaded.
 //!
 //! **Neither the network nor the server stops the mic.** A recording that can't stream (no
 //! connection, a rejection, `ready` later than 1 s, a lost session, a full frame buffer) goes
@@ -62,12 +62,14 @@ pub struct Timing {
     pub ready_timeout: Duration,
     /// After `stop`, how long the daemon tries to get a connection for the upload.
     pub stop_window: Duration,
-    /// The connection check at `start`.
+    /// The connection check at `start`. On a slow link it leaves room for the pong wait and a
+    /// reconnect after it (TCP, the WebSocket upgrade, `hello`/`welcome`, and a round trip to
+    /// spare): the pong wait plus 4 round trips, up to 3 s.
     pub start_budget: Duration,
     /// The connection check at `start` within [`Timing::resume_window`] of resume.
     pub resume_budget: Duration,
     pub resume_window: Duration,
-    /// The pong wait inside the check.
+    /// The pong wait inside the check. On a slow link it's 3 round trips, up to 2 s.
     pub pong: Duration,
     /// Longest single connection attempt inside the stop window.
     pub attempt_budget: Duration,
@@ -103,6 +105,11 @@ impl Default for Timing {
         }
     }
 }
+
+/// The longest the pong wait and the check at `start` grow to on a slow link, so a dead server is
+/// still noticed quickly.
+const MAX_PONG: Duration = Duration::from_secs(2);
+const MAX_CHECK: Duration = Duration::from_secs(3);
 
 /// What the daemon talks to besides the server, so tests can substitute each.
 pub struct Deps {
@@ -469,6 +476,8 @@ struct Core {
     epoch: u64,
     connected_at: Instant,
     conn_error: Option<String>,
+    /// [`Client::round_trip`] of the latest connection, kept while there is none.
+    round_trip: Duration,
     attempt: Option<u64>,
     attempts: u64,
     /// The session that holds the connection.
@@ -520,6 +529,7 @@ impl Core {
             epoch: 0,
             connected_at: Instant::now(),
             conn_error: None,
+            round_trip: Duration::ZERO,
             attempt: None,
             attempts: 0,
             slot: None,
@@ -937,7 +947,7 @@ impl Core {
     /// The network state of a recording that starts now.
     fn begin_check(&mut self) -> Net {
         let resumed = self.resumed_at.is_some_and(|at| at.elapsed() < self.t.resume_window);
-        let budget = if resumed { self.t.resume_budget } else { self.t.start_budget };
+        let budget = self.check_budget(if resumed { self.t.resume_budget } else { self.t.start_budget });
         let deadline = Instant::now() + budget;
         let alive = self.client.as_ref().is_some_and(|c| !c.is_closed());
         if alive && !self.endpoint_is_tcp() {
@@ -947,6 +957,17 @@ impl Core {
             self.connect(budget, if alive { AttemptKind::Check } else { AttemptKind::Connect });
         }
         Net::Checking { deadline }
+    }
+
+    /// The pong wait at `start`, scaled to the server's round trip ([`Timing::pong`]).
+    fn pong_budget(&self) -> Duration {
+        self.t.pong.max(self.round_trip.saturating_mul(3).min(MAX_PONG))
+    }
+
+    /// The connection check at `start`, scaled to the server's round trip and at least `floor`
+    /// ([`Timing::start_budget`]).
+    fn check_budget(&self, floor: Duration) -> Duration {
+        floor.max((self.pong_budget() + self.round_trip.saturating_mul(4)).min(MAX_CHECK))
     }
 
     /// Starts one connection attempt (or a check of the current connection) within `budget`.
@@ -971,7 +992,7 @@ impl Core {
             None
         };
         let current = if kind == AttemptKind::Check { self.client.clone() } else { None };
-        let pong = self.t.pong.min(budget);
+        let pong = self.pong_budget().min(budget);
         let tx = self.tx.clone();
         tokio::spawn(async move {
             let work = async {
@@ -1001,6 +1022,7 @@ impl Core {
         }
         match result {
             Ok(client) => {
+                self.round_trip = client.round_trip();
                 if fresh {
                     if let Some(old) = self.client.take() {
                         old.close();
@@ -1014,7 +1036,12 @@ impl Core {
                         let reason = watcher.closed().await;
                         let _ = tx.send(Input::ConnClosed { epoch, reason });
                     });
-                    info!("connected to {} as {}", client.endpoint(), client.welcome().device);
+                    info!(
+                        "connected to {} as {} ({} ms round trip)",
+                        client.endpoint(),
+                        client.welcome().device,
+                        self.round_trip.as_millis()
+                    );
                     self.client = Some(client);
                     self.connected_at = Instant::now();
                     // A session on the old connection is lost with it.
@@ -1060,7 +1087,7 @@ impl Core {
         }
         // Reconnect once, unless the connection died right after it was made.
         if lived >= Duration::from_secs(2) && self.stopping.is_none() {
-            self.connect(self.t.start_budget.max(Duration::from_secs(1)), AttemptKind::Connect);
+            self.connect(self.check_budget(self.t.start_budget).max(Duration::from_secs(1)), AttemptKind::Connect);
         }
     }
 

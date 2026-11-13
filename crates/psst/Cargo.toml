@@ -32,4 +32,4 @@ zbus = { version = "6.2.1", default-features = false, features = ["proxy", "toki
 [dev-dependencies]
 psst-testkit = { path = "../psst-testkit" }
 tempfile = "3.27.0"
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "test-util"] }

@@ -40,6 +40,8 @@ const IN_FLIGHT: usize = 50;
 const DRAIN_GRACE: Duration = Duration::from_secs(30);
 /// How long the writer may take to finish after the connection was lost or closed.
 const CLOSE_GRACE: Duration = Duration::from_secs(1);
+/// Round trips [`Client::round_trip`] looks back over.
+const ROUND_TRIPS: usize = 4;
 
 pub(crate) enum Cmd {
     Start(Box<NewSession>),
@@ -68,6 +70,8 @@ pub(crate) enum Outgoing {
 /// State the handles read without asking the task.
 pub(crate) struct Shared {
     last_received: Mutex<Instant>,
+    /// The last [`ROUND_TRIPS`] round trips measured, oldest first.
+    round_trips: Mutex<VecDeque<Duration>>,
     /// `Some(reason)` once the connection has closed.
     pub closed: watch::Sender<Option<String>>,
 }
@@ -79,6 +83,18 @@ impl Shared {
 
     fn heard(&self, at: Instant) {
         *self.last_received.lock().unwrap_or_else(|e| e.into_inner()) = at;
+    }
+
+    pub fn round_trip(&self) -> Duration {
+        self.round_trips.lock().unwrap_or_else(|e| e.into_inner()).iter().copied().max().unwrap_or_default()
+    }
+
+    fn measured(&self, round_trip: Duration) {
+        let mut round_trips = self.round_trips.lock().unwrap_or_else(|e| e.into_inner());
+        if round_trips.len() == ROUND_TRIPS {
+            round_trips.pop_front();
+        }
+        round_trips.push_back(round_trip);
     }
 
     pub fn close_reason(&self) -> String {
@@ -156,6 +172,7 @@ pub(crate) async fn connect(ep: &Endpoint, token: Option<&Token>) -> Result<Clie
         protocol: PROTOCOL_VERSION,
         client: ClientInfo { name: "psst".into(), version: env!("CARGO_PKG_VERSION").into() },
     });
+    let hello_sent = Instant::now();
     ws.send(text(&hello)).await.map_err(ws_err)?;
     let welcome = loop {
         let msg = ws.next().await.ok_or(ClientError::Closed)?.map_err(ws_err)?;
@@ -172,7 +189,11 @@ pub(crate) async fn connect(ep: &Endpoint, token: Option<&Token>) -> Result<Clie
     };
 
     let (closed, _) = watch::channel(None);
-    let shared = Arc::new(Shared { last_received: Mutex::new(Instant::now()), closed });
+    let shared = Arc::new(Shared {
+        last_received: Mutex::new(Instant::now()),
+        round_trips: Mutex::new(VecDeque::from([hello_sent.elapsed()])),
+        closed,
+    });
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let (sink, mut stream) = ws.split();
     let (incoming_tx, incoming_rx) = mpsc::unbounded_channel();
@@ -205,6 +226,7 @@ pub(crate) async fn connect(ep: &Endpoint, token: Option<&Token>) -> Result<Clie
         active: None,
         queued: VecDeque::new(),
         pings: Vec::new(),
+        ping_sent: None,
         shared: shared.clone(),
         connection_error: None,
         reader,
@@ -296,6 +318,8 @@ struct Actor {
     active: Option<Active>,
     queued: VecDeque<NewSession>,
     pings: Vec<oneshot::Sender<()>>,
+    /// When the ping that's still unanswered went out.
+    ping_sent: Option<Instant>,
     shared: Arc<Shared>,
     /// An `error` without a session id, kept as the reason if the connection then closes.
     connection_error: Option<ErrorMsg>,
@@ -400,7 +424,11 @@ impl Actor {
             Cmd::Ping(tx) => {
                 let first = self.pings.is_empty();
                 self.pings.push(tx);
-                if first { self.write(Message::Ping(Default::default())) } else { Flow::Continue }
+                if !first {
+                    return Flow::Continue;
+                }
+                self.ping_sent = Some(Instant::now());
+                self.write(Message::Ping(Default::default()))
             }
             Cmd::Close => Flow::Close("closed by the client".into()),
         }
@@ -454,6 +482,12 @@ impl Actor {
     }
 
     fn on_message(&mut self, msg: Message, at: Instant) -> Flow {
+        // Measured before the pings are answered, so their callers see it.
+        if matches!(msg, Message::Pong(_))
+            && let Some(sent) = self.ping_sent.take()
+        {
+            self.shared.measured(at.saturating_duration_since(sent));
+        }
         if !self.pings.is_empty() {
             for ping in self.pings.drain(..) {
                 let _ = ping.send(());
