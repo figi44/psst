@@ -8,6 +8,8 @@
 //! This is the contract stub: the messages are final; the thread arrives with the Wayland and
 //! overlay work package.
 
+pub mod clipboard;
+
 pub use psst_overlay::OverlayState;
 
 /// The paste chord, chosen by the daemon.
