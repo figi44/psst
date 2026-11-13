@@ -75,8 +75,8 @@ pub struct Edit {
     /// The dictionary term involved, for dictionary edits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub term: Option<TermId>,
-    /// UTF-8 byte offsets into [`Final::raw_text`]. A later-stage edit covers the raw span of
-    /// every token it touches.
+    /// UTF-8 byte offsets into [`Final::raw_text`]. A dictionary edit covers exactly the characters
+    /// it replaced, a rules edit the raw span of every token it touches (`docs/protocol.md`).
     pub raw_span: Range<usize>,
     pub before: String,
     pub after: String,
