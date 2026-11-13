@@ -1,6 +1,9 @@
 //! Human-readable tables of a baseline's metrics, on stdout.
 
-use crate::baseline::{Baseline, Metrics, StressResult};
+use crate::{
+    audio::LatencyRow,
+    baseline::{Baseline, Metrics, StressResult},
+};
 
 fn percent(value: Option<f64>) -> String {
     value.map_or_else(|| "-".into(), |v| format!("{v:.1}"))
@@ -55,5 +58,28 @@ pub fn print_stress(stress: &[StressResult]) {
         for flagged in &result.flagged {
             println!("  line {}: {:?} → {:?}", flagged.line, flagged.sentence, flagged.output);
         }
+    }
+}
+
+/// Prints the audio eval's latency per range of recording lengths.
+pub fn print_latency(rows: &[LatencyRow]) {
+    println!(
+        "{:<12} {:>10}  {:>22}  {:>22}",
+        "recording", "dictations", "stop→final p50/p95/max", "engine p50/p95/max"
+    );
+    for row in rows {
+        let range = match row.up_to_s {
+            Some(up_to) if row.over_s == 0 => format!("≤ {up_to} s"),
+            Some(up_to) => format!("{}–{up_to} s", row.over_s),
+            None => format!("> {} s", row.over_s),
+        };
+        let spread = |s: crate::audio::Spread| format!("{} / {} / {} ms", s.p50, s.p95, s.max);
+        println!(
+            "{:<12} {:>10}  {:>22}  {:>22}",
+            range,
+            row.dictations,
+            spread(row.stop_to_final_ms),
+            spread(row.engine_ms)
+        );
     }
 }
