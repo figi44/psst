@@ -476,6 +476,7 @@ dependencies = [
 name = "psst-eval"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "clap",
  "psst-client",
  "psst-config",
@@ -483,6 +484,9 @@ dependencies = [
  "psst-pipeline",
  "psst-proto",
  "psst-server",
+ "serde",
+ "serde_json",
+ "unicode-normalization",
 ]
 
 [[package]]
