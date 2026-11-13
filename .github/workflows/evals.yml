@@ -54,7 +54,10 @@ jobs:
       - uses: cachix/install-nix-action@v31
       - name: Enter the dev shell
         uses: nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a # v1.2.1
+      # Only main saves the cache, as in ci.yml.
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build psst-eval
         id: build
         run: cargo build -p psst-eval --locked

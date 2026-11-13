@@ -26,7 +26,11 @@ jobs:
         run: nix flake check --no-build
       - name: Enter the dev shell
         uses: nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a # v1.2.1
+      # Only main saves the cache. A pull request's cache is visible only to that pull request,
+      # pushes main's out of the 10 GB limit, and its later runs restore it over main's newer one.
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo nextest run --workspace --locked --profile ci
