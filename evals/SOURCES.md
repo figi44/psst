@@ -97,7 +97,7 @@ Whether that reaches audio rendered by the fine-tuned model is unclear. If it's 
 - Silence and noise cases (`syn-<lang>-silence`, `-roomtone`, `-fan`, `-white`, `-hum`, `-typing`), generated with
   seeded NumPy noise. They must transcribe to nothing.
 - `dictionary.toml` and `profiles.toml`: fixed snapshots, written for psst.
-- `cases.jsonl`: one line per clip, in the format of plan 7.3.
+- `cases.jsonl`: one line per clip, in the format of `docs/evals.md`.
 
 The audio is fully reproducible: Piper's noise is seeded from each clip id, so `scripts/synth-evals.sh --force`
 renders byte-identical files with the same nixpkgs and voices. Checked on 2026-11-06 by rendering the whole set twice.

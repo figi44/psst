@@ -1,6 +1,5 @@
-# Fixed profiles snapshot for the eval set (plan 7.3), as in plan 6.5. The engine benchmarks in scripts/bench/ take
-# the bias style (prompt_style) from here. psst-config is the implementation of this format; if it ends up different,
-# this file follows psst-config.
+# Fixed profiles snapshot for the eval set (plan 7.3, docs/evals.md), in the format of docs/config.md. The engine
+# benchmarks in scripts/bench/ take the bias style (prompt_style) from here too.
 
 [profiles.default]
 language = "en"
