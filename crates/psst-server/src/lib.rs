@@ -4,23 +4,42 @@
 //! `psst-server-e2e` run the same code. [`serve_in_process`] runs the server inside another
 //! program (`psst-eval`).
 //!
-//! This is the contract stub: `check-config` and `__fake-engine` work; `serve` and the admin
-//! commands arrive with the server work package.
+//! - `listen`: the Unix socket (from systemd or bound here) and TCP listeners.
+//! - `api`: HTTP routes; `conn`: one client WebSocket; `registry`: the session registry.
+//! - `engine`: the engine supervisor; `db`: SQLite; `auth`: identities, tokens and pairing.
 
+mod api;
 mod auth;
+mod conn;
 mod db;
 mod engine;
+mod listen;
 mod registry;
+mod sleep;
+mod state;
 
 use std::{
+    fs,
     net::SocketAddr,
     path::{Path, PathBuf},
     process::ExitCode,
+    sync::Arc,
+    time::Duration,
 };
 
+use anyhow::{Context, anyhow};
 use clap::{Parser, Subcommand};
 use psst_config::ServerFiles;
 use psst_dict::Dictionary;
+use tokio::{sync::watch, task::JoinHandle};
+
+use crate::{
+    db::{Db, UNLOADED_BOOT_ID},
+    engine::{EngineConfig, Supervisor},
+    listen::{Peer, TcpSocket, UnixSocket},
+    registry::Registry,
+    state::{AppState, ConnTable, LiveConfig, LocalPolicy},
+};
 
 /// What `psst-server serve` takes on its command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,33 +54,193 @@ pub struct ServeConfig {
     pub socket: Option<PathBuf>,
 }
 
-/// A running in-process server.
+/// A running server.
 #[derive(Debug)]
 pub struct ServerHandle {
-    _private: (),
+    socket: PathBuf,
+    tcp_addrs: Vec<SocketAddr>,
+    /// Remove the socket file on shutdown (not when systemd owns it).
+    owns_socket: bool,
+    shutdown: watch::Sender<bool>,
+    state: Arc<AppState>,
+    listeners: Vec<JoinHandle<()>>,
+    background: Vec<JoinHandle<()>>,
 }
 
 impl ServerHandle {
     /// The Unix socket it listens on.
     pub fn socket(&self) -> &Path {
-        todo!("psst-server: ServerHandle::socket")
+        &self.socket
     }
 
     /// The TCP addresses it listens on, with the actual ports.
     pub fn tcp_addrs(&self) -> &[SocketAddr] {
-        todo!("psst-server: ServerHandle::tcp_addrs")
+        &self.tcp_addrs
+    }
+
+    /// Re-reads `profiles.toml` and `dictionary.toml`, as `SIGHUP` does. A file that fails
+    /// validation keeps its previous version.
+    pub fn reload(&self) {
+        self.state.live.reload(&self.state.server);
+    }
+
+    /// Restarts a loaded engine, as after the machine wakes up. Used by tests.
+    #[doc(hidden)]
+    pub fn simulate_resume(&self) {
+        self.state.engine.resume();
     }
 
     /// Stops listening, ends sessions and shuts the engine down.
     pub async fn shutdown(self) -> anyhow::Result<()> {
-        todo!("psst-server: ServerHandle::shutdown")
+        let _ = self.shutdown.send(true);
+        for listener in self.listeners {
+            if tokio::time::timeout(Duration::from_secs(5), listener).await.is_err() {
+                tracing::warn!("a listener didn't stop within 5 s");
+            }
+        }
+        for task in self.background {
+            task.abort();
+        }
+        self.state.engine.shutdown().await;
+        if self.owns_socket {
+            let _ = fs::remove_file(&self.socket);
+        }
+        Ok(())
     }
 }
 
 /// Starts the server inside this process; it runs until [`ServerHandle::shutdown`].
+///
+/// This is the non-systemd mode: it binds `cfg.socket` (or `server.toml`'s), and with empty
+/// `local_users` accepts its own user on it.
 pub async fn serve_in_process(cfg: ServeConfig) -> anyhow::Result<ServerHandle> {
-    let _ = cfg;
-    todo!("psst-server: serve_in_process")
+    start(cfg, None).await
+}
+
+/// The current boot's id, which a deliberate unload is stored with.
+fn boot_id() -> String {
+    fs::read_to_string("/proc/sys/kernel/random/boot_id").map(|id| id.trim().to_owned()).unwrap_or_default()
+}
+
+async fn start(cfg: ServeConfig, systemd: Option<std::os::unix::net::UnixListener>) -> anyhow::Result<ServerHandle> {
+    let files = ServerFiles::load(&cfg.config_dir)?;
+    for warning in files.warnings() {
+        tracing::warn!("{warning}");
+    }
+    let dictionary = Dictionary::from_file(&files.dictionary).map_err(|err| anyhow!("dictionary.toml: {err}"))?;
+    let server = files.server;
+    for dir in [&cfg.state_dir, &cfg.cache_dir] {
+        fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    }
+    let db = Db::open(&cfg.state_dir.join("psst.db"))?;
+    match db.prune_history(server.history_days) {
+        Ok(0) => {}
+        Ok(pruned) => tracing::info!("pruned {pruned} history rows older than {} days", server.history_days),
+        Err(err) => tracing::warn!("cannot prune history: {err:#}"),
+    }
+
+    let unloaded = match db.get_state(UNLOADED_BOOT_ID)? {
+        Some(boot) if boot == boot_id() => {
+            tracing::info!("the model was unloaded on purpose during this boot; it stays unloaded");
+            true
+        }
+        Some(_) => {
+            db.clear_state(UNLOADED_BOOT_ID)?;
+            false
+        }
+        None => false,
+    };
+    if !server.model.preload && !unloaded {
+        tracing::info!("model.preload is off; the model stays unloaded until `psst-server model load`");
+    }
+
+    let systemd_mode = systemd.is_some();
+    let (unix, socket) = match systemd {
+        Some(listener) => {
+            let path = listener.local_addr()?.as_pathname().map(Path::to_owned).unwrap_or_default();
+            (listener, path)
+        }
+        None => {
+            let path = cfg.socket.clone().unwrap_or_else(|| server.socket.clone());
+            // Only the server's own user may connect unless other local users are allowed.
+            let mode = if server.local_users.is_empty() { 0o600 } else { 0o666 };
+            let listener =
+                listen::bind_unix(&path, mode).with_context(|| format!("cannot listen on {}", path.display()))?;
+            (listener, path)
+        }
+    };
+    let unix = UnixSocket::new(unix)?;
+    let own_uid = (!systemd_mode && server.local_users.is_empty()).then(|| nix::unistd::getuid().as_raw());
+    if systemd_mode && server.local_users.is_empty() {
+        tracing::warn!("local_users is empty, so nobody can use the socket");
+    }
+    let mut tcp = Vec::new();
+    for addr in &server.listen {
+        tcp.push(listen::bind_tcp(*addr).with_context(|| format!("cannot listen on {addr}"))?);
+    }
+    let tcp_addrs = tcp.iter().map(TcpSocket::local_addr).collect::<Result<Vec<_>, _>>()?;
+
+    let engine =
+        Supervisor::start(EngineConfig::from_server(&server, cfg.cache_dir.clone()), server.model.preload && !unloaded);
+    let (shutdown, shutdown_rx) = watch::channel(false);
+    let state = Arc::new(AppState {
+        live: LiveConfig::new(cfg.config_dir.clone(), files.profiles, dictionary),
+        db,
+        registry: Registry::new(server.limits.max_active_sessions as usize),
+        engine,
+        pairings: Default::default(),
+        conns: ConnTable::default(),
+        local: LocalPolicy { users: server.local_users.clone(), own_uid },
+        shutdown: shutdown_rx.clone(),
+        server,
+    });
+
+    let app = api::router(state.clone());
+    let stopped = |mut rx: watch::Receiver<bool>| async move {
+        let _ = rx.wait_for(|stop| *stop).await;
+    };
+    let mut listeners = Vec::new();
+    let service = app.clone().into_make_service_with_connect_info::<Peer>();
+    let serve = axum::serve(unix, service).with_graceful_shutdown(stopped(shutdown_rx.clone()));
+    listeners.push(tokio::spawn(async move {
+        if let Err(err) = serve.await {
+            tracing::error!("the socket listener failed: {err}");
+        }
+    }));
+    for listener in tcp {
+        let service = app.clone().into_make_service_with_connect_info::<Peer>();
+        let serve = axum::serve(listener, service).with_graceful_shutdown(stopped(shutdown_rx.clone()));
+        listeners.push(tokio::spawn(async move {
+            if let Err(err) = serve.await {
+                tracing::error!("a TCP listener failed: {err}");
+            }
+        }));
+    }
+
+    let mut background = vec![tokio::spawn(sleep::watch_resume(state.engine.clone(), shutdown_rx.clone()))];
+    let maintenance = state.clone();
+    background.push(tokio::spawn(async move {
+        let mut sweep = tokio::time::interval(Duration::from_secs(5));
+        let mut ticks: u64 = 0;
+        loop {
+            sweep.tick().await;
+            maintenance.registry.sweep();
+            ticks += 1;
+            if ticks.is_multiple_of(720)
+                && let Err(err) = maintenance.db.prune_history(maintenance.server.history_days)
+            {
+                tracing::warn!("cannot prune history: {err:#}");
+            }
+        }
+    }));
+
+    tracing::info!(
+        "psst-server {} listening on {}{}",
+        env!("CARGO_PKG_VERSION"),
+        socket.display(),
+        tcp_addrs.iter().map(|addr| format!(" and {addr}")).collect::<String>()
+    );
+    Ok(ServerHandle { socket, tcp_addrs, owns_socket: !systemd_mode, shutdown, state, listeners, background })
 }
 
 #[derive(Debug, Parser)]
@@ -129,13 +308,16 @@ enum Command {
 #[derive(Debug, clap::Args)]
 struct Connection {
     /// The server's Unix socket.
-    #[arg(long, default_value = psst_proto::DEFAULT_SOCKET)]
+    #[arg(long, global = true, default_value = psst_proto::DEFAULT_SOCKET)]
     socket: PathBuf,
+    /// Print the server's answer as JSON.
+    #[arg(long, global = true)]
+    json: bool,
 }
 
 #[derive(Debug, Subcommand)]
 enum ModelAction {
-    /// Load the model, downloading it if missing.
+    /// Load the model, downloading it if missing, and wait until it's loaded.
     Load,
     /// Unload the model until `model load` or a reboot.
     Unload,
@@ -154,9 +336,11 @@ enum DevicesAction {
 /// The `psst-server` program.
 pub fn main() -> ExitCode {
     match Cli::parse().command {
+        Command::Serve { config_dir, state_dir, cache_dir, socket } => {
+            serve(ServeConfig { config_dir, state_dir, cache_dir, socket })
+        }
         Command::CheckConfig { dir } => check_config(&dir),
         Command::FakeEngine { script } => psst_engine_proto::fake::main(&script),
-        Command::Serve { .. } => not_implemented("serve"),
         Command::Model { .. } => not_implemented("model"),
         Command::Pair { .. } => not_implemented("pair"),
         Command::Devices { .. } => not_implemented("devices"),
@@ -168,6 +352,54 @@ pub fn main() -> ExitCode {
 fn not_implemented(command: &str) -> ExitCode {
     eprintln!("psst-server: `{command}` is not implemented yet");
     ExitCode::FAILURE
+}
+
+fn serve(cfg: ServeConfig) -> ExitCode {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,zbus=warn"));
+    tracing_subscriber::fmt().with_env_filter(filter).with_writer(std::io::stderr).init();
+    let systemd = listen::systemd_socket();
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            eprintln!("psst-server: cannot start the runtime: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    runtime.block_on(async move {
+        use tokio::signal::unix::{SignalKind, signal};
+        let (Ok(mut hangup), Ok(mut terminate), Ok(mut interrupt)) =
+            (signal(SignalKind::hangup()), signal(SignalKind::terminate()), signal(SignalKind::interrupt()))
+        else {
+            tracing::error!("cannot install signal handlers");
+            return ExitCode::FAILURE;
+        };
+        let handle = match start(cfg, systemd).await {
+            Ok(handle) => handle,
+            Err(err) => {
+                tracing::error!("{err:#}");
+                return ExitCode::FAILURE;
+            }
+        };
+        loop {
+            tokio::select! {
+                _ = hangup.recv() => {
+                    tracing::info!("SIGHUP: reloading profiles.toml and dictionary.toml");
+                    handle.reload();
+                }
+                _ = terminate.recv() => break,
+                _ = interrupt.recv() => break,
+            }
+        }
+        tracing::info!("shutting down");
+        match handle.shutdown().await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                tracing::error!("{err:#}");
+                ExitCode::FAILURE
+            }
+        }
+    })
 }
 
 fn check_config(dir: &Path) -> ExitCode {
