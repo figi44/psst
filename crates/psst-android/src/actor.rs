@@ -1057,8 +1057,11 @@ impl Actor {
             }
             return;
         };
+        // Its audio goes only to the server it was recorded for, even after the user switched to another.
+        let own = job.server == self.config.server;
         match (&job.phase, &job.live, &mut job.window) {
-            (Phase::Recording, Live::Waiting { .. }, _) if usable => self.start_live(),
+            (Phase::Recording, Live::Waiting { .. }, _) if usable && own => self.start_live(),
+            (Phase::Finishing, _, Some(_)) if job.session.is_none() && !own => self.save("the server changed"),
             (Phase::Finishing, _, Some(_)) if job.session.is_none() && usable => {
                 if job.ending.is_none() {
                     self.start_upload();
