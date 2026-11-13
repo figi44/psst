@@ -2,8 +2,15 @@
 
 use std::{io, path::Path, time::Duration};
 
+use jiff::{Span, Timestamp, Zoned};
 use psst_client::api::{ApiCallError, ApiClient, Method};
-use psst_proto::api::{ApiErrorCode, LoginLink, ModelState, ModelStatus, ProfilesView, Term, TermChange, routes};
+use psst_proto::{
+    DeviceId,
+    api::{
+        ApiErrorCode, HistoryRow, LoginLink, ModelState, ModelStatus, ProfilesView, Term, TermChange, encode_segment,
+        routes,
+    },
+};
 use psst_wayland::{MenuAction, ModelChoice};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -15,10 +22,14 @@ const FACTS_TIMEOUT: Duration = Duration::from_secs(5);
 /// Unloading waits for the engine to let go of the GPU.
 const ACTION_TIMEOUT: Duration = Duration::from_secs(15);
 const PROFILE_FILE: &str = "profile.json";
+/// As many as the history page shows.
+const HISTORY_LIMIT: usize = 10;
 
 pub enum Fact {
     Profiles(Result<Vec<String>, String>),
     Model(ModelState),
+    /// This machine's dictations that have text, newest first.
+    History(Result<Vec<HistoryRow>, String>),
 }
 
 /// What became of a choice, for the overlay: what to say, if anything.
@@ -35,9 +46,10 @@ pub fn choice(state: ModelState) -> ModelChoice {
     }
 }
 
-/// Both at once, each reported as it comes, so a slow one doesn't hold back the other.
-pub fn fetch(api: ApiClient, report: impl Fn(Fact) + Clone + Send + 'static) {
+/// All at once, each reported as it comes, so a slow one doesn't hold back the others.
+pub fn fetch(api: ApiClient, device: Option<DeviceId>, report: impl Fn(Fact) + Clone + Send + 'static) {
     let (api2, report2) = (api.clone(), report.clone());
+    let (api3, report3) = (api.clone(), report.clone());
     tokio::spawn(async move {
         let profiles = call::<ProfilesView>(&api, Method::Get, routes::PROFILES, FACTS_TIMEOUT).await;
         report(Fact::Profiles(profiles.map(|view| view.profiles.into_iter().map(|p| p.name).collect())));
@@ -47,9 +59,44 @@ pub fn fetch(api: ApiClient, report: impl Fn(Fact) + Clone + Send + 'static) {
             report2(Fact::Model(status.state));
         }
     });
+    tokio::spawn(async move {
+        let rows = match device {
+            Some(device) => history(&api3, &device).await,
+            None => Err("not connected to the server yet".into()),
+        };
+        report3(Fact::History(rows));
+    });
 }
 
-/// Every choice but switching the profile, which never leaves this machine.
+async fn history(api: &ApiClient, device: &str) -> Result<Vec<HistoryRow>, String> {
+    let path = format!("{}?limit={HISTORY_LIMIT}&device={}", routes::HISTORY, encode_segment(device));
+    let rows: Vec<HistoryRow> = call(api, Method::Get, &path, FACTS_TIMEOUT).await?;
+    // A server that predates `device` answers with every device's rows.
+    let said = |row: &HistoryRow| row.r#final.as_ref().is_some_and(|f| !f.text.trim().is_empty());
+    Ok(rows.into_iter().filter(|row| row.device == device && said(row)).take(HISTORY_LIMIT).collect())
+}
+
+/// When a dictation was said, as the history shows it: the time today, the day and time within
+/// the week, else the date.
+pub fn when(at: Timestamp, now: &Zoned) -> String {
+    let at = at.to_zoned(now.time_zone().clone());
+    let week_ago = now.date().checked_sub(Span::new().days(6)).unwrap_or(now.date());
+    if at.date() == now.date() {
+        at.strftime("%H:%M").to_string()
+    } else if (week_ago..now.date()).contains(&at.date()) {
+        at.strftime("%a %H:%M").to_string()
+    } else {
+        at.strftime("%b %-d").to_string()
+    }
+}
+
+/// A recording's length, from its samples at 16 kHz.
+pub fn length(samples: u64) -> String {
+    let seconds = samples / u64::from(psst_proto::SAMPLE_RATE);
+    format!("{}:{:02}", seconds / 60, seconds % 60)
+}
+
+/// The choices that the server carries out.
 pub async fn act(api: ApiClient, action: MenuAction) -> Done {
     match action {
         MenuAction::AddWord(word) => Done { result: add_word(&api, &word).await.map(Some), model: None },
@@ -63,7 +110,9 @@ pub async fn act(api: ApiClient, action: MenuAction) -> Done {
             .await
         }
         MenuAction::OpenWebUi => Done { result: open_web_ui(&api).await, model: None },
-        MenuAction::SwitchProfile(_) => unreachable!("switched by the daemon"),
+        MenuAction::SwitchProfile(_) | MenuAction::Paste(_) | MenuAction::Copy(_) | MenuAction::Discard(_) => {
+            unreachable!("done by the daemon")
+        }
     }
 }
 
@@ -164,4 +213,29 @@ pub fn save_profile(state_dir: &Path, configured: &str, profile: &str) -> io::Re
         };
     }
     write_json_atomic(&path, &Chosen { profile: profile.into(), instead_of: configured.into() }, 0o600)
+}
+
+#[cfg(test)]
+mod tests {
+    use jiff::tz::TimeZone;
+
+    use super::*;
+
+    #[test]
+    fn when_says_the_time_today_the_day_this_week_and_else_the_date() {
+        let now = "2026-11-10T15:30:00Z".parse::<Timestamp>().unwrap().to_zoned(TimeZone::UTC);
+        let at = |ts: &str| when(ts.parse().unwrap(), &now);
+        assert_eq!(at("2026-11-10T08:05:00Z"), "08:05");
+        assert_eq!(at("2026-11-09T23:59:00Z"), "Mon 23:59");
+        assert_eq!(at("2026-11-04T09:00:00Z"), "Wed 09:00");
+        assert_eq!(at("2026-11-03T09:00:00Z"), "Nov 3");
+        assert_eq!(at("2026-11-11T09:00:00Z"), "Nov 11", "a clock ahead of this one");
+    }
+
+    #[test]
+    fn length_counts_minutes_and_seconds() {
+        assert_eq!(length(0), "0:00");
+        assert_eq!(length(34 * 16_000 + 15_999), "0:34");
+        assert_eq!(length(61 * 16_000), "1:01");
+    }
 }

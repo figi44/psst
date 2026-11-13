@@ -12,6 +12,7 @@ publish.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+jiff = "0.2.39"
 jni = "0.22.4"
 psst-client = { version = "0.1.0", path = "../psst-client" }
 psst-proto = { version = "0.1.0", path = "../psst-proto" }

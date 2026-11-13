@@ -2,15 +2,18 @@
 //! report back as [`Internal`] messages, so nothing here waits on the network.
 
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     path::PathBuf,
     sync::{Arc, mpsc as std_mpsc},
     time::Duration,
 };
 
+use jiff::Timestamp;
 use psst_client::{
     AudioCodec, AudioFrame, Client, FRAME_BUFFER, FrameSender, OpusSettings, Session, SessionEvent, StartOpts,
-    TrySendError,
+    TrySendError, WavWriter,
+    store::{Meta, RecState, Retained, Store},
+    upload_file,
 };
 use psst_proto::{
     ClientTimings, Endpoint, ErrorCode, FRAME_SAMPLES, HistoryId, SAMPLE_RATE, SessionId, Token,
@@ -20,10 +23,10 @@ use tokio::{
     sync::mpsc,
     time::{Instant, sleep_until, timeout},
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
-    Command, Dictation, Event, HistoryItem, Link, State, Timing,
+    Command, Dictation, Event, HistoryItem, Link, SavedDictation, State, Timing,
     config::Config,
     connect::{self, Failure, Learned},
     history,
@@ -76,6 +79,18 @@ pub(crate) async fn run(
 ) {
     let (tx, mut internal) = mpsc::unbounded_channel();
     let config = Config::load(&data_dir);
+    let store = match Store::open(&data_dir) {
+        Ok(store) => store,
+        Err(err) => return error!("cannot keep recordings in {}: {err}", data_dir.display()),
+    };
+    match store.recover("") {
+        Ok(recovery) => {
+            for id in recovery.interrupted.iter().chain(&recovery.adopted) {
+                info!("recording {id} was cut short; kept as incomplete");
+            }
+        }
+        Err(err) => warn!("cannot recover the recordings: {err}"),
+    }
     let mut actor = Actor {
         endpoint: parse(config.server.as_deref()),
         config,
@@ -96,6 +111,11 @@ pub(crate) async fn run(
         attempts: 0,
         seq: 0,
         job: None,
+        store,
+        catch_up: None,
+        tried: HashSet::new(),
+        nothing_to_send: None,
+        saved: None,
         awaiting_insert: VecDeque::new(),
         published: None,
     };
@@ -199,12 +219,11 @@ fn spawn_session(seq: u64, mut session: Session, upload: bool, tx: mpsc::Unbound
     SessionCtl { seq, frames, ctl: ctl_tx, upload }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
     Recording,
     /// Stopped; waiting for the final.
     Finishing,
-    Failed(String),
 }
 
 enum Live {
@@ -217,8 +236,8 @@ enum Live {
     Off,
 }
 
-/// The time after `stop` (or `retry`) in which the core keeps trying to re-deliver. A session in
-/// progress isn't cut short by its end.
+/// The time after `stop` in which the core keeps trying to re-deliver, before it saves the
+/// dictation. A session in progress isn't cut short by its end.
 struct Window {
     end: Instant,
     next_attempt: Instant,
@@ -229,8 +248,12 @@ struct Window {
 
 struct Job {
     id: SessionId,
-    /// Kept whole until the final, a cancel or a discard. Shared with an upload while it runs.
+    started_at: Timestamp,
+    /// Kept whole until the final or a cancel. Shared with an upload while it runs.
     audio: Arc<Vec<i16>>,
+    /// The audio on disk too: Android kills an app's process at will, and a saved dictation must
+    /// outlive it. `None` once it can't be written.
+    wav: Option<WavWriter>,
     limit: u64,
     phase: Phase,
     live: Live,
@@ -295,11 +318,17 @@ impl Job {
         });
     }
 
-    fn fail(&mut self, message: String) {
-        warn!("{} failed: {message}", self.id);
-        self.end_session();
-        self.window = None;
-        self.phase = Phase::Failed(message);
+    fn meta(&self, state: RecState) -> Meta {
+        Meta {
+            // The server's default, as live sessions get.
+            profile: String::new(),
+            started_at: self.started_at,
+            samples: self.audio.len() as u64,
+            gapped: false,
+            state,
+            final_text: None,
+            finalized_at: None,
+        }
     }
 
     fn state(&self, now: Instant) -> (Dictation, Option<String>, Option<u32>) {
@@ -315,7 +344,6 @@ impl Job {
                     (left <= LIMIT_WARNING_S * SAMPLES_PER_S).then(|| left.div_ceil(SAMPLES_PER_S) as u32);
                 (Dictation::Recording, offline.then(|| OFFLINE_RECORDING.into()), seconds_left)
             }
-            Phase::Failed(message) => (Dictation::Failed, Some(message.clone()), None),
             Phase::Finishing => {
                 let dictation = match (&self.session, &self.window) {
                     (None, Some(window)) if window.unreachable => Dictation::WaitingForServer,
@@ -334,6 +362,18 @@ impl Job {
             }
         }
     }
+}
+
+/// The store's revision and the dictation in progress, which `saved` leaves out.
+type Listed = (u64, Option<SessionId>);
+
+/// A saved dictation on its way to the server in the background. Its text waits in `saved` for the
+/// app, never comes as a final: the field it was meant for is long gone.
+struct CatchUp {
+    id: SessionId,
+    session: SessionCtl,
+    /// Cancelled to make way for a dictation; it goes again once that one is done.
+    yielded: bool,
 }
 
 /// What the `report` for a final needs once the app says it inserted the text.
@@ -372,6 +412,15 @@ struct Actor {
 
     /// One dictation at a time: `start` waits for `idle`.
     job: Option<Job>,
+    store: Store,
+    catch_up: Option<CatchUp>,
+    /// Saved dictations that failed on this connection: sent again on the next, or when the app
+    /// asks for the history.
+    tried: HashSet<SessionId>,
+    /// The store's revision when it had nothing left to send.
+    nothing_to_send: Option<u64>,
+    /// `saved` for the state, as of when it was listed.
+    saved: Option<(Listed, Vec<SavedDictation>)>,
     awaiting_insert: VecDeque<Delivered>,
     published: Option<State>,
 }
@@ -404,14 +453,13 @@ impl Actor {
             Command::Start => self.start(),
             Command::Stop => self.stop(),
             Command::Cancel => self.cancel(),
-            Command::Retry => self.retry(),
-            Command::Discard => {
-                if let Some(job) = self.job.take_if(|job| matches!(job.phase, Phase::Failed(_))) {
-                    info!("discarded {}", job.id);
-                }
-            }
+            Command::Discard { session_id } => self.discard(session_id),
             Command::Inserted { session_id } => self.inserted(session_id),
-            Command::History => self.history(),
+            Command::History => {
+                // Looking at the history is a good moment to send what's saved, failed before or not.
+                self.forget_tried();
+                self.history();
+            }
         }
     }
 
@@ -587,6 +635,7 @@ impl Actor {
         });
         self.client = Some(client);
         self.connected_at = Instant::now();
+        self.forget_tried();
     }
 
     fn attempt_failed(&mut self, failure: &Failure) {
@@ -597,7 +646,7 @@ impl Actor {
                 window.unreachable = true;
                 // Trying again can't help until the user pairs the phone or updates a side.
                 if failure.link != Link::Offline {
-                    job.fail(undeliverable(Some(failure.link)));
+                    self.save(&failure.message);
                 }
             }
             _ => {}
@@ -627,9 +676,18 @@ impl Actor {
         }
         let id = SessionId::new_v4();
         let now = Instant::now();
+        let started_at = Timestamp::now();
+        if let Some(catch_up) = self.catch_up.as_mut().filter(|c| !c.yielded) {
+            info!("{}: making way for a dictation", catch_up.id);
+            let _ = catch_up.session.ctl.send(Ctl::Cancel);
+            catch_up.yielded = true;
+        }
+        let wav = self.begin_recording(id, started_at);
         self.job = Some(Job {
             id,
+            started_at,
             audio: Arc::default(),
+            wav,
             limit: limit(self.max_recording_s),
             phase: Phase::Recording,
             live: Live::Waiting { offline_at: now + self.check_budget(self.t.start_budget), offline: false },
@@ -646,11 +704,36 @@ impl Actor {
         self.warm();
     }
 
+    fn begin_recording(&self, id: SessionId, started_at: Timestamp) -> Option<WavWriter> {
+        let meta = Meta {
+            profile: String::new(),
+            started_at,
+            samples: 0,
+            gapped: false,
+            state: RecState::Recording,
+            final_text: None,
+            finalized_at: None,
+        };
+        let made = self.store.write_meta(id, &meta).and_then(|()| WavWriter::create(&self.store.wav_path(id)));
+        made.inspect_err(|err| {
+            warn!("cannot keep {id} on the phone: {err}");
+            let _ = self.store.delete(id);
+        })
+        .ok()
+    }
+
     fn on_audio(&mut self, samples: &[i16]) {
         let Some(job) = self.job.as_mut().filter(|job| job.phase == Phase::Recording) else { return };
         job.t_first_audio.get_or_insert_with(Instant::now);
         let room = job.limit.saturating_sub(job.audio.len() as u64) as usize;
-        Arc::make_mut(&mut job.audio).extend_from_slice(&samples[..samples.len().min(room)]);
+        let samples = &samples[..samples.len().min(room)];
+        Arc::make_mut(&mut job.audio).extend_from_slice(samples);
+        if let Some(wav) = &mut job.wav
+            && let Err(err) = wav.write(samples)
+        {
+            warn!("cannot keep {} on the phone: {err}", job.id);
+            job.wav = None;
+        }
         let streamed = job.stream(false);
         let full = job.audio.len() as u64 >= job.limit;
         if let Err((reason, congested)) = streamed {
@@ -671,6 +754,12 @@ impl Actor {
         info!("stopped {} after {} ms", job.id, samples * 1000 / SAMPLES_PER_S);
         job.t_stop = Some(Instant::now());
         job.phase = Phase::Finishing;
+        if let Some(mut wav) = job.wav.take() {
+            let kept = wav.finish().and_then(|()| self.store.write_meta(job.id, &job.meta(RecState::Complete)));
+            if let Err(err) = kept {
+                warn!("cannot keep {} on the phone: {err}", job.id);
+            }
+        }
         if matches!(job.live, Live::Streaming { .. }) {
             match job.stream(true) {
                 Ok(()) => {
@@ -690,6 +779,7 @@ impl Actor {
         if samples == 0 {
             let id = job.id;
             self.job = None;
+            self.forget(id);
             info!("{id}: nothing recorded");
             let _ = self.events.send(Event::Final { session_id: id, text: String::new() });
             return;
@@ -700,21 +790,114 @@ impl Actor {
     fn cancel(&mut self) {
         if let Some(mut job) = self.job.take() {
             job.end_session();
+            self.forget(job.id);
             info!("cancelled {}", job.id);
         }
     }
 
-    fn retry(&mut self) {
-        let Some(job) = self.job.as_mut().filter(|job| matches!(job.phase, Phase::Failed(_))) else { return };
-        info!("retrying {}", job.id);
-        // A retry has no toggle or first frame to time.
-        job.t_start = None;
-        job.t_first_audio = None;
-        job.t_stop = Some(Instant::now());
-        job.redeliver(&self.t);
+    /// The server couldn't take it in time: it waits on the phone and goes in the background, but
+    /// not again on this connection, where it just failed.
+    fn save(&mut self, why: &str) {
+        let Some(mut job) = self.job.take() else { return };
+        warn!("{} saved: {why}", job.id);
+        job.end_session();
+        self.tried.insert(job.id);
+        self.nothing_to_send = None;
+        let _ = self.events.send(Event::Saved { session_id: job.id });
+    }
+
+    fn discard(&mut self, id: SessionId) {
+        if self.job.as_ref().is_some_and(|job| job.id == id) {
+            return debug!("discard ignored: {id} is the dictation in progress");
+        }
+        if let Some(catch_up) = self.catch_up.take_if(|c| c.id == id) {
+            let _ = catch_up.session.ctl.send(Ctl::Cancel);
+        }
+        self.forget(id);
+        info!("discarded {id}");
+    }
+
+    fn forget(&self, id: SessionId) {
+        if let Err(err) = self.store.delete(id) {
+            warn!("cannot delete {id}: {err}");
+        }
+    }
+
+    fn forget_tried(&mut self) {
+        self.tried.clear();
+        self.nothing_to_send = None;
+    }
+
+    /// Oldest first.
+    fn next_to_send(&mut self) -> Option<Retained> {
+        let revision = self.store.revision();
+        if self.nothing_to_send == Some(revision) {
+            return None;
+        }
+        let next = self.store.list().into_iter().find(|r| {
+            matches!(r.meta.state, RecState::Complete | RecState::Incomplete)
+                && r.meta.samples > 0
+                && !self.tried.contains(&r.id)
+                && self.catch_up.as_ref().is_none_or(|c| c.id != r.id)
+        });
+        if next.is_none() {
+            self.nothing_to_send = Some(revision);
+        }
+        next
+    }
+
+    fn start_catch_up(&mut self, rec: Retained) {
+        let Some(client) = &mut self.client else { return };
+        self.seq += 1;
+        let opts = StartOpts {
+            session_id: rec.id,
+            profile: Some(rec.meta.profile).filter(|profile| !profile.is_empty()),
+            mode: Mode::Upload,
+            resume: true,
+            eval: None,
+            codec: codec(),
+        };
+        let session = upload_file(client, opts, &self.store.wav_path(rec.id));
+        let session = spawn_session(self.seq, session, true, self.tx.clone());
+        self.catch_up = Some(CatchUp { id: rec.id, session, yielded: false });
+        info!("sending {} in the background", rec.id);
+    }
+
+    fn caught_up(&mut self, event: SessionEvent) {
+        let catch_up = self.catch_up.take().expect("checked by the caller");
+        let id = catch_up.id;
+        self.nothing_to_send = None;
+        let text = match event {
+            SessionEvent::Final(msg) => msg.r#final.text,
+            SessionEvent::Cancelled if catch_up.yielded => return,
+            other => {
+                warn!("{id} failed in the background: {other:?}");
+                self.tried.insert(id);
+                return;
+            }
+        };
+        if text.trim().is_empty() {
+            info!("{id}: nothing heard");
+            return self.forget(id);
+        }
+        info!("{id} transcribed in the background");
+        let saved = self.store.read_meta(id).and_then(|mut meta| {
+            meta.state = RecState::Transcribed;
+            meta.final_text = Some(text);
+            self.store.write_meta(id, &meta)
+        });
+        if let Err(err) = saved {
+            warn!("cannot save the text of {id}: {err}");
+        }
     }
 
     fn on_session(&mut self, seq: u64, event: SessionEvent) {
+        if self.catch_up.as_ref().is_some_and(|c| c.session.seq == seq) {
+            if event.is_terminal() {
+                self.caught_up(event);
+            }
+            return;
+        }
         let Some(job) = &mut self.job else { return };
         if job.ending == Some(seq) {
             if event.is_terminal() {
@@ -764,15 +947,13 @@ impl Actor {
                 info!("{}: the server got different audio ({}); re-delivering it", job.id, err.message);
                 job.redeliver(&self.t);
             }
-            SessionEvent::Rejected(err) | SessionEvent::Error(err) => {
-                let reason = connect::sentence(&err.message);
-                job.fail(format!("The server could not transcribe it ({reason}): retry, or discard the recording."));
-            }
+            SessionEvent::Rejected(err) | SessionEvent::Error(err) => self.save(&err.message),
         }
     }
 
     fn deliver(&mut self, msg: Box<FinalMsg>) {
         let Some(job) = self.job.take() else { return };
+        self.forget(job.id);
         let text = if msg.r#final.text.trim().is_empty() { String::new() } else { msg.r#final.text };
         info!("final for {}: {} characters", job.id, text.chars().count());
         let empty = text.is_empty();
@@ -797,6 +978,10 @@ impl Actor {
     }
 
     fn inserted(&mut self, id: SessionId) {
+        if self.store.read_meta(id).is_ok_and(|meta| meta.state == RecState::Transcribed) {
+            info!("inserted saved {id}");
+            return self.forget(id);
+        }
         let Some(pos) = self.awaiting_insert.iter().position(|d| d.id == id) else {
             debug!("inserted {id}, which has no final waiting");
             return;
@@ -856,7 +1041,15 @@ impl Actor {
         }
         let now = Instant::now();
         let usable = self.attempt.is_none() && self.client.is_some();
-        let Some(job) = &mut self.job else { return };
+        let Some(job) = &mut self.job else {
+            if usable
+                && self.catch_up.is_none()
+                && let Some(rec) = self.next_to_send()
+            {
+                self.start_catch_up(rec);
+            }
+            return;
+        };
         match (&job.phase, &job.live, &mut job.window) {
             (Phase::Recording, Live::Waiting { .. }, _) if usable => self.start_live(),
             (Phase::Finishing, _, Some(_)) if job.session.is_none() && usable => {
@@ -866,8 +1059,7 @@ impl Actor {
             }
             (Phase::Finishing, _, Some(window)) if job.session.is_none() && self.attempt.is_none() => {
                 if now >= window.end {
-                    let link = self.failure.as_ref().map(|failure| failure.link);
-                    job.fail(undeliverable(link));
+                    self.save("could not reach the server");
                 } else if now >= window.next_attempt {
                     let budget = self.t.attempt_budget.min(window.end - now).max(Duration::from_millis(50));
                     window.next_attempt = now + window.backoff;
@@ -959,12 +1151,37 @@ impl Actor {
         }
     }
 
+    /// Newest first, without the dictation in progress.
+    fn saved_list(&mut self) -> Vec<SavedDictation> {
+        let key = (self.store.revision(), self.job.as_ref().map(|job| job.id));
+        if let Some((cached, list)) = &self.saved
+            && *cached == key
+        {
+            return list.clone();
+        }
+        let list: Vec<SavedDictation> = (self.store.list().into_iter().rev())
+            .filter(|r| Some(r.id) != key.1 && r.meta.state != RecState::Recording)
+            .map(|r| SavedDictation {
+                session_id: r.id,
+                created_ms: r.meta.started_at.as_millisecond(),
+                duration_ms: r.meta.samples * 1000 / SAMPLES_PER_S,
+                text: match r.meta.state {
+                    RecState::Transcribed => Some(r.meta.final_text.unwrap_or_default().trim().to_string()),
+                    _ => None,
+                },
+            })
+            .collect();
+        self.saved = Some((key, list.clone()));
+        list
+    }
+
     fn publish(&mut self) {
         let (link, link_message) = self.link();
         let (dictation, dictation_message, seconds_left) = match &self.job {
             Some(job) => job.state(Instant::now()),
             None => (Dictation::Idle, None, None),
         };
+        let saved = self.saved_list();
         let state = State {
             server: self.config.server.clone(),
             server_version: self.server_version.clone(),
@@ -973,20 +1190,11 @@ impl Actor {
             dictation,
             dictation_message,
             seconds_left,
+            saved,
         };
         if self.published.as_ref() != Some(&state) {
             self.published = Some(state.clone());
             let _ = self.events.send(Event::State { state });
         }
     }
-}
-
-fn undeliverable(link: Option<Link>) -> String {
-    match link {
-        Some(Link::NeedsPairing) => "The server no longer accepts this phone: pair it again, then retry.",
-        Some(Link::UpdateApp) => "The server needs a newer app: update psst, then retry.",
-        Some(Link::UpdateServer) => "The server is too old for this app: update it, then retry.",
-        _ => "Could not reach the server: retry, or discard the recording.",
-    }
-    .into()
 }

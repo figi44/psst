@@ -9,9 +9,10 @@ pub mod niri;
 pub mod pair;
 pub mod server_api;
 mod sound;
-pub mod store;
 pub mod ui;
 pub mod web_ui;
+
+pub use psst_client::store;
 
 use std::{env, path::PathBuf, process::ExitCode, sync::Arc};
 
@@ -78,8 +79,9 @@ enum Command {
     Pair { server: Endpoint, code: String },
     /// Change the server's dictionary: add, remove or reset terms, never rules, and tests.
     Dict(dict::DictArgs),
-    /// Open the quick menu, or close it: switch profiles, add a word to the dictionary, unload the
-    /// model, open the web UI. Double-tapping `toggle` opens it too.
+    /// Open the quick menu, or close it: paste from the history, where dictations the server
+    /// couldn't take in time wait, switch profiles, add a word to the dictionary, unload the model,
+    /// open the web UI. Double-tapping `toggle` opens it too.
     Menu,
     /// Open the server's web UI in the browser, logged in with a one-time link.
     Ui {

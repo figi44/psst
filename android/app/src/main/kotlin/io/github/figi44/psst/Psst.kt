@@ -27,7 +27,6 @@ enum class Dictation {
     LOADING_MODEL,
     SENDING,
     WAITING_FOR_SERVER,
-    FAILED,
 }
 
 data class State(
@@ -38,12 +37,17 @@ data class State(
     val dictation: Dictation,
     val dictationMessage: String?,
     val secondsLeft: Int?,
+    /** Newest first. */
+    val saved: List<SavedDictation>,
 )
+
+/** A dictation the server couldn't take in time, kept on the phone until inserted or discarded. */
+data class SavedDictation(val sessionId: String, val createdMs: Long, val durationMs: Long, val text: String?)
 
 /** Text for a field: one dictation's, or several joined when none could be inserted in between. */
 class Final internal constructor(val text: String, internal val sessionIds: List<String>)
 
-class HistoryItem(val text: String, val createdMs: Long)
+class HistoryItem(val sessionId: String, val text: String, val createdMs: Long)
 
 /** This device's earlier dictations as the server has them, newest first, or [error]: why it couldn't say. */
 class History(val items: List<HistoryItem>, val error: String?)
@@ -60,7 +64,7 @@ object Psst {
     private var started = false
 
     /** `connecting` until the core's first event, which comes right after it starts. */
-    var state = State(null, null, Link.CONNECTING, null, Dictation.IDLE, null, null)
+    var state = State(null, null, Link.CONNECTING, null, Dictation.IDLE, null, null, emptyList())
         private set
 
     /**
@@ -74,6 +78,9 @@ object Psst {
 
     /** Gets the answer to each [history]. */
     var historyListener: ((History) -> Unit)? = null
+
+    /** Told when a dictation is saved instead of delivered: it then waits in [State.saved]. */
+    var savedListener: (() -> Unit)? = null
 
     fun start(context: Context) {
         if (started) return
@@ -113,14 +120,15 @@ object Psst {
 
     fun cancelDictation() = send("cancel")
 
-    fun retryDictation() = send("retry")
-
-    fun discardDictation() = send("discard")
+    fun discard(saved: SavedDictation) = send("discard") { put("session_id", saved.sessionId) }
 
     /** [final]'s text is in a field. */
     fun inserted(final: Final) {
         for (id in final.sessionIds) send("inserted") { put("session_id", id) }
     }
+
+    /** [saved]'s text is in a field: the phone can let go of it. */
+    fun inserted(saved: SavedDictation) = send("inserted") { put("session_id", saved.sessionId) }
 
     fun history() = send("history")
 
@@ -139,12 +147,13 @@ object Psst {
                     val final = Final(event.getString("text"), listOf(event.getString("session_id")))
                     main.post { deliver(final) }
                 }
+                "saved" -> main.post { savedListener?.invoke() }
                 "history" -> {
                     val items = event.getJSONArray("items")
                     val history = History(
                         List(items.length()) {
                             val item = items.getJSONObject(it)
-                            HistoryItem(item.getString("text"), item.getLong("created_ms"))
+                            HistoryItem(item.getString("session_id"), item.getString("text"), item.getLong("created_ms"))
                         },
                         event.stringOrNull("error"),
                     )
@@ -165,6 +174,17 @@ object Psst {
         dictation = state.enum("dictation"),
         dictationMessage = state.stringOrNull("dictation_message"),
         secondsLeft = if (state.isNull("seconds_left")) null else state.getInt("seconds_left"),
+        saved = state.getJSONArray("saved").let { saved ->
+            List(saved.length()) {
+                val item = saved.getJSONObject(it)
+                SavedDictation(
+                    item.getString("session_id"),
+                    item.getLong("created_ms"),
+                    item.getLong("duration_ms"),
+                    item.stringOrNull("text"),
+                )
+            }
+        },
     )
 
     private fun update(new: State) {

@@ -9,7 +9,7 @@ use cosmic_text::{
 };
 use tiny_skia::{FillRule, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, Stroke, Transform};
 
-use crate::menu::{Line, Mark, Menu, PAD, ROW};
+use crate::menu::{Ink, Lead, Line, Mark, Menu, PAD, ROW};
 use crate::{OverlayState, Rgba, Style, Wave, physical_size};
 
 /// Inter 4.1 Medium, SIL Open Font License 1.1 (`fonts/Inter-LICENSE.txt`).
@@ -237,7 +237,23 @@ impl Frame<'_> {
                     {
                         self.fill(&p, fg.faded(0.10));
                     }
-                    let color = if item.enabled() { fg } else { fg.faded(0.4) };
+                    let color = match item.ink {
+                        _ if !item.enabled() => fg.faded(0.4),
+                        Ink::Normal => fg,
+                        Ink::Quiet => muted,
+                        Ink::Alert => self.style.accent,
+                    };
+                    let lead_x = x0 + 14.0;
+                    match item.lead {
+                        Lead::Dot => self.circle((lead_x, cy), 3.5, self.style.accent),
+                        Lead::Ring => {
+                            if let Some(ring) = PathBuilder::from_circle(lead_x, cy, 3.0) {
+                                self.stroke(&ring, muted, 1.4);
+                            }
+                        }
+                        Lead::None | Lead::Space => {}
+                    }
+                    let text_x = if item.lead == Lead::None { text_x } else { text_x + 14.0 };
                     let mut right = x1 - 12.0;
                     match item.mark {
                         Mark::Chevron => {

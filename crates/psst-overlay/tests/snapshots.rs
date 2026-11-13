@@ -3,7 +3,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use psst_overlay::{Key, Listing, Menu, MenuSpec, ModelChoice, OverlayState, Pixmap, Renderer, Style, Wave};
+use psst_overlay::{
+    HistoryEntry, Key, Listing, Menu, MenuSpec, ModelChoice, OverlayState, Pixmap, Renderer, Style, Wave,
+};
 use tiny_skia::{Color, PixmapPaint, Transform};
 
 const WIDTH: u32 = 240;
@@ -47,29 +49,62 @@ fn cases() -> Vec<(&'static str, OverlayState, Wave)> {
 }
 
 fn menu(model: Option<ModelChoice>, profiles: Listing, keys: &[Key]) -> Menu {
-    let mut menu = Menu::new(MenuSpec { profile: "en".into(), profiles, model });
+    let spec = MenuSpec { profile: "en".into(), profiles, model, saved: vec![], history: Listing::Loading };
+    keyed(spec, keys)
+}
+
+fn keyed(spec: MenuSpec, keys: &[Key]) -> Menu {
+    let mut menu = Menu::new(spec);
     for key in keys {
         menu.key(key.clone());
     }
     menu
 }
 
+fn entry(key: &str, when: &str, text: Option<&str>) -> HistoryEntry {
+    HistoryEntry { key: key.into(), when: when.into(), text: text.map(String::from) }
+}
+
+fn history(keys: &[Key]) -> Menu {
+    let saved = vec![
+        entry("a", "14:02", Some("Hi Jan, I looked at the logs and the deploy failed because of the cache")),
+        entry("b", "13:30 \u{b7} 0:34", None),
+    ];
+    let past =
+        vec![entry("c", "15:10", Some("Sounds good, see you at ten.")), entry("d", "Mon 9:12", Some("Ship it."))];
+    let profiles = Listing::Ready(["en"].map(String::from).to_vec());
+    let spec = MenuSpec {
+        profile: "en".into(),
+        profiles,
+        model: Some(ModelChoice::Unload),
+        saved,
+        history: Listing::Ready(past),
+    };
+    keyed(spec, keys)
+}
+
 fn menu_cases() -> Vec<(&'static str, Menu)> {
     let ready = Listing::Ready(["cs", "en", "work"].map(String::from).to_vec());
-    let typed = |text: &str| [Key::Text("2".into()), Key::Text(text.into())];
+    let typed = |text: &str| [Key::Text("3".into()), Key::Text(text.into())];
     vec![
         ("menu", menu(Some(ModelChoice::Unload), ready.clone(), &[])),
         ("menu-checking-model", menu(None, Listing::Loading, &[Key::Down])),
-        ("menu-profiles", menu(Some(ModelChoice::Load), ready, &[Key::Enter, Key::Up])),
-        ("menu-profiles-loading", menu(None, Listing::Loading, &[Key::Enter])),
-        ("menu-profiles-failed", menu(None, Listing::Failed("cannot reach the server".into()), &[Key::Enter])),
-        ("menu-add-word", menu(None, Listing::Loading, &[Key::Text("2".into())])),
+        ("menu-profiles", menu(Some(ModelChoice::Load), ready, &[Key::Text("2".into()), Key::Up])),
+        ("menu-profiles-loading", menu(None, Listing::Loading, &[Key::Text("2".into())])),
+        (
+            "menu-profiles-failed",
+            menu(None, Listing::Failed("cannot reach the server".into()), &[Key::Text("2".into())]),
+        ),
+        ("menu-add-word", menu(None, Listing::Loading, &[Key::Text("3".into())])),
         ("menu-add-word-typed", menu(None, Listing::Loading, &typed("Kubernetes"))),
         ("menu-add-word-long", menu(None, Listing::Loading, &typed("Pneumonoultramicroscopicsilicovolcanoconiosis"))),
+        ("menu-with-saved", history(&[])),
+        ("menu-history", history(&[Key::Enter])),
+        ("menu-history-discarding", history(&[Key::Enter, Key::Down, Key::Delete])),
     ]
 }
 
-const FRACTIONAL: [&str; 4] = ["recording", "processing", "error-long", "menu-add-word-long"];
+const FRACTIONAL: [&str; 5] = ["recording", "processing", "error-long", "menu-add-word-long", "menu-history"];
 
 fn scales(name: &str) -> Vec<f64> {
     if FRACTIONAL.contains(&name) { vec![1.0, 1.25, 2.0] } else { vec![1.0, 2.0] }

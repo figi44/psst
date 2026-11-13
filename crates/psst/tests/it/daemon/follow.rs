@@ -172,7 +172,7 @@ async fn the_bar_shows_an_offline_recording_the_error_and_then_the_saved_count()
     let offline = lines.iter().find(|l| l["alt"] == "offline").unwrap();
     assert_eq!(offline["class"], serde_json::json!(["recording", "offline"]));
     let error = lines.iter().find(|l| l["alt"] == "error").unwrap();
-    assert!(error["tooltip"].as_str().unwrap().contains("psst retry"), "{error}");
+    assert!(error["tooltip"].as_str().unwrap().contains("saved to History"), "{error}");
     let last = lines.last().unwrap();
     assert_eq!(last["class"], serde_json::json!(["idle", "saved"]));
     assert!(last["tooltip"].as_str().unwrap().contains("1 saved recording:"), "{last}");

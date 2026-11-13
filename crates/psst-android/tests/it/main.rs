@@ -7,7 +7,7 @@ mod link;
 use std::{
     io::{self, Read, Write},
     net::{Shutdown, SocketAddr, TcpListener, TcpStream},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -16,7 +16,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use psst_android::{Command, Core, Dictation, Event, HistoryItem, Link, SessionId, State, Timing};
+use psst_android::{Command, Core, Dictation, Event, HistoryItem, Link, SavedDictation, SessionId, State, Timing};
 use psst_proto::FRAME_SAMPLES;
 use psst_testkit::fake_server::{FakeServer, FakeServerConfig};
 use tempfile::TempDir;
@@ -47,6 +47,7 @@ fn address(server: &FakeServer) -> String {
 struct Phone {
     core: Core,
     events: Vec<Event>,
+    path: PathBuf,
     _dir: Option<TempDir>,
 }
 
@@ -59,7 +60,12 @@ impl Phone {
     }
 
     fn at(dir: &Path) -> Phone {
-        Phone { core: Core::with_timing(dir, "Test phone", timing()), events: Vec::new(), _dir: None }
+        Phone { core: Core::with_timing(dir, "Test phone", timing()), events: Vec::new(), path: dir.into(), _dir: None }
+    }
+
+    /// The core's data directory.
+    fn dir(&self) -> &Path {
+        &self.path
     }
 
     fn online(server: &str) -> Phone {
@@ -109,6 +115,29 @@ impl Phone {
         self.until_state(&format!("{link:?}"), |state| state.link == link)
     }
 
+    /// As the keyboard opening does, until a server that's coming back answers.
+    fn warm_until_online(&mut self) {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let link = self.events.iter().rev().find_map(|event| match event {
+                Event::State { state } => Some(state.link),
+                _ => None,
+            });
+            match link {
+                Some(Link::Online) => return,
+                None | Some(Link::Connecting) => {
+                    self.until_state("an answer", |state| state.link != Link::Connecting);
+                }
+                Some(_) => {
+                    thread::sleep(Duration::from_millis(20));
+                    self.send(Command::Warm);
+                    self.until_link(Link::Connecting);
+                }
+            }
+            assert!(Instant::now() < deadline, "the server never answered");
+        }
+    }
+
     fn until_dictation(&mut self, dictation: Dictation) -> State {
         self.until_state(&format!("{dictation:?}"), |state| state.dictation == dictation)
     }
@@ -119,6 +148,18 @@ impl Phone {
             Some(Event::Final { session_id, text }) => (*session_id, text.clone()),
             _ => unreachable!("`until` returns the event that passed"),
         }
+    }
+
+    fn until_saved(&mut self) -> SessionId {
+        let events = self.until("saved", |event| matches!(event, Event::Saved { .. }));
+        match events.last() {
+            Some(Event::Saved { session_id }) => *session_id,
+            _ => unreachable!("`until` returns the event that passed"),
+        }
+    }
+
+    fn until_saved_list(&mut self, what: &str, check: impl Fn(&[SavedDictation]) -> bool) -> Vec<SavedDictation> {
+        self.until_state(what, |state| check(&state.saved)).saved
     }
 
     fn until_history(&mut self) -> (Vec<HistoryItem>, Option<String>) {

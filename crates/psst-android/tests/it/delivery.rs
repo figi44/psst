@@ -50,7 +50,7 @@ fn a_connection_lost_while_transcribing_still_delivers_the_text() {
 }
 
 #[test]
-fn an_unreachable_server_fails_the_dictation_and_retry_delivers_it_once_it_is_back() {
+fn an_unreachable_server_saves_the_dictation_and_its_text_waits_once_the_server_is_back() {
     let server = tcp_server(FakeServerConfig::default());
     server.push_outcome(Outcome::Final("Kept for later.".into()));
     let mut phone = Phone::online(&address(&server));
@@ -60,26 +60,29 @@ fn an_unreachable_server_fails_the_dictation_and_retry_delivers_it_once_it_is_ba
 
     phone.send(Command::Start);
     phone.speak(&audio);
-    let recording = phone.until_state("recording offline", |s| s.dictation_message.is_some());
+    phone.until_state("recording offline", |s| s.dictation_message.is_some());
     phone.send(Command::Stop);
-    let failed = phone.until_dictation(Dictation::Failed);
+    let id = phone.until_saved();
+    let waiting = phone.until_state("idle with it saved", |s| s.dictation == Dictation::Idle);
     server.set_listening(true);
-    phone.send(Command::Retry);
-    let (id, text) = phone.until_final();
+    phone.warm_until_online();
+    let transcribed = phone.until_saved_list("its text", |saved| saved.first().is_some_and(|d| d.text.is_some()));
+    phone.send(Command::Inserted { session_id: id });
+    phone.until_saved_list("it gone once inserted", <[_]>::is_empty);
 
-    assert_eq!(recording.dictation, Dictation::Recording);
-    assert!(failed.dictation_message.is_some(), "{failed:?}");
-    assert_eq!(text, "Kept for later.");
+    assert_eq!(waiting.saved.len(), 1);
+    assert_eq!((waiting.saved[0].session_id, waiting.saved[0].duration_ms, &waiting.saved[0].text), (id, 1_500, &None));
+    assert_eq!((transcribed[0].session_id, transcribed[0].text.as_deref()), (id, Some("Kept for later.")));
+    assert!(phone.finals().is_empty(), "never delivered as a final: its field is long gone");
     let shown = phone.dictations();
-    let failing = shown.iter().position(|d| *d == Dictation::WaitingForServer).expect("waiting for the server");
-    assert_eq!(shown[failing + 1], Dictation::Failed, "{shown:?}");
+    assert_eq!(shown[shown.len() - 2..], [Dictation::WaitingForServer, Dictation::Idle], "{shown:?}");
     let seen = server.session(id).unwrap();
     assert_eq!(seen.starts.len(), 1);
     assert_eq!(seen.audio, padded(&audio));
 }
 
 #[test]
-fn a_failed_dictation_can_be_discarded() {
+fn a_saved_dictation_can_be_discarded() {
     let server = tcp_server(FakeServerConfig::default());
     let mut phone = Phone::online(&address(&server));
     server.set_listening(false);
@@ -88,11 +91,78 @@ fn a_failed_dictation_can_be_discarded() {
     phone.send(Command::Start);
     phone.speak(&test_audio(500));
     phone.send(Command::Stop);
-    phone.until_dictation(Dictation::Failed);
-    phone.send(Command::Discard);
-    let idle = phone.until_dictation(Dictation::Idle);
+    let id = phone.until_saved();
+    phone.until_saved_list("it saved", |saved| saved.len() == 1);
+    phone.send(Command::Discard { session_id: id });
+    phone.until_saved_list("it gone", <[_]>::is_empty);
 
-    assert_eq!(idle.dictation_message, None);
     assert!(phone.finals().is_empty());
     assert!(server.sessions().is_empty());
+    assert_eq!(std::fs::read_dir(phone.dir().join("recordings")).unwrap().count(), 0);
+}
+
+#[test]
+fn a_dictation_outlives_the_app_being_killed_and_is_sent_once_it_starts_again() {
+    let server = tcp_server(FakeServerConfig::default());
+    server.push_outcome(Outcome::Final("Not lost.".into()));
+    let dir = tempfile::tempdir().unwrap();
+    let audio = test_audio(1_000);
+    {
+        let mut phone = Phone::at(dir.path());
+        phone.send(Command::Configure { server: address(&server) });
+        phone.until_link(Link::Online);
+        server.set_listening(false);
+        phone.until_link(Link::Offline);
+        phone.send(Command::Start);
+        phone.speak(&audio);
+        // Dropped mid-dictation, as when Android kills the process.
+    }
+    server.set_listening(true);
+    let mut phone = Phone::at(dir.path());
+    phone.warm_until_online();
+
+    let saved = phone.until_saved_list("its text", |saved| saved.first().is_some_and(|d| d.text.is_some()));
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].text.as_deref(), Some("Not lost."));
+    assert_eq!(server.session(saved[0].session_id).unwrap().audio, padded(&audio));
+}
+
+#[test]
+fn a_dictation_takes_the_connection_from_a_saved_one_going_in_the_background() {
+    // Long enough a wait for its text that the dictation comes while the saved one holds the connection.
+    let server = tcp_server(FakeServerConfig { final_delay: Duration::from_millis(800), ..Default::default() });
+    let dir = tempfile::tempdir().unwrap();
+    let store = psst_client::store::Store::open(dir.path()).unwrap();
+    let waiting = SessionId::new_v4();
+    let meta = psst_client::store::Meta {
+        profile: String::new(),
+        started_at: jiff::Timestamp::now(),
+        samples: 8_000,
+        gapped: false,
+        state: psst_client::store::RecState::Complete,
+        final_text: None,
+        finalized_at: None,
+    };
+    store.write_meta(waiting, &meta).unwrap();
+    psst_testkit::write_wav(&store.wav_path(waiting), &test_audio(500));
+    let mut phone = Phone::at(dir.path());
+    phone.send(Command::Configure { server: address(&server) });
+    phone.until_link(Link::Online);
+    assert!(server.wait_until(WAIT, |s| s.session(waiting).is_some_and(|s| s.stop_samples.is_some())));
+
+    let audio = test_audio(700);
+    let (before, after) = audio.split_at(audio.len() / 2);
+    phone.send(Command::Start);
+    phone.speak(before);
+    streaming(&server, 2);
+    phone.speak(after);
+    phone.send(Command::Stop);
+    let (id, text) = phone.until_final();
+    let saved = phone.until_saved_list("the saved one's text", |saved| saved.first().is_some_and(|d| d.text.is_some()));
+
+    assert!(text.starts_with("heard"), "{text}");
+    assert_eq!(server.session(id).unwrap().starts[0].mode, Mode::Live, "streamed live");
+    assert!(server.session(waiting).unwrap().cancelled, "the saved one made way");
+    assert_eq!((saved[0].session_id, saved[0].text.as_deref()), (waiting, Some("heard 500 ms")));
+    assert_eq!(phone.finals(), [text], "and was never delivered as a final");
 }

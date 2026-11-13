@@ -45,6 +45,7 @@ class DictationView(context: Context) : FrameLayout(context) {
         fun onHistory()
         fun onHistoryBack()
         fun onHistoryPick(entry: Entry)
+        fun onHistoryDiscard(entry: Entry)
     }
 
     enum class Mic { START, STOP, BUSY }
@@ -55,8 +56,6 @@ class DictationView(context: Context) : FrameLayout(context) {
         SET_UP(R.string.ime_set_up),
         ALLOW_MIC(R.string.ime_allow_mic),
         OPEN(R.string.ime_open_psst),
-        RETRY(R.string.ime_retry),
-        DISCARD(R.string.ime_discard),
         INSERT(R.string.ime_insert),
         DISMISS(R.string.ime_dismiss),
     }
@@ -78,11 +77,27 @@ class DictationView(context: Context) : FrameLayout(context) {
             val secondary: Action? = null,
         ) : Ui
 
-        /** Earlier dictations to type again, in place of everything else. No [entries] yet while loading. */
-        data class History(val entries: List<Entry>, val note: CharSequence?, val tone: Tone) : Ui
+        /**
+         * Earlier dictations to type again, in place of everything else: the [saved] ones first, then
+         * the server's [entries], none yet while loading.
+         */
+        data class History(
+            val saved: List<Entry>,
+            val entries: List<Entry>,
+            val note: CharSequence?,
+            val tone: Tone,
+        ) : Ui
     }
 
-    data class Entry(val text: String, val time: CharSequence)
+    /** One dictation in the history. [text] is null while the server hasn't transcribed a saved one. */
+    data class Entry(
+        val sessionId: String,
+        val text: String?,
+        val time: CharSequence,
+        val saved: Boolean = false,
+        /** Its next discard deletes the recording. */
+        val confirming: Boolean = false,
+    )
 
     var actions: Actions? = null
 
@@ -101,9 +116,11 @@ class DictationView(context: Context) : FrameLayout(context) {
     private val buttons = LinearLayout(context)
     private val discard = ImageButton(context)
     private val history = ImageButton(context)
+    private val historyDot = View(context)
     private val content = LinearLayout(context)
     private val historyPane = LinearLayout(context)
     private val historyNote = TextView(context)
+    private val savedLabel = TextView(context)
     private val historyList = LinearLayout(context)
     private val historyScroll = ScrollView(context)
     private var shownHistory: Ui.History? = null
@@ -111,6 +128,13 @@ class DictationView(context: Context) : FrameLayout(context) {
     private val enter = ImageButton(context)
     private var primaryAction: Action? = null
     private var secondaryAction: Action? = null
+
+    /** A saved dictation has text that never went in: the history key says so. */
+    var unused = false
+        set(value) {
+            field = value
+            showDot()
+        }
 
     init {
         val layers = arrayOf<Drawable>(ColorDrawable(color(R.color.line)), ColorDrawable(color(R.color.bg)))
@@ -179,6 +203,15 @@ class DictationView(context: Context) : FrameLayout(context) {
         val side = FrameLayout(context)
         side.addView(key(history, R.drawable.ime_history, R.string.ime_history), keySize, keySize)
         side.addView(key(discard, R.drawable.ime_discard, R.string.ime_discard_dictation), keySize, keySize)
+        historyDot.background = ShapeDrawable(OvalShape()).apply { paint.color = color(R.color.danger) }
+        historyDot.importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+        side.addView(
+            historyDot,
+            LayoutParams(px(8), px(8), Gravity.TOP or Gravity.END).apply {
+                topMargin = px(12)
+                marginEnd = px(12)
+            },
+        )
         row.addView(side)
         row.addView(centre, LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
         row.addView(editing)
@@ -221,7 +254,10 @@ class DictationView(context: Context) : FrameLayout(context) {
             setColor(color(R.color.line))
             setSize(0, px(1))
         }
-        historyList.addView(historyNote, LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
+        savedLabel.setText(R.string.ime_history_not_inserted)
+        savedLabel.textSize = 12f
+        savedLabel.setTextColor(color(R.color.muted))
+        savedLabel.setPadding(px(16), px(8), px(16), px(4))
         historyScroll.addView(historyList, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         historyPane.orientation = LinearLayout.VERTICAL
         historyPane.addView(header, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, keySize))
@@ -267,6 +303,9 @@ class DictationView(context: Context) : FrameLayout(context) {
                     if (ui.mic == Mic.STOP) ACCESSIBILITY_LIVE_REGION_NONE else ACCESSIBILITY_LIVE_REGION_POLITE
                 discard.visibility = if (ui.mic == Mic.START) INVISIBLE else VISIBLE
                 history.visibility = if (ui.mic == Mic.START) VISIBLE else INVISIBLE
+                history.contentDescription = context.getString(
+                    if (unused) R.string.ime_history_with_unused else R.string.ime_history,
+                )
                 primaryAction = null
                 secondaryAction = null
             }
@@ -286,40 +325,83 @@ class DictationView(context: Context) : FrameLayout(context) {
                 showHistory(ui)
             }
         }
+        showDot()
     }
 
     private fun showHistory(ui: Ui.History) {
         if (ui == shownHistory) return
+        // Only a change to the saved ones (a text arriving, one discarded) keeps the scroll.
+        val sameList = shownHistory?.let { it.entries == ui.entries && it.note == ui.note } == true
         shownHistory = ui
-        historyNote.visibility = if (ui.note == null) GONE else VISIBLE
-        ui.note?.let { setText(historyNote, it, ui.tone) }
-        historyList.removeViews(1, historyList.childCount - 1)
+        historyList.removeAllViews()
+        if (ui.saved.isNotEmpty()) historyList.addView(savedLabel)
+        for (entry in ui.saved) historyList.addView(entryView(entry))
+        ui.note?.let {
+            setText(historyNote, it, ui.tone)
+            historyList.addView(historyNote, LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
+        }
         for (entry in ui.entries) historyList.addView(entryView(entry))
-        historyScroll.scrollTo(0, 0)
+        if (!sameList) historyScroll.scrollTo(0, 0)
     }
 
     private fun entryView(entry: Entry): View {
         val text = TextView(context)
-        text.text = entry.text
+        if (entry.text == null) {
+            text.setText(R.string.ime_history_waiting)
+            text.setTextColor(color(R.color.muted))
+        } else {
+            text.text = entry.text
+            text.setTextColor(color(R.color.fg))
+        }
         text.textSize = 15f
-        text.setTextColor(color(R.color.fg))
         text.maxLines = 2
         text.ellipsize = TextUtils.TruncateAt.END
         val time = TextView(context)
-        time.text = entry.time
         time.textSize = 12f
-        time.setTextColor(color(R.color.muted))
+        if (entry.confirming) {
+            time.setText(R.string.ime_history_confirm_discard)
+            time.setTextColor(color(R.color.danger))
+        } else {
+            time.text = entry.time
+            time.setTextColor(color(R.color.muted))
+        }
+        val column = LinearLayout(context)
+        column.orientation = LinearLayout.VERTICAL
+        column.addView(text)
+        column.addView(time)
         val row = LinearLayout(context)
-        row.orientation = LinearLayout.VERTICAL
-        row.setPadding(px(16), px(10), px(16), px(10))
+        row.gravity = Gravity.CENTER_VERTICAL
+        row.setPadding(px(16), px(10), if (entry.saved) 0 else px(16), px(10))
         row.minimumHeight = px(48)
         val ripple = ColorStateList.valueOf(RIPPLE)
         row.background = RippleDrawable(ripple, null, ColorDrawable(color(R.color.fg)))
         row.isSoundEffectsEnabled = false
-        row.addView(text)
-        row.addView(time)
+        if (entry.saved) {
+            // Filled once there's text to insert, a ring while it waits for the server.
+            val mark = View(context)
+            mark.background = ShapeDrawable(OvalShape()).apply {
+                if (entry.text == null) {
+                    paint.style = Paint.Style.STROKE
+                    paint.strokeWidth = dp(1.5f)
+                    paint.color = color(R.color.muted)
+                } else {
+                    paint.color = color(R.color.danger)
+                }
+            }
+            row.addView(mark, LinearLayout.LayoutParams(px(8), px(8)).apply { marginEnd = px(12) })
+        }
+        row.addView(column, LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
+        if (entry.saved) {
+            val discard = key(ImageButton(context), R.drawable.ime_discard, R.string.ime_discard)
+            discard.setOnClickListener { actions?.onHistoryDiscard(entry) }
+            row.addView(discard, keySize, keySize)
+        }
         row.setOnClickListener { actions?.onHistoryPick(entry) }
         return row
+    }
+
+    private fun showDot() {
+        historyDot.visibility = if (unused && history.visibility == VISIBLE) VISIBLE else INVISIBLE
     }
 
     /** The microphone's level, 0 to 1, while it records. */

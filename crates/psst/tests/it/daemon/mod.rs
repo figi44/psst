@@ -402,7 +402,7 @@ async fn an_unreachable_server_shows_offline_at_once_and_the_recording_is_upload
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn without_a_connection_after_stop_the_recording_is_saved_for_retry() {
+async fn without_a_connection_after_stop_the_recording_is_saved_to_the_history_and_retry_pastes_it() {
     let server = FakeServer::start(FakeServerConfig::default());
     server.push_outcome(Outcome::Final("retried ".into()));
     let d = daemon(&server, |_, deps| deps.timing.stop_window = Duration::from_millis(800)).await;
@@ -411,7 +411,9 @@ async fn without_a_connection_after_stop_the_recording_is_saved_for_retry() {
     let id = d.dictate(300).await;
     d.idle().await;
     assert!(d.wayland.inserted().is_empty());
-    assert!(d.wayland.showed(|s| matches!(s, OverlayState::Error { message } if message.contains("psst retry"))));
+    assert!(
+        d.wayland.showed(|s| matches!(s, OverlayState::Error { message } if message.starts_with("saved to History")))
+    );
     let status = d.status().await;
     assert_eq!(status.retained.len(), 1);
     assert_eq!((status.retained[0].session_id, status.retained[0].state.as_str()), (id, "complete"));
@@ -645,6 +647,8 @@ async fn a_server_error_after_stop_keeps_the_recording_for_retry() {
 #[tokio::test(flavor = "multi_thread")]
 async fn recovery_at_start_marks_interrupted_recordings_and_retry_copies_them() {
     let server = FakeServer::start(FakeServerConfig::default());
+    // Sending it in the background as the daemon connects fails, so it waits for `retry`.
+    server.reject_next(ErrorCode::Busy);
     server.push_outcome(Outcome::Final("rescued ".into()));
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(&dir.path().join("state")).unwrap();
@@ -662,12 +666,12 @@ async fn recovery_at_start_marks_interrupted_recordings_and_retry_copies_them() 
     write_wav(&store.wav_path(id), &test_audio(500));
 
     let d = daemon_in(dir.path(), &server, |_, _| {}).await;
+    wait_until(|| server.session(id).is_some_and(|s| s.starts.len() == 1)).await;
     let status = d.status().await;
     assert_eq!(status.retained.len(), 1);
     assert_eq!((status.retained[0].state.as_str(), status.retained[0].duration_ms), ("incomplete", 500));
-    // Nothing is sent or pasted automatically.
     tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(server.session(id).is_none());
+    assert_eq!(server.session(id).unwrap().starts.len(), 1, "a failure isn't sent again on the same connection");
 
     assert!(d.run(Request::Retry { session: Some(id) }).await.ok);
     d.idle().await;

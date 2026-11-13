@@ -1,6 +1,7 @@
 use std::{
-    fs::File,
-    io::{self, Read, Seek, SeekFrom},
+    fs::{File, OpenOptions},
+    io::{self, Read, Seek, SeekFrom, Write},
+    os::unix::fs::OpenOptionsExt,
     path::Path,
 };
 
@@ -74,4 +75,54 @@ pub(crate) fn parse_header(file: &mut (impl Read + Seek), len: u64) -> Result<Wa
             }
         }
     }
+}
+
+/// A 16 kHz mono 16-bit WAV, written as it's recorded. Its header gets the length only at
+/// `finish`: until then, [`read_wav_info`] counts the samples from the file size.
+pub struct WavWriter {
+    file: File,
+    pub samples: u64,
+}
+
+impl WavWriter {
+    pub fn create(path: &Path) -> io::Result<WavWriter> {
+        let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?;
+        file.write_all(&header(0))?;
+        Ok(WavWriter { file, samples: 0 })
+    }
+
+    pub fn write(&mut self, samples: &[i16]) -> io::Result<()> {
+        let mut bytes = Vec::with_capacity(samples.len() * 2);
+        for sample in samples {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        self.file.write_all(&bytes)?;
+        self.samples += samples.len() as u64;
+        Ok(())
+    }
+
+    pub fn finish(&mut self) -> io::Result<()> {
+        let data_len = u32::try_from(self.samples * 2).unwrap_or(u32::MAX);
+        self.file.seek(SeekFrom::Start(0))?;
+        self.file.write_all(&header(data_len))?;
+        self.file.seek(SeekFrom::End(0))?;
+        Ok(())
+    }
+}
+
+fn header(data_len: u32) -> [u8; 44] {
+    let mut h = [0u8; 44];
+    h[0..4].copy_from_slice(b"RIFF");
+    h[4..8].copy_from_slice(&data_len.saturating_add(36).to_le_bytes());
+    h[8..16].copy_from_slice(b"WAVEfmt ");
+    h[16..20].copy_from_slice(&16u32.to_le_bytes());
+    h[20..22].copy_from_slice(&1u16.to_le_bytes());
+    h[22..24].copy_from_slice(&1u16.to_le_bytes());
+    h[24..28].copy_from_slice(&SAMPLE_RATE.to_le_bytes());
+    h[28..32].copy_from_slice(&(SAMPLE_RATE * 2).to_le_bytes());
+    h[32..34].copy_from_slice(&2u16.to_le_bytes());
+    h[34..36].copy_from_slice(&16u16.to_le_bytes());
+    h[36..40].copy_from_slice(b"data");
+    h[40..44].copy_from_slice(&data_len.to_le_bytes());
+    h
 }

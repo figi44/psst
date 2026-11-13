@@ -26,16 +26,21 @@ fn row(device: &str, text: Option<&str>, created_at: &str) -> HistoryRow {
     }
 }
 
-fn item(text: &str, created_ms: i64) -> HistoryItem {
-    HistoryItem { text: text.into(), created_ms }
+fn item(text: &str, created_ms: i64) -> (String, i64) {
+    (text.into(), created_ms)
+}
+
+fn shown(items: &[HistoryItem]) -> Vec<(String, i64)> {
+    items.iter().map(|item| (item.text.clone(), item.created_ms)).collect()
 }
 
 #[test]
 fn history_lists_this_phones_dictations_that_have_text_newest_first() {
     let server = tcp_server(FakeServerConfig::default());
     // As a server that predates the device filter answers: every device's rows.
+    let newest = row(PHONE, Some("  Newest.\n"), "2026-11-10T08:40:00Z");
     server.set_history(vec![
-        row(PHONE, Some("  Newest.\n"), "2026-11-10T08:40:00Z"),
+        newest.clone(),
         row("local:alice", Some("From the laptop."), "2026-11-10T08:39:00Z"),
         row(PHONE, Some(" "), "2026-11-10T08:38:00Z"),
         row(PHONE, None, "2026-11-10T08:37:00Z"),
@@ -47,7 +52,8 @@ fn history_lists_this_phones_dictations_that_have_text_newest_first() {
     let (items, error) = phone.until_history();
 
     assert_eq!(error, None);
-    assert_eq!(items, [item("Newest.", 1_794_300_000_000), item("Older.", 1_794_299_760_250)]);
+    assert_eq!(shown(&items), [item("Newest.", 1_794_300_000_000), item("Older.", 1_794_299_760_250)]);
+    assert_eq!(items[0].session_id, newest.session_id);
     assert_eq!(server.history_requests(), [format!("/api/history?limit=20&device={PHONE}")]);
 }
 
@@ -119,7 +125,8 @@ fn asking_for_history_during_a_dictation_does_not_disturb_it() {
 
     assert_eq!(text, "Hello world.");
     assert_eq!(phone.dictations(), [Dictation::Idle, Dictation::Recording, Dictation::Transcribing, Dictation::Idle]);
-    assert_eq!(phone.histories(), [(vec![item("Earlier.", 1_794_300_000_000)], None)]);
+    let histories: Vec<_> = phone.histories().iter().map(|(items, error)| (shown(items), error.clone())).collect();
+    assert_eq!(histories, [(vec![item("Earlier.", 1_794_300_000_000)], None)]);
     let seen = server.session(id).unwrap();
     assert_eq!(seen.starts.len(), 1);
     assert_eq!(seen.audio, padded(&audio));

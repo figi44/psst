@@ -453,6 +453,8 @@ fn the_menu_takes_the_keyboard_and_hands_it_back() {
         profile: "en".into(),
         profiles: Listing::Ready(vec!["cs".into(), "en".into()]),
         model: Some(ModelChoice::Unload),
+        saved: vec![],
+        history: Listing::Loading,
     };
 
     paster.send(WaylandCmd::Menu(Some(spec.clone())));
@@ -462,7 +464,7 @@ fn the_menu_takes_the_keyboard_and_hands_it_back() {
     assert!((276..=284).contains(&(x1 - x0 + 1)), "the menu is {} px wide", x1 - x0 + 1);
     let up = shot.height - 1 - y1;
     assert!((126..=134).contains(&up), "where the pill goes: {up} px up");
-    for key in [keys::KEY_DOWN, keys::KEY_ENTER, keys::KEY_A, keys::KEY_2, keys::KEY_ENTER] {
+    for key in [keys::KEY_DOWN, keys::KEY_DOWN, keys::KEY_ENTER, keys::KEY_A, keys::KEY_2, keys::KEY_ENTER] {
         keyboard.tap(key);
     }
     paster.expect(&WaylandEvent::Menu(MenuOutcome::Chose(MenuAction::AddWord("a2".into()))), Duration::from_secs(3));

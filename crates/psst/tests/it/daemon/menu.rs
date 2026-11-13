@@ -3,13 +3,17 @@ use std::time::{Duration, Instant};
 use psst::{
     daemon::Sound,
     ipc::{Request, Status},
+    store::{Meta, RecState, Store},
 };
 use psst_config::{ClientConfig, MenuConfig};
-use psst_proto::SessionId;
-use psst_testkit::fake_server::{FakeServer, FakeServerConfig, Outcome};
-use psst_wayland::{MenuAction, MenuOutcome, OverlayState, WaylandCmd, WaylandEvent};
+use psst_proto::{Final, SessionId, api::HistoryRow};
+use psst_testkit::{
+    fake_server::{FakeServer, FakeServerConfig, Outcome},
+    test_audio, write_wav,
+};
+use psst_wayland::{HistoryEntry, Listing, MenuAction, MenuOutcome, MenuSpec, OverlayState, WaylandCmd, WaylandEvent};
 
-use super::{Daemon, WAIT, daemon, daemon_in, paste, wait_until};
+use super::{Daemon, Inserted, WAIT, daemon, daemon_in, paste, wait_until};
 
 async fn until(d: &Daemon, what: &str, check: impl Fn(&Status) -> bool) {
     let deadline = tokio::time::Instant::now() + WAIT;
@@ -138,4 +142,131 @@ async fn the_profile_chosen_in_the_menu_is_used_until_client_toml_names_another(
     let back = daemon_in(dir.path(), &server, |_, _| {}).await;
     assert_eq!(back.status().await.profile, "default", "and the menu's choice is forgotten");
     back.stop().await;
+}
+
+/// The spec of the open menu once it passes `check`.
+async fn menu_until(d: &Daemon, what: &str, check: impl Fn(&MenuSpec) -> bool) -> MenuSpec {
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        if let Some(Some(spec)) = d.wayland.menus().last()
+            && check(spec)
+        {
+            return spec.clone();
+        }
+        assert!(tokio::time::Instant::now() < deadline, "the menu never showed {what}: {:?}", d.wayland.menus().last());
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+fn saved(store: &Store, state: RecState, text: Option<&str>) -> SessionId {
+    let id = SessionId::new_v4();
+    let meta = Meta {
+        profile: "default".into(),
+        started_at: jiff::Timestamp::now(),
+        samples: 8_000,
+        gapped: false,
+        state,
+        final_text: text.map(String::from),
+        finalized_at: None,
+    };
+    store.write_meta(id, &meta).unwrap();
+    write_wav(&store.wav_path(id), &test_audio(500));
+    id
+}
+
+fn row(device: &str, text: &str) -> HistoryRow {
+    HistoryRow {
+        id: 1,
+        session_id: SessionId::new_v4(),
+        device: device.into(),
+        profile: "default".into(),
+        created_at: jiff::Timestamp::now(),
+        model: None,
+        revision: None,
+        r#final: Some(Final { text: text.into(), raw_text: text.into(), edits: vec![], language: "en".into() }),
+        server_timings: None,
+        client_timings: None,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_saved_dictation_is_transcribed_in_the_background_and_pasted_from_the_history() {
+    let server = FakeServer::start(FakeServerConfig::default());
+    server.push_outcome(Outcome::Final("Written later. ".into()));
+    let d = daemon(&server, |_, deps| deps.timing.stop_window = Duration::from_millis(500)).await;
+    server.set_listening(false);
+    let id = d.dictate(300).await;
+    d.idle().await;
+    assert!(
+        d.wayland.showed(|s| matches!(s, OverlayState::Error { message } if message.starts_with("saved to History")))
+    );
+
+    server.set_listening(true);
+    assert_eq!(d.run(Request::Menu).await.message, "opened the menu", "which connects");
+    let spec = menu_until(&d, "the text", |spec| spec.saved.first().is_some_and(|e| e.text.is_some())).await;
+    assert_eq!(spec.saved.len(), 1);
+    assert_eq!((spec.saved[0].key.clone(), spec.saved[0].text.as_deref()), (id.to_string(), Some("Written later.")));
+    assert_eq!(d.status().await.retained[0].state, "transcribed");
+    assert!(d.wayland.inserted().is_empty(), "never pasted on its own");
+    assert!(server.session(id).unwrap().starts.last().unwrap().resume);
+
+    d.wayland.send(WaylandEvent::Menu(MenuOutcome::Chose(MenuAction::Paste(id.to_string()))));
+    wait_until(|| d.store.list().is_empty()).await;
+    assert_eq!(d.wayland.inserted(), vec![paste("Written later. ")]);
+    assert!(d.wayland.snapshots_precede_inserts());
+    d.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dictation_takes_the_connection_from_a_saved_one_going_in_the_background() {
+    // Long enough a wait for its text that the dictation comes while the saved one holds the connection.
+    let server = FakeServer::start(FakeServerConfig { final_delay: Duration::from_millis(800), ..Default::default() });
+    let dir = tempfile::tempdir().unwrap();
+    let waiting = saved(&Store::open(&dir.path().join("state")).unwrap(), RecState::Complete, None);
+    let d = daemon_in(dir.path(), &server, |_, _| {}).await;
+    wait_until(|| server.session(waiting).is_some_and(|s| s.stop_samples.is_some())).await;
+
+    let id = d.dictate(400).await;
+    d.idle().await;
+    let pasted = d.wayland.inserted();
+    assert!(matches!(&pasted[..], [Inserted::Paste(text, _)] if text.starts_with("heard")), "{pasted:?}");
+    assert_eq!(server.session(id).unwrap().starts[0].mode, psst_proto::ws::Mode::Live, "streamed live");
+    assert!(server.session(waiting).unwrap().cancelled, "the saved one made way");
+
+    super::wait_until(|| d.store.read_meta(waiting).is_ok_and(|m| m.state == RecState::Transcribed)).await;
+    assert_eq!(d.store.read_meta(waiting).unwrap().final_text.as_deref(), Some("heard 500 ms"));
+    assert_eq!(d.wayland.inserted(), pasted, "and was never pasted");
+    d.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_history_lists_this_machines_dictations_from_the_server_after_the_saved_ones() {
+    let server = FakeServer::start(FakeServerConfig::default());
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("state")).unwrap();
+    let ready = saved(&store, RecState::Transcribed, Some("Never went in. "));
+    let earlier = row("local:test", "From the server. ");
+    let mut ready_row = row("local:test", "Never went in. ");
+    ready_row.session_id = ready;
+    server.set_history(vec![ready_row, earlier.clone(), row("phone", "From the phone.")]);
+    let d = daemon_in(dir.path(), &server, |_, _| {}).await;
+
+    assert!(d.run(Request::Menu).await.ok);
+    let spec = menu_until(&d, "the server's history", |spec| matches!(spec.history, Listing::Ready(_))).await;
+    assert_eq!(spec.saved.iter().map(|e| e.text.as_deref()).collect::<Vec<_>>(), [Some("Never went in.")]);
+    let key = earlier.session_id.to_string();
+    let Listing::Ready(history) = &spec.history else { unreachable!() };
+    assert_eq!(
+        history,
+        &[HistoryEntry { key: key.clone(), when: history[0].when.clone(), text: Some("From the server.".into()) }]
+    );
+    assert!(server.history_requests()[0].ends_with("&device=local%3Atest"), "{:?}", server.history_requests());
+
+    d.wayland.send(WaylandEvent::Menu(MenuOutcome::Kept(MenuAction::Discard(ready.to_string()))));
+    menu_until(&d, "it gone", |spec| spec.saved.is_empty()).await;
+    assert!(d.store.list().is_empty());
+    d.wayland.send(WaylandEvent::Menu(MenuOutcome::Chose(MenuAction::Copy(key))));
+    wait_until(|| !d.wayland.inserted().is_empty()).await;
+    assert_eq!(d.wayland.inserted(), vec![Inserted::Copy("From the server. ".into())]);
+    d.stop().await;
 }

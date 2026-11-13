@@ -28,7 +28,11 @@ fn items(rows: Vec<HistoryRow>, device: &str) -> Vec<HistoryItem> {
         .filter(|row| row.device == device)
         .filter_map(|row| {
             let text = row.r#final?.text.trim().to_owned();
-            (!text.is_empty()).then(|| HistoryItem { text, created_ms: row.created_at.as_millisecond() })
+            (!text.is_empty()).then(|| HistoryItem {
+                session_id: row.session_id,
+                text,
+                created_ms: row.created_at.as_millisecond(),
+            })
         })
         .take(LIMIT)
         .collect()

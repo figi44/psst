@@ -1941,6 +1941,7 @@ dependencies = [
 name = "psst-android"
 version = "0.1.0"
 dependencies = [
+ "jiff",
  "jni",
  "opusic-c",
  "psst-client",
@@ -1960,6 +1961,7 @@ version = "0.1.0"
 dependencies = [
  "futures-util",
  "httparse",
+ "jiff",
  "opusic-c",
  "psst-proto",
  "psst-testkit",

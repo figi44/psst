@@ -35,7 +35,7 @@ async fn a_newer_server_prompts_to_update_psst_and_keeps_the_dictation_for_retry
     d.idle().await;
     assert!(stopped.elapsed() < Duration::from_secs(5), "saved after {:?}", stopped.elapsed());
     assert!(d.wayland.showed(|s| matches!(s, OverlayState::Offline { reason, .. } if reason == PROMPT)));
-    assert_eq!(error_shown(&d, &format!("saved, psst retry ({PROMPT})")), 1);
+    assert_eq!(error_shown(&d, &format!("saved to History ({PROMPT})")), 1);
     assert_eq!(error_shown(&d, PROMPT), 1, "said once, not at every refusal");
     assert_eq!(d.store.read_meta(id).unwrap().state, RecState::Complete);
     assert!(d.wayland.inserted().is_empty());

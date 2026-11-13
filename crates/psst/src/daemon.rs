@@ -1,11 +1,11 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
 
-use jiff::Timestamp;
+use jiff::{Timestamp, Zoned};
 use psst_client::{
     AudioCodec, AudioFrame, Client, ClientError, FRAME_BUFFER, FrameSender, OpusSettings, Outdated, Session,
     SessionEvent, StartOpts, TrySendError,
@@ -14,12 +14,13 @@ use psst_client::{
 };
 use psst_config::{ClientConfig, PasteAction, Sounds};
 use psst_proto::{
-    ClientTimings, Endpoint, ErrorCode, FRAME_MS, SessionId, Token,
-    api::{PairRedeemed, routes},
+    ClientTimings, DeviceId, Endpoint, ErrorCode, FRAME_MS, SessionId, Token,
+    api::{HistoryRow, PairRedeemed, routes},
     ws::{FinalMsg, Mode, ProgressState},
 };
 use psst_wayland::{
-    Chord, Listing, MenuAction, MenuOutcome, MenuSpec, ModelChoice, OverlayState, WaylandCmd, WaylandEvent,
+    Chord, HistoryEntry, Listing, MenuAction, MenuOutcome, MenuSpec, ModelChoice, OverlayState, WaylandCmd,
+    WaylandEvent,
 };
 use tokio::{
     net::UnixListener,
@@ -36,7 +37,7 @@ use crate::{
     ipc::{ActiveInfo, Request, Response, RetainedInfo, Status},
     menu, niri,
     pair::Credentials,
-    store::{self, Last, Meta, RecState, STORAGE_BUDGET, Store},
+    store::{self, Last, Meta, RecState, Retained, STORAGE_BUDGET, Store},
     ui::{Wayland, WaylandSink},
 };
 
@@ -388,6 +389,15 @@ enum Ctl {
     Cancel,
 }
 
+/// A saved recording on its way to the server in the background. Its text is kept for the menu's
+/// history, never pasted: the window it was meant for is long gone.
+struct CatchUp {
+    id: SessionId,
+    session: SessionCtl,
+    /// Cancelled to make way for a dictation; it goes again once the connection is free.
+    yielded: bool,
+}
+
 struct Dictation {
     id: SessionId,
     profile: String,
@@ -513,6 +523,7 @@ struct MenuState {
     shown: Option<MenuSpec>,
     profiles: Listing,
     model: Option<ModelChoice>,
+    history: Listing<HistoryRow>,
 }
 
 struct Core {
@@ -542,11 +553,19 @@ struct Core {
     slot: Option<SessionId>,
     resumed_at: Option<Instant>,
     max_recording_s: u32,
+    /// This machine, as the server knows it.
+    device: Option<DeviceId>,
 
     recording: Option<Dictation>,
     pipeline: VecDeque<Dictation>,
     redeliver: VecDeque<Redelivery>,
     inserting: Option<Inserting>,
+    catch_up: Option<CatchUp>,
+    /// Saved recordings that failed on this connection: sent again on the next, or when the menu
+    /// opens.
+    tried: HashSet<SessionId>,
+    /// The store's revision when it had nothing left to send.
+    nothing_to_send: Option<u64>,
     generation: u64,
     seq: u64,
 
@@ -578,7 +597,13 @@ impl Core {
         Core {
             cfg,
             profile,
-            menu: MenuState { open: false, shown: None, profiles: Listing::Loading, model: None },
+            menu: MenuState {
+                open: false,
+                shown: None,
+                profiles: Listing::Loading,
+                model: None,
+                history: Listing::Loading,
+            },
             store,
             deps,
             t,
@@ -597,10 +622,14 @@ impl Core {
             slot: None,
             resumed_at: None,
             max_recording_s: 600,
+            device: None,
             recording: None,
             pipeline: VecDeque::new(),
             redeliver: VecDeque::new(),
             inserting: None,
+            catch_up: None,
+            tried: HashSet::new(),
+            nothing_to_send: None,
             generation: 0,
             seq: 0,
             sink: None,
@@ -808,15 +837,30 @@ impl Core {
         if matches!(self.menu.profiles, Listing::Failed(_)) {
             self.menu.profiles = Listing::Loading;
         }
+        if matches!(self.menu.history, Listing::Failed(_)) {
+            self.menu.history = Listing::Loading;
+        }
         self.fetch_menu_facts();
+        // Looking at the history is a good moment to send what's saved, failed before or not.
+        self.forget_tried();
+        if !self.client.as_ref().is_some_and(|client| !client.is_closed()) {
+            self.connect(self.check_budget(self.t.resume_budget), AttemptKind::Connect);
+        }
         Response::ok("opened the menu")
     }
 
     fn fetch_menu_facts(&self) {
         let tx = self.tx.clone();
-        menu::fetch(self.api(), move |fact| {
+        menu::fetch(self.api(), self.device(), move |fact| {
             let _ = tx.send(Input::MenuFact(fact));
         });
+    }
+
+    fn device(&self) -> Option<DeviceId> {
+        if self.device.is_some() || !self.endpoint_is_tcp() {
+            return self.device.clone();
+        }
+        Credentials::load(&self.credentials).ok().flatten().map(|creds| creds.device_id)
     }
 
     fn close_menu(&mut self) -> Response {
@@ -831,6 +875,9 @@ impl Core {
             menu::Fact::Profiles(Err(_)) if matches!(self.menu.profiles, Listing::Ready(_)) => {}
             menu::Fact::Profiles(Err(reason)) => self.menu.profiles = Listing::Failed(reason),
             menu::Fact::Model(state) => self.menu.model = Some(menu::choice(state)),
+            menu::Fact::History(Ok(rows)) => self.menu.history = Listing::Ready(rows),
+            menu::Fact::History(Err(_)) if matches!(self.menu.history, Listing::Ready(_)) => {}
+            menu::Fact::History(Err(reason)) => self.menu.history = Listing::Failed(reason),
         }
     }
 
@@ -838,6 +885,13 @@ impl Core {
         info!("menu: {action:?}");
         let progress = match &action {
             MenuAction::SwitchProfile(name) => return self.switch_profile(name.clone()),
+            MenuAction::Paste(key) | MenuAction::Copy(key) | MenuAction::Discard(key) => {
+                let response = self.history_action(key, &action);
+                if !response.ok {
+                    self.error_notice(&response.message);
+                }
+                return;
+            }
             MenuAction::AddWord(word) => format!("Adding \u{201c}{word}\u{201d}\u{2026}"),
             MenuAction::UnloadModel => "Unloading the model\u{2026}".into(),
             MenuAction::LoadModel => "Loading the model\u{2026}".into(),
@@ -866,6 +920,26 @@ impl Core {
         }
     }
 
+    fn history_action(&mut self, key: &str, action: &MenuAction) -> Response {
+        let Ok(id) = key.parse::<SessionId>() else { return Response::err(format!("no dictation {key}")) };
+        let copy = match action {
+            MenuAction::Discard(_) => return self.discard(id),
+            MenuAction::Copy(_) => true,
+            _ => false,
+        };
+        if self.store.read_meta(id).is_ok_and(|meta| meta.state == RecState::Transcribed) {
+            return self.redeliver(Some(id), copy);
+        }
+        let past = match &self.menu.history {
+            Listing::Ready(rows) => rows.iter().find(|row| row.session_id == id),
+            _ => None,
+        };
+        match past.and_then(|row| row.r#final.as_ref()) {
+            Some(fin) => self.queue_redelivery(fin.text.clone(), copy, None),
+            None => Response::err(format!("no dictation {id}")),
+        }
+    }
+
     fn switch_profile(&mut self, name: String) {
         if let Err(err) = menu::save_profile(self.store.state_dir(), &self.cfg.profile, &name) {
             warn!("cannot keep profile {name} for the next start: {err}");
@@ -876,14 +950,53 @@ impl Core {
     }
 
     fn refresh_menu(&mut self) {
-        let wanted = (self.menu.open && self.inserting.is_none()).then(|| MenuSpec {
-            profile: self.profile.clone(),
-            profiles: self.menu.profiles.clone(),
-            model: self.menu.model,
-        });
+        let wanted = (self.menu.open && self.inserting.is_none()).then(|| self.menu_spec());
         if wanted != self.menu.shown {
             self.menu.shown = wanted.clone();
             self.wayland(WaylandCmd::Menu(wanted));
+        }
+    }
+
+    fn menu_spec(&self) -> MenuSpec {
+        let now = Zoned::now();
+        let saved: Vec<Retained> = (self.store.list().into_iter().rev())
+            .filter(|r| r.meta.state != RecState::Recording && !self.foreground(r.id))
+            .collect();
+        let entry = |r: &Retained| {
+            let when = menu::when(r.meta.started_at, &now);
+            match (r.meta.state, &r.meta.final_text) {
+                (RecState::Transcribed, Some(text)) => {
+                    HistoryEntry { key: r.id.to_string(), when, text: Some(text.trim().to_string()) }
+                }
+                _ => {
+                    let when = format!("{when} \u{b7} {}", menu::length(r.meta.samples));
+                    HistoryEntry { key: r.id.to_string(), when, text: None }
+                }
+            }
+        };
+        let history = match &self.menu.history {
+            Listing::Loading => Listing::Loading,
+            Listing::Failed(reason) => Listing::Failed(reason.clone()),
+            Listing::Ready(rows) => Listing::Ready(
+                rows.iter()
+                    .filter(|row| !saved.iter().any(|r| r.id == row.session_id) && !self.foreground(row.session_id))
+                    .filter_map(|row| {
+                        let text = row.r#final.as_ref()?.text.trim().to_string();
+                        Some(HistoryEntry {
+                            key: row.session_id.to_string(),
+                            when: menu::when(row.created_at, &now),
+                            text: Some(text),
+                        })
+                    })
+                    .collect(),
+            ),
+        };
+        MenuSpec {
+            profile: self.profile.clone(),
+            profiles: self.menu.profiles.clone(),
+            model: self.menu.model,
+            saved: saved.iter().map(entry).collect(),
+            history,
         }
     }
 
@@ -927,10 +1040,15 @@ impl Core {
         }
     }
 
-    fn in_flight(&self, id: SessionId) -> bool {
+    /// Recording, or on its way to the window it was meant for.
+    fn foreground(&self, id: SessionId) -> bool {
         self.recording.as_ref().is_some_and(|d| d.id == id)
             || self.pipeline.iter().any(|d| d.id == id)
             || matches!(&self.inserting, Some(Inserting { what: Delivering::Dictation(d), .. }) if d.id == id)
+    }
+
+    fn in_flight(&self, id: SessionId) -> bool {
+        self.foreground(id) || self.catch_up.as_ref().is_some_and(|c| c.id == id)
     }
 
     fn retry(&mut self, session: Option<SessionId>) -> Response {
@@ -1003,6 +1121,10 @@ impl Core {
                 None => return Response::err("nothing dictated yet"),
             },
         };
+        self.queue_redelivery(text, copy, delete)
+    }
+
+    fn queue_redelivery(&mut self, text: String, copy: bool, delete: Option<SessionId>) -> Response {
         let generation = self.next_generation();
         self.wayland(WaylandCmd::SnapshotClipboard { generation });
         self.redeliver.push_back(Redelivery { generation, text, copy, delete });
@@ -1010,8 +1132,11 @@ impl Core {
     }
 
     fn discard(&mut self, id: SessionId) -> Response {
-        if self.in_flight(id) {
+        if self.foreground(id) {
             return Response::err(format!("{id} is in progress: use psst cancel"));
+        }
+        if let Some(catch_up) = self.catch_up.take_if(|c| c.id == id) {
+            let _ = catch_up.session.ctl.send(Ctl::Cancel);
         }
         if !self.store.meta_path(id).exists() && !self.store.wav_path(id).exists() {
             return Response::err(format!("no saved recording {id}"));
@@ -1227,12 +1352,16 @@ impl Core {
                         client.welcome().device,
                         self.round_trip.as_millis()
                     );
+                    self.device = Some(client.welcome().device.clone());
                     self.client = Some(client);
                     self.connected_at = Instant::now();
-                    // So the menu has them the first time it opens; each opening refreshes them.
-                    if self.menu.profiles == Listing::Loading && self.menu.model.is_none() {
+                    // So the menu has them the first time it opens; each opening refreshes them,
+                    // and an open one that couldn't reach the server gets them now.
+                    let first = self.menu.profiles == Listing::Loading && self.menu.model.is_none();
+                    if first || self.menu.open {
                         self.fetch_menu_facts();
                     }
+                    self.forget_tried();
                     // A session on the old connection is lost with it.
                     self.slot = None;
                 }
@@ -1573,6 +1702,12 @@ impl Core {
         if terminal && self.slot == Some(id) {
             self.slot = None;
         }
+        if self.catch_up.as_ref().is_some_and(|c| c.id == id && c.session.seq == seq) {
+            if terminal {
+                self.caught_up(id, event);
+            }
+            return;
+        }
         let Some(d) = self.dictation_mut(id) else { return };
         if d.session.as_ref().map(|s| s.seq) != Some(seq) {
             return;
@@ -1605,6 +1740,88 @@ impl Core {
         }
     }
 
+    fn caught_up(&mut self, id: SessionId, event: SessionEvent) {
+        let catch_up = self.catch_up.take().expect("checked by the caller");
+        self.nothing_to_send = None;
+        let text = match event {
+            SessionEvent::Final(msg) => msg.r#final.text,
+            SessionEvent::Cancelled if catch_up.yielded => return,
+            other => {
+                warn!("{id} failed in the background: {other:?}");
+                self.tried.insert(id);
+                return;
+            }
+        };
+        if text.trim().is_empty() {
+            info!("{id}: nothing heard");
+            if let Err(err) = self.store.delete(id) {
+                warn!("cannot delete {id}: {err}");
+            }
+            return;
+        }
+        info!("{id} transcribed in the background");
+        let saved = self.store.read_meta(id).and_then(|mut meta| {
+            meta.state = RecState::Transcribed;
+            meta.final_text = Some(text);
+            // No `finalized_at`: `recover` would make this the text `paste-last` pastes, which
+            // is the latest dictation's.
+            self.store.write_meta(id, &meta)
+        });
+        if let Err(err) = saved {
+            warn!("cannot save the text of {id}: {err}");
+        }
+    }
+
+    fn forget_tried(&mut self) {
+        self.tried.clear();
+        self.nothing_to_send = None;
+    }
+
+    /// Oldest first.
+    fn next_to_send(&mut self) -> Option<Retained> {
+        let revision = self.store.revision();
+        if self.nothing_to_send == Some(revision) {
+            return None;
+        }
+        let next = self.store.list().into_iter().find(|r| {
+            matches!(r.meta.state, RecState::Complete | RecState::Incomplete)
+                && r.meta.samples > 0
+                && !self.in_flight(r.id)
+                && !self.tried.contains(&r.id)
+        });
+        if next.is_none() {
+            self.nothing_to_send = Some(revision);
+        }
+        next
+    }
+
+    fn start_catch_up(&mut self, client: &mut Client, rec: Retained) {
+        let id = rec.id;
+        let opts = StartOpts {
+            session_id: id,
+            profile: Some(rec.meta.profile),
+            mode: Mode::Upload,
+            resume: true,
+            eval: None,
+            codec: self.codec(),
+        };
+        let session = upload_file(client, opts, &self.store.wav_path(id));
+        let session = self.spawn_session(id, session);
+        self.slot = Some(id);
+        self.catch_up = Some(CatchUp { id, session, yielded: false });
+        info!("sending {id} in the background");
+    }
+
+    /// A dictation takes the connection from one going in the background, which goes again later.
+    fn yield_slot(&mut self) {
+        let wanted = self.recording.as_ref().is_some_and(|r| r.tap_until.is_none()) || !self.pipeline.is_empty();
+        if let Some(catch_up) = self.catch_up.as_mut().filter(|c| wanted && !c.yielded && self.slot == Some(c.id)) {
+            info!("{}: making way for a dictation", catch_up.id);
+            let _ = catch_up.session.ctl.send(Ctl::Cancel);
+            catch_up.yielded = true;
+        }
+    }
+
     fn after_failure(&mut self, id: SessionId, reason: String) {
         let Some(pos) = self.pipeline.iter().position(|d| d.id == id) else { return };
         let mut d = self.pipeline.remove(pos).expect("in range");
@@ -1617,12 +1834,15 @@ impl Core {
         }
     }
 
+    /// Not sent again on this connection: it just failed on it.
     fn saved(&mut self, d: Dictation, reason: String) {
-        warn!("{} saved for retry: {reason}", d.id);
+        warn!("{} saved: {reason}", d.id);
         if let Some(session) = &d.session {
             let _ = session.ctl.send(Ctl::Cancel);
         }
-        self.error_notice(&format!("saved, psst retry ({reason})"));
+        self.tried.insert(d.id);
+        self.nothing_to_send = None;
+        self.error_notice(&format!("saved to History ({reason})"));
     }
 
     fn on_final(&mut self, id: SessionId, msg: Box<FinalMsg>) {
@@ -1728,6 +1948,7 @@ impl Core {
                 self.delivered(generation);
             }
             WaylandEvent::Failed { generation, reason } => self.insert_failed(generation, reason),
+            WaylandEvent::Menu(MenuOutcome::Kept(action)) => self.menu_action(action),
             // `shown` stays: an update sent before this arrived may have opened it again, so the
             // next refresh closes it for certain.
             WaylandEvent::Menu(outcome) => {
@@ -2008,8 +2229,15 @@ impl Core {
                 self.start_upload(&mut client, index);
             } else if self.recording.as_ref().is_some_and(|r| r.net == Net::Pending && r.tap_until.is_none()) {
                 self.start_live(&mut client);
+            } else if self.recording.is_none()
+                && self.pipeline.is_empty()
+                && self.stopping.is_none()
+                && let Some(rec) = self.next_to_send()
+            {
+                self.start_catch_up(&mut client, rec);
             }
         }
+        self.yield_slot();
         let waiting: Vec<SessionId> =
             self.pipeline.iter().filter(|d| d.phase == Phase::Uploading && d.session.is_none()).map(|d| d.id).collect();
         for id in waiting {

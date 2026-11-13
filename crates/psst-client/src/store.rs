@@ -251,7 +251,7 @@ fn session_file(path: &Path, ext: &str) -> Option<SessionId> {
 
 /// From the file size, since a crash can leave the header unfinalised.
 pub fn wav_samples(path: &Path) -> u64 {
-    psst_client::read_wav_info(path).map_or(0, |info| info.samples)
+    crate::read_wav_info(path).map_or(0, |info| info.samples)
 }
 
 /// No fsync: a rename already survives a crash of the daemon.

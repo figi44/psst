@@ -3,6 +3,7 @@
 pub mod api;
 mod codec;
 mod connection;
+pub mod store;
 mod upload;
 mod wav;
 
@@ -19,7 +20,7 @@ pub use psst_proto::{Endpoint, Token};
 use tokio::sync::{mpsc, oneshot, watch};
 
 pub use crate::codec::{AudioCodec, OpusApplication, OpusSettings};
-pub use crate::wav::{WavError, WavInfo, read_wav_info};
+pub use crate::wav::{WavError, WavInfo, WavWriter, read_wav_info};
 use crate::{
     codec::Encoder,
     connection::{Cmd, Outgoing, Shared},

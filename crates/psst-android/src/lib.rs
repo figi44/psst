@@ -40,9 +40,12 @@ pub enum Command {
     Start,
     Stop,
     Cancel,
-    Retry,
-    Discard,
-    /// The app put that final's text into a field.
+    /// Deletes a saved dictation.
+    Discard {
+        session_id: SessionId,
+    },
+    /// The app put that dictation's text into a field: a final's, or a saved dictation's, which
+    /// is then deleted.
     Inserted {
         session_id: SessionId,
     },
@@ -58,6 +61,9 @@ pub enum Event {
     /// Once per delivered dictation, followed by a state whose dictation is `idle`. `text` is `""`
     /// when nothing was heard.
     Final { session_id: SessionId, text: String },
+    /// Once per dictation the server couldn't take in time, followed by a state whose dictation is
+    /// `idle` and whose `saved` has it. It's sent in the background, never delivered as a final.
+    Saved { session_id: SessionId },
     /// Once per `history` command: at most 20, newest first, and none when `error` says why.
     History { items: Vec<HistoryItem>, error: Option<String> },
 }
@@ -65,9 +71,21 @@ pub enum Event {
 /// A dictation of this phone's that has text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HistoryItem {
+    pub session_id: SessionId,
     pub text: String,
     /// When it started, in Unix milliseconds.
     pub created_ms: i64,
+}
+
+/// A dictation that never went in, kept on the phone until it's inserted or discarded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedDictation {
+    pub session_id: SessionId,
+    /// When it started, in Unix milliseconds.
+    pub created_ms: i64,
+    pub duration_ms: u64,
+    /// `None` until the server has transcribed it.
+    pub text: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,6 +97,8 @@ pub struct State {
     pub dictation: Dictation,
     pub dictation_message: Option<String>,
     pub seconds_left: Option<u32>,
+    /// Newest first.
+    pub saved: Vec<SavedDictation>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,10 +124,8 @@ pub enum Dictation {
     LoadingModel,
     /// Re-delivering the recording after a lost connection.
     Sending,
-    /// Cannot reach the server; still trying.
+    /// Cannot reach the server; still trying, until the dictation is saved.
     WaitingForServer,
-    /// Gave up for now; the recording is kept until `retry` or `discard`.
-    Failed,
 }
 
 /// The desktop daemon's budgets where they apply; tests shorten them.
@@ -121,8 +139,8 @@ pub struct Timing {
     /// The wait for a pong when checking that a quiet connection is alive. Grows with the round
     /// trip.
     pub pong: Duration,
-    /// How long after `stop`, or `retry`, the core keeps trying to reach the server before the
-    /// dictation fails.
+    /// How long after `stop` the core keeps trying to reach the server before the dictation is
+    /// saved.
     pub redeliver_window: Duration,
     pub attempt_budget: Duration,
     /// Doubles after each failed attempt, up to 2 s.
@@ -153,8 +171,8 @@ pub struct Core {
 }
 
 impl Core {
-    /// `data_dir` keeps the server, device id and token. `device_name` names the phone when it
-    /// redeems a pairing code.
+    /// `data_dir` keeps the server, device id and token, and the recordings. `device_name` names
+    /// the phone when it redeems a pairing code.
     pub fn start(data_dir: impl Into<PathBuf>, device_name: impl Into<String>) -> Core {
         Core::with_timing(data_dir, device_name, Timing::default())
     }

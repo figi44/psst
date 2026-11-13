@@ -243,11 +243,12 @@ impl State {
 
     fn menu_changed(&mut self, outcome: Option<MenuOutcome>) {
         match outcome {
-            Some(outcome) => {
+            Some(outcome @ (MenuOutcome::Chose(_) | MenuOutcome::Closed)) => {
                 self.overlay.menu = None;
                 self.show();
                 self.emit(WaylandEvent::Menu(outcome));
             }
+            Some(kept @ MenuOutcome::Kept(_)) => self.emit(WaylandEvent::Menu(kept)),
             None => {
                 if let Some(surface) = &mut self.overlay.surface {
                     surface.dirty = true;

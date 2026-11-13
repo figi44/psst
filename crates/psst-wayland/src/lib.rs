@@ -13,7 +13,9 @@ mod keymap;
 mod overlay;
 mod thread;
 
-pub use psst_overlay::{Listing, MenuAction, MenuOutcome, MenuSpec, ModelChoice, OverlayState, Rgba, Style};
+pub use psst_overlay::{
+    HistoryEntry, Listing, MenuAction, MenuOutcome, MenuSpec, ModelChoice, OverlayState, Rgba, Style,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Chord {
@@ -59,7 +61,8 @@ pub enum WaylandEvent {
         generation: u64,
         reason: String,
     },
-    /// The menu closed itself: something was chosen, or it was dismissed.
+    /// Something was chosen in the menu, or it was dismissed. Only a [`MenuOutcome::Kept`] leaves
+    /// it open.
     Menu(MenuOutcome),
     /// Takes the menu with it.
     Disconnected,

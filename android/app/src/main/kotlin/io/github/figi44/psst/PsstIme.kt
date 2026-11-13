@@ -51,12 +51,16 @@ class PsstIme : InputMethodService(), DictationView.Actions, Recorder.Events {
     private var showingHistory = false
     private var history: History? = null
 
+    /** The saved dictation whose recording the next tap on its discard button deletes. */
+    private var confirmingDiscard: String? = null
+
     private val stateListener: (State) -> Unit = { onCoreState(it) }
     private val consumeFinal: (Final) -> Boolean = { onFinal(it) }
     private val historyListener: (History) -> Unit = {
         history = it
         render()
     }
+    private val onSaved: () -> Unit = { notify(R.string.ime_saved, Tone.WARN) }
     private val startTimeout = Runnable { onStartTimeout() }
     private val clearNotice = Runnable {
         notice = null
@@ -74,6 +78,7 @@ class PsstIme : InputMethodService(), DictationView.Actions, Recorder.Events {
         Psst.addListener(stateListener)
         Psst.finalConsumer = consumeFinal
         Psst.historyListener = historyListener
+        Psst.savedListener = onSaved
     }
 
     override fun onDestroy() {
@@ -84,6 +89,7 @@ class PsstIme : InputMethodService(), DictationView.Actions, Recorder.Events {
         Psst.removeListener(stateListener)
         if (Psst.finalConsumer === consumeFinal) Psst.finalConsumer = null
         if (Psst.historyListener === historyListener) Psst.historyListener = null
+        if (Psst.savedListener === onSaved) Psst.savedListener = null
         view = null
         super.onDestroy()
     }
@@ -129,6 +135,7 @@ class PsstIme : InputMethodService(), DictationView.Actions, Recorder.Events {
         super.onWindowHidden()
         opening = true
         showingHistory = false
+        confirmingDiscard = null
         // Hiding is not cancelling: the recording is sent as usual.
         recorder?.stop()
         render()
@@ -228,10 +235,6 @@ class PsstIme : InputMethodService(), DictationView.Actions, Recorder.Events {
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     .putExtra(SetupActivity.ASK_MICROPHONE, action == Action.ALLOW_MIC),
             )
-            Action.RETRY -> Psst.retryDictation()
-            Action.DISCARD -> {
-                Psst.discardDictation()
-            }
             Action.INSERT -> Psst.pendingFinal?.let { if (insert(it)) Psst.takePendingFinal() }
             Action.DISMISS -> Psst.dismissPendingFinal()
         }
@@ -252,12 +255,16 @@ class PsstIme : InputMethodService(), DictationView.Actions, Recorder.Events {
         render()
     }
 
+    private fun notify(text: Int, tone: Tone) {
+        notice = Notice(text, tone)
+        main.removeCallbacks(clearNotice)
+        main.postDelayed(clearNotice, NOTICE_MS)
+        render()
+    }
+
     private fun onFinal(final: Final): Boolean {
         if (final.text.isEmpty()) {
-            notice = Notice(R.string.ime_nothing_heard, Tone.MUTED)
-            main.removeCallbacks(clearNotice)
-            main.postDelayed(clearNotice, NOTICE_MS)
-            render()
+            notify(R.string.ime_nothing_heard, Tone.MUTED)
             return true
         }
         if (field != dictationField || !insert(final)) {
@@ -271,6 +278,7 @@ class PsstIme : InputMethodService(), DictationView.Actions, Recorder.Events {
     override fun onHistory() {
         showingHistory = true
         history = null
+        confirmingDiscard = null
         Psst.history()
         render()
     }
@@ -281,9 +289,28 @@ class PsstIme : InputMethodService(), DictationView.Actions, Recorder.Events {
     }
 
     override fun onHistoryPick(entry: DictationView.Entry) {
-        if (type(entry.text)) showingHistory = false
+        // One still waiting for the server has nothing to insert yet.
+        val text = entry.text ?: return
+        confirmingDiscard = null
+        if (type(text)) {
+            showingHistory = false
+            if (entry.saved) saved(entry)?.let(Psst::inserted)
+        }
         render()
     }
+
+    /** Only its audio is left while it waits for the server, gone for good: that takes a second tap. */
+    override fun onHistoryDiscard(entry: DictationView.Entry) {
+        if (entry.text == null && confirmingDiscard != entry.sessionId) {
+            confirmingDiscard = entry.sessionId
+        } else {
+            confirmingDiscard = null
+            saved(entry)?.let(Psst::discard)
+        }
+        render()
+    }
+
+    private fun saved(entry: DictationView.Entry) = Psst.state.saved.find { it.sessionId == entry.sessionId }
 
     private fun insert(final: Final): Boolean {
         if (!type(final.text)) return false
@@ -304,7 +331,9 @@ class PsstIme : InputMethodService(), DictationView.Actions, Recorder.Events {
     }
 
     private fun render() {
-        view?.show(ui(Psst.state))
+        val view = view ?: return
+        view.unused = Psst.state.saved.any { it.text != null }
+        view.show(ui(Psst.state))
     }
 
     private fun ui(state: State): Ui {
@@ -323,29 +352,30 @@ class PsstIme : InputMethodService(), DictationView.Actions, Recorder.Events {
             Dictation.LOADING_MODEL -> busy(R.string.ime_loading_model)
             Dictation.SENDING -> busy(R.string.ime_sending)
             Dictation.WAITING_FOR_SERVER -> busy(R.string.ime_waiting, Tone.WARN)
-            Dictation.FAILED -> Ui.Message(
-                state.dictationMessage ?: getString(R.string.ime_failed),
-                Tone.DANGER,
-                Action.RETRY,
-                Action.DISCARD,
-            )
         }
     }
 
+    /** The saved dictations come from the core at once, the rest from the server once it answers. */
     private fun historyUi(): Ui {
-        val history = history ?: return Ui.History(emptyList(), getString(R.string.ime_history_loading), Tone.MUTED)
-        history.error?.let { return Ui.History(emptyList(), it, Tone.WARN) }
-        if (history.items.isEmpty()) return Ui.History(emptyList(), getString(R.string.ime_history_empty), Tone.MUTED)
         val now = System.currentTimeMillis()
-        val entries = history.items.map {
-            val time = if (now - it.createdMs < DateUtils.MINUTE_IN_MILLIS) {
-                getString(R.string.ime_history_just_now)
-            } else {
-                DateUtils.getRelativeTimeSpanString(it.createdMs, now, DateUtils.MINUTE_IN_MILLIS)
-            }
-            DictationView.Entry(it.text, time)
+        val saved = Psst.state.saved.map {
+            val time = if (it.text == null) "${time(it.createdMs, now)} · ${length(it.durationMs)}" else time(it.createdMs, now)
+            DictationView.Entry(it.sessionId, it.text, time, saved = true, confirming = it.sessionId == confirmingDiscard)
         }
-        return Ui.History(entries, null, Tone.MUTED)
+        val history = history ?: return Ui.History(saved, emptyList(), getString(R.string.ime_history_loading), Tone.MUTED)
+        history.error?.let { return Ui.History(saved, emptyList(), it, Tone.WARN) }
+        val entries = history.items.filter { item -> saved.none { it.sessionId == item.sessionId } }
+            .map { DictationView.Entry(it.sessionId, it.text, time(it.createdMs, now)) }
+        if (entries.isEmpty() && saved.isEmpty()) {
+            return Ui.History(saved, entries, getString(R.string.ime_history_empty), Tone.MUTED)
+        }
+        return Ui.History(saved, entries, null, Tone.MUTED)
+    }
+
+    private fun time(createdMs: Long, now: Long): CharSequence = if (now - createdMs < DateUtils.MINUTE_IN_MILLIS) {
+        getString(R.string.ime_history_just_now)
+    } else {
+        DateUtils.getRelativeTimeSpanString(createdMs, now, DateUtils.MINUTE_IN_MILLIS)
     }
 
     private fun recording(state: State, listening: Boolean): Ui {
@@ -428,3 +458,9 @@ private val BLOCKING = EnumSet.of(Link.UNCONFIGURED, Link.NEEDS_PAIRING, Link.UP
 private const val START_TIMEOUT_MS = 2000L
 private const val NOTICE_MS = 2500L
 private const val WORD_LOOKBACK = 64
+
+/** A recording's length, as minutes and seconds. */
+private fun length(durationMs: Long): String {
+    val seconds = durationMs / 1000
+    return "%d:%02d".format(seconds / 60, seconds % 60)
+}

@@ -7,6 +7,10 @@
     <string name="ime_discard_dictation">Discard dictation</string>
     <string name="ime_backspace">Delete word</string>
     <string name="ime_history">Recent dictations</string>
+    <string name="ime_history_with_unused">Recent dictations, some never inserted</string>
+    <string name="ime_history_not_inserted">Not inserted yet</string>
+    <string name="ime_history_waiting">Waiting for the server</string>
+    <string name="ime_history_confirm_discard">Tap the bin again to discard the recording</string>
     <string name="ime_history_back">Back to dictating</string>
     <string name="ime_history_loading">Loading…</string>
     <string name="ime_history_just_now">Just now</string>
@@ -32,12 +36,11 @@
     <string name="ime_unconfigured">psst is not connected to a server yet.</string>
     <string name="ime_no_mic">psst needs the microphone to hear you.</string>
     <string name="ime_start_failed">psst could not start. Open psst to check the server.</string>
-    <string name="ime_failed">Could not transcribe it. Retry, or discard the recording.</string>
+    <string name="ime_saved">Saved: it will be in Recent dictations once transcribed</string>
     <string name="ime_pending">Not inserted yet: “%1$s”</string>
     <string name="ime_set_up">Set up psst</string>
     <string name="ime_allow_mic">Allow the microphone</string>
     <string name="ime_open_psst">Open psst</string>
-    <string name="ime_retry">Retry</string>
     <string name="ime_discard">Discard</string>
     <string name="ime_insert">Insert</string>
     <string name="ime_dismiss">Dismiss</string>

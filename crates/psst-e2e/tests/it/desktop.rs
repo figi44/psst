@@ -223,6 +223,7 @@ fn the_menu_switches_the_profile_and_adds_a_word_from_the_keyboard() {
     assert!(desk.ok(&["toggle"]).starts_with("recording"));
     assert_eq!(desk.ok(&["toggle"]).trim(), "opened the menu", "a double tap");
     desk.app.wait("leave", WAIT);
+    keyboard.tap(keys::KEY_DOWN);
     keyboard.tap(keys::KEY_ENTER);
     // Header and both profiles: 3 rows of 36 px and 6 px around them.
     let deadline = Instant::now() + WAIT;
@@ -244,7 +245,7 @@ fn the_menu_switches_the_profile_and_adds_a_word_from_the_keyboard() {
 
     assert_eq!(desk.ok(&["menu"]).trim(), "opened the menu");
     desk.app.wait("leave", WAIT);
-    for key in [keys::KEY_DOWN, keys::KEY_ENTER, keys::KEY_A, keys::KEY_2, keys::KEY_ENTER] {
+    for key in [keys::KEY_DOWN, keys::KEY_DOWN, keys::KEY_ENTER, keys::KEY_A, keys::KEY_2, keys::KEY_ENTER] {
         keyboard.tap(key);
     }
     let deadline = Instant::now() + WAIT;
