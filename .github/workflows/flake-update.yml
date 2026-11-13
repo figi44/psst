@@ -1,5 +1,5 @@
-# One pull request, refreshed daily and merged by hand: nixpkgs moves rustc and the CUDA engine,
-# which CI neither builds nor runs on a GPU.
+# One pull request, refreshed daily. It merges itself once the checks pass, unless the engine's
+# stack moved: CI neither builds the CUDA engine nor runs it on a GPU, so then it waits for review.
 name: Flake update
 
 on:
@@ -44,6 +44,10 @@ jobs:
               Python = p.python3.version;
               faster-whisper = p.python3Packages.faster-whisper.version;
               ctranslate2 = p.ctranslate2.version;
+              onnxruntime = p.python3Packages.onnxruntime.version;
+              tokenizers = p.python3Packages.tokenizers.version;
+              av = p.python3Packages.av.version;
+              huggingface-hub = p.python3Packages.huggingface-hub.version;
               CUDA = p.cudaPackages.cudaMajorMinorVersion;
               cuDNN = p.cudaPackages.cudnn.version;
             }'
@@ -56,16 +60,29 @@ jobs:
           fi
           versions > "$RUNNER_TEMP/after.json"
           echo "changed=true" >> "$GITHUB_OUTPUT"
+          # Everything but rustc is the engine's; CI covers rustc.
+          if jq -e --slurpfile after "$RUNNER_TEMP/after.json" 'del(.rustc) == ($after[0] | del(.rustc))' \
+            "$RUNNER_TEMP/before.json" > /dev/null; then
+            echo "engine=unchanged" >> "$GITHUB_OUTPUT"
+          else
+            echo "engine=moved" >> "$GITHUB_OUTPUT"
+          fi
       - name: List what the GPU machine would build
         if: steps.update.outputs.changed
         run: nix build --dry-run .#psst-engine-faster-whisper-cuda 2>&1 | tee "$RUNNER_TEMP/dry-run.log"
       - name: Describe the update
         if: steps.update.outputs.changed
+        env:
+          ENGINE: ${{ steps.update.outputs.engine }}
         run: |
           built=$(awk '/will be built:$/ { on = 1; next } /^[^ ]/ { on = 0 }
             on { sub(/^ *\/nix\/store\/[a-z0-9]+-/, ""); sub(/\.drv$/, ""); print "- `" $0 "`" }' "$RUNNER_TEMP/dry-run.log")
           {
-            echo "CI doesn't build the CUDA engine: check it in \`scripts/gpu-session.sh\` before merging."
+            if [[ $ENGINE == moved ]]; then
+              echo "The engine's stack moved, and CI doesn't build the CUDA engine: check it in \`scripts/gpu-session.sh\`, then merge."
+            else
+              echo "Merges itself once the checks pass: the engine's stack didn't move, and CI covers the rest."
+            fi
             echo
             echo '| | Before | After |'
             echo '| --- | --- | --- |'
@@ -105,6 +122,7 @@ jobs:
           APP: ${{ steps.app.outputs.app-slug }}[bot]
           BRANCH: flake-update
           OWNER: ${{ github.repository_owner }}
+          ENGINE: ${{ steps.update.outputs.engine }}
         run: |
           remote="https://x-access-token:$GH_TOKEN@github.com/$GH_REPO"
           id=$(gh api "/users/$APP" --jq .id)
@@ -115,11 +133,23 @@ jobs:
             echo "$BRANCH already has these inputs."
             exit 0
           fi
-          git push --quiet --force "$remote" "HEAD:refs/heads/$BRANCH"
           pr=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          # Before the push, so that an engine change never merges on its own.
+          if [[ -n $pr && $ENGINE == moved ]]; then
+            if [[ $(gh pr view "$pr" --json autoMergeRequest --jq '.autoMergeRequest != null') == true ]]; then
+              gh pr merge "$pr" --disable-auto
+            fi
+            gh pr edit "$pr" --add-reviewer "$OWNER"
+          fi
+          git push --quiet --force "$remote" "HEAD:refs/heads/$BRANCH"
           if [[ -n $pr ]]; then
             gh pr edit "$pr" --body-file "$RUNNER_TEMP/body.md"
           else
-            gh pr create --head "$BRANCH" --title 'Update the flake inputs' --body-file "$RUNNER_TEMP/body.md" \
-              --reviewer "$OWNER"
+            review=()
+            [[ $ENGINE == moved ]] && review=(--reviewer "$OWNER")
+            pr=$(gh pr create --head "$BRANCH" --title 'Update the flake inputs' --body-file "$RUNNER_TEMP/body.md" \
+              "${review[@]}")
+          fi
+          if [[ $ENGINE == unchanged ]]; then
+            gh pr merge "$pr" --auto --squash
           fi
