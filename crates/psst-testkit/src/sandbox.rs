@@ -34,8 +34,10 @@ use crate::{guard, tools::tools};
 
 /// The test niri config (plan 12): spawns nothing, no XWayland, layouts `us,cz(qwerty)`.
 const NIRI_CONFIG: &str = include_str!("../../../nix/test-niri.kdl");
-/// Headless sway: one output, no bar, no binds, no XWayland.
-const SWAY_CONFIG: &str = "xwayland disable\noutput HEADLESS-1 resolution 1280x800\n";
+/// Headless sway: one output, no bar, no binds, no XWayland. No borders or title bar, so the
+/// nested niri's window keeps the size it starts with (1280×800) instead of being resized just
+/// after it appears.
+const SWAY_CONFIG: &str = "xwayland disable\noutput HEADLESS-1 resolution 1280x800\ndefault_border none\n";
 
 const STARTUP: Duration = Duration::from_secs(15);
 
