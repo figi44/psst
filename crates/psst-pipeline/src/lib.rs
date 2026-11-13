@@ -8,8 +8,9 @@
 //!    annotations, and the text is never rebuilt from words.
 //! 3. **The guard** drops everything when the engine's VAD found no speech, and a segment that is a
 //!    phrase Whisper invents on silence when its speech evidence is weak.
-//! 4. **The dictionary** (with [`PipelineOptions::dictionary`]) replaces exact spellings and
-//!    protects every token it accepts. Fuzzy matching joins in Phase 2.
+//! 4. **The dictionary** (with [`PipelineOptions::dictionary`]) replaces exact spellings, then,
+//!    in English, spans close to a `fuzzy` term, and protects every token it accepts. The
+//!    tokens' `prob` sets how close a fuzzy match has to be.
 //! 5. **Rules** (plan 8) run in the profile's order and leave protected tokens alone.
 //! 6. **Assembly:** [`Final::text`] is the tokens with their spacing.
 //!

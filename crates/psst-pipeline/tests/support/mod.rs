@@ -4,9 +4,9 @@
 use std::ops::Range;
 
 use psst_config::{ConfigFile, DictionaryFile, Profile, ProfilesFile, Rule};
-use psst_dict::Dictionary;
+use psst_dict::{Dictionary, NeverRule};
 use psst_pipeline::{PipelineOptions, run};
-use psst_proto::{Edit, EngineResult, EngineTrace, Final, Segment, Stage};
+use psst_proto::{Edit, EngineResult, EngineTrace, Final, Segment, Stage, Word};
 
 pub fn segment(text: &str) -> Segment {
     Segment { text: text.into(), start_ms: 0, end_ms: 0, no_speech_prob: None, words: None }
@@ -32,6 +32,27 @@ pub fn trace(language: &str, speech_ms: Option<u32>, segments: Vec<Segment>) -> 
 /// One English segment with plenty of speech, the way Whisper writes it (leading space).
 pub fn said(text: &str) -> EngineTrace {
     trace("en", Some(3000), vec![segment(&format!(" {text}"))])
+}
+
+/// One English segment whose words the engine heard with these probabilities.
+pub fn said_words(words: &[(&str, f32)]) -> EngineTrace {
+    let words: Vec<Word> = words
+        .iter()
+        .enumerate()
+        .map(|(i, (text, prob))| Word {
+            text: format!(" {text}"),
+            start_ms: i as u32 * 300,
+            end_ms: i as u32 * 300 + 250,
+            prob: *prob,
+        })
+        .collect();
+    let text: String = words.iter().map(|w| w.text.as_str()).collect();
+    trace("en", Some(3000), vec![Segment { words: Some(words), ..segment(&text) }])
+}
+
+/// One English segment whose every word the engine heard with probability `prob`.
+pub fn said_p(text: &str, prob: f32) -> EngineTrace {
+    said_words(&text.split_whitespace().map(|w| (w, prob)).collect::<Vec<_>>())
 }
 
 /// One Czech segment with plenty of speech.
@@ -70,6 +91,16 @@ pub fn edit(stage: Stage, rule: &str, raw_span: Range<usize>, before: &str, afte
 
 pub fn exact(raw_span: Range<usize>, term: &str, before: &str, after: &str) -> Edit {
     Edit { term: Some(term.into()), ..edit(Stage::Dictionary, "exact", raw_span, before, after) }
+}
+
+pub fn fuzzy(raw_span: Range<usize>, term: &str, before: &str, after: &str, score: f32) -> Edit {
+    Edit { term: Some(term.into()), score: Some(score), ..edit(Stage::Dictionary, "fuzzy", raw_span, before, after) }
+}
+
+/// Runs the default profile for the trace's language with never rules.
+pub fn run_with_never(trace: &EngineTrace, dict: &str, never: &[(&str, &str)]) -> Final {
+    let dict = dictionary(dict).with_never_rules(never.iter().map(|(term, span)| NeverRule::new(term, span)));
+    run(trace, &profile(&trace.result.language), &dict, &PipelineOptions::default())
 }
 
 pub fn rule(rule: &str, raw_span: Range<usize>, before: &str, after: &str) -> Edit {
