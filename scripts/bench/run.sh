@@ -19,7 +19,8 @@ cache=${PSST_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/psst}
 python=${PSST_BENCH_PYTHON:-/nix/store/ph6w4fnslmcbzn78808ykdyy84m2h08y-python3-3.14.8-env/bin/python}
 cuda_libs=${PSST_BENCH_CUDA_LIBS:-/run/opengl-driver/lib:/nix/store/lc13g3zl4s8a6kwrsnhwrrcl8nh0lhgr-cuda13.4-libcublas-13.8.2.12-lib/lib:/nix/store/r349f0nfkzbq089wswnv23yhvakp415v-cuda13.4-cudnn-9.27.0.42-lib/lib}
 export PSST_BENCH_OUT=${PSST_BENCH_OUT:-$cache/bench/$(date +%Y%m%d)}
-export HF_HOME=${HF_HOME:-$cache/hf} HF_HUB_DISABLE_TELEMETRY=1
+# Always the psst cache, even if HF_HOME or HF_HUB_CACHE is set in the environment.
+export HF_HOME=$cache/hf HF_HUB_CACHE=$cache/hf/hub HF_HUB_DISABLE_TELEMETRY=1
 export LD_LIBRARY_PATH=$cuda_libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 
 if (($# == 0)); then
