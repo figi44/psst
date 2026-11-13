@@ -239,19 +239,25 @@ impl Conn {
             return self.reply(ws, reject(ErrorCode::BadRequest, message)).await;
         }
         let profile_name = start.profile.as_deref().unwrap_or(DEFAULT_PROFILE);
-        let Some(profile) = self.state.live.profile(profile_name) else {
-            return self.reply(ws, reject(ErrorCode::BadRequest, &format!("unknown profile `{profile_name}`"))).await;
-        };
+        // Only a new recording needs the profile; resuming finished or running work doesn't, even
+        // if a reload removed its profile since.
+        let profile = self.state.live.profile(profile_name);
         let dictionary = self.state.live.dictionary();
         let key = SessionKey { device: self.device.clone(), session_id };
         let state = self.state.clone();
-        let admit = move || admit(&state);
+        let known_profile = profile.is_some();
+        let admit = move || {
+            if !known_profile {
+                return Err(Rejection::new(ErrorCode::BadRequest, format!("unknown profile `{profile_name}`")));
+            }
+            admit(&state)
+        };
         let started = self.state.registry.start(
             &self.state.db,
             StartRequest {
                 key: key.clone(),
                 resume: start.resume,
-                profile: &profile.name,
+                profile: profile_name,
                 conn: self.attachment.clone(),
                 admit: &admit,
             },
@@ -273,7 +279,7 @@ impl Conn {
                     pcm: Vec::with_capacity(10 * SAMPLE_RATE as usize * 2),
                     last_frame: Instant::now(),
                     history_id,
-                    profile,
+                    profile: profile.expect("a new recording was admitted with a known profile"),
                     dictionary,
                     bias: start.eval.is_none_or(|eval| eval.bias),
                 };

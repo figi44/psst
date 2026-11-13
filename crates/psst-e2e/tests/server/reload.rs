@@ -24,20 +24,21 @@ fn hangup(server: &TestServer) {
     kill(Pid::from_raw(server.pid() as i32), Signal::SIGHUP).expect("send SIGHUP");
 }
 
+fn start(session_id: SessionId, profile: &str, resume: bool) -> StartMsg {
+    StartMsg {
+        session_id,
+        profile: Some(profile.into()),
+        audio: AudioFormat::default(),
+        mode: Mode::Upload,
+        resume,
+        eval: None,
+    }
+}
+
 /// Dictates once with `profile`; the engine request's language and bias terms, or the error.
-async fn dictate(server: &TestServer, profile: &str) -> Result<(String, serde_json::Value), ErrorCode> {
+async fn dictate(server: &TestServer, profile: &str, id: SessionId) -> Result<(String, serde_json::Value), ErrorCode> {
     let mut client = Client::connect(server).await;
-    let id = SessionId::new_v4();
-    client
-        .start_with(StartMsg {
-            session_id: id,
-            profile: Some(profile.into()),
-            audio: AudioFormat::default(),
-            mode: Mode::Upload,
-            resume: false,
-            eval: None,
-        })
-        .await;
+    client.start_with(start(id, profile, false)).await;
     match client.recv().await {
         psst_proto::ws::ServerMsg::Ready(_) => {}
         psst_proto::ws::ServerMsg::Error(err) => return Err(err.code),
@@ -65,14 +66,22 @@ async fn sighup_reloads_profiles_and_dictionary_and_keeps_versions_that_fail_val
     hangup(&server);
     server.wait_for_log("keeping the previous profiles.toml", 1, RELOAD_TIMEOUT);
     server.wait_for_log("keeping the previous dictionary.toml", 1, RELOAD_TIMEOUT);
-    assert_eq!(dictate(&server, "czech").await, Ok(("cs".into(), json!(["Hyprland"]))));
+    let czech_session = SessionId::new_v4();
+    assert_eq!(dictate(&server, "czech", czech_session).await, Ok(("cs".into(), json!(["Hyprland"]))));
 
     fs::write(config.join("profiles.toml"), "[profiles.default]\n[profiles.german]\nlanguage = \"de\"\n").unwrap();
     fs::write(config.join("dictionary.toml"), "[[terms]]\ntext = \"Wayland\"\n").unwrap();
     hangup(&server);
     server.wait_for_log("profiles.toml: reloaded", 1, RELOAD_TIMEOUT);
     server.wait_for_log("dictionary.toml: reloaded", 1, RELOAD_TIMEOUT);
-    assert_eq!(dictate(&server, "german").await, Ok(("de".into(), json!(["Wayland"]))));
-    assert_eq!(dictate(&server, "czech").await, Err(ErrorCode::BadRequest));
+    assert_eq!(dictate(&server, "german", SessionId::new_v4()).await, Ok(("de".into(), json!(["Wayland"]))));
+    assert_eq!(dictate(&server, "czech", SessionId::new_v4()).await, Err(ErrorCode::BadRequest));
+
+    // A finished session resumes even though its profile is gone now.
+    let mut client = Client::connect(&server).await;
+    client.start_with(start(czech_session, "czech", true)).await;
+    let ready = client.ready().await;
+    assert!(ready.resumed && !ready.need_audio, "{ready:?}");
+    assert_eq!(client.final_msg().await.session_id, czech_session);
     assert_eq!(requests_of(&server, "load").len(), 1, "a reload doesn't restart the engine");
 }
