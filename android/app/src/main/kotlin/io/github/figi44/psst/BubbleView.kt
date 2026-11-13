@@ -59,8 +59,7 @@ class BubbleView(context: Context) : View(context) {
             invalidate()
         }
 
-    // Room around the disc for the halo and the shadow.
-    private val pad = dp(6f)
+    private val pad = dp(PAD_DP)
     private val bg = context.getColor(R.color.bg)
     private val accent = context.getColor(R.color.accent)
     private val fg = context.getColor(R.color.fg)
@@ -68,11 +67,12 @@ class BubbleView(context: Context) : View(context) {
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { setShadowLayer(dp(3f), 0f, dp(1f), SHADOW) }
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
 
-    // Black like the overlay's pill, with its hairline, so that it reads on light keyboards and dark.
+    // Black like the overlay's pill, so that it reads on light screens. The overlay's faint hairline
+    // is lost on a dark one, so the bubble's ring is stronger.
     private val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        color = context.getColor(R.color.line)
-        strokeWidth = max(1f, dp(0.5f))
+        color = context.getColor(R.color.faint)
+        strokeWidth = dp(1.5f)
     }
     private val icon = requireNotNull(context.getDrawable(R.drawable.ime_mic)).mutate().apply { setTint(fg) }
     private val well = Well(context)
@@ -245,6 +245,11 @@ class BubbleView(context: Context) : View(context) {
     override fun performClick() = super.performClick()
 
     private fun dp(value: Float) = value * resources.displayMetrics.density
+
+    companion object {
+        /** Room around the disc for the halo and the shadow. */
+        const val PAD_DP = 6f
+    }
 }
 
 private const val SHADOW = 0x66000000

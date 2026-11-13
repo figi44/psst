@@ -15,6 +15,7 @@ import android.text.InputType
 import android.view.ContextThemeWrapper
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
+import android.view.View
 import android.view.View.MeasureSpec
 import android.view.WindowInsets
 import android.view.WindowManager
@@ -49,12 +50,17 @@ class BubbleService : AccessibilityService(), BubbleView.Actions, Recording.List
     /** Typed in place, until the field shows it kept the words. */
     private var confirming = false
 
-    /** A few words beside the bubble: Android hides an app's toasts while another app is in front. */
-    private var note: TextView? = null
+    /**
+     * A few words coming out of the bubble: Android hides an app's toasts while another app is in
+     * front. Its window comes and goes with the bubble's, beneath it, so that the disc covers the
+     * end of its pill.
+     */
+    private lateinit var note: TextView
+    private lateinit var noteParams: WindowManager.LayoutParams
     private var noteShown = false
     private val hideNote = Runnable {
-        if (noteShown) windowManager.removeView(note)
-        noteShown = false
+        dismissNote()
+        update()
     }
 
     private val stateListener: (State) -> Unit = { render() }
@@ -64,26 +70,33 @@ class BubbleService : AccessibilityService(), BubbleView.Actions, Recording.List
         update()
     }
 
-    // In screen coordinates, as the keyboard's bounds come, whatever the language's direction.
-    @SuppressLint("RtlHardcoded")
     override fun onServiceConnected() {
         windowManager = getSystemService(WindowManager::class.java)
         imm = getSystemService(InputMethodManager::class.java)
         prefs = bubblePrefs()
         val size = px(SIZE_DP)
-        params = WindowManager.LayoutParams(
-            size,
-            size,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            // Never focused: the field keeps the keyboard.
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT,
-        )
-        params.gravity = Gravity.TOP or Gravity.LEFT
-        params.fitInsetsTypes = 0
-        params.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+        params = overlay(size, size, 0)
         params.title = getString(R.string.bubble_label)
-        view = BubbleView(ContextThemeWrapper(this, R.style.Theme_Psst)).also { it.actions = this }
+        val theme = ContextThemeWrapper(this, R.style.Theme_Psst)
+        view = BubbleView(theme).also { it.actions = this }
+        note = TextView(theme).apply {
+            textSize = 14f
+            setTextColor(getColor(R.color.fg))
+            gravity = Gravity.CENTER_VERTICAL
+            minHeight = px(PILL_DP)
+            // The overlay's pill: black, with its hairline.
+            background = GradientDrawable().apply {
+                cornerRadius = px(PILL_DP) / 2f
+                setColor(getColor(R.color.bg))
+                setStroke(px(1), getColor(R.color.line))
+            }
+            visibility = View.INVISIBLE
+        }
+        noteParams = overlay(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+        )
         Psst.addListener(stateListener)
         Recording.addListener(this)
         update()
@@ -102,9 +115,11 @@ class BubbleService : AccessibilityService(), BubbleView.Actions, Recording.List
             Recording.stop()
         }
         if (Psst.savedListener === onSaved) Psst.savedListener = null
-        if (shown) windowManager.removeView(view)
+        if (shown) {
+            windowManager.removeView(view)
+            windowManager.removeView(note)
+        }
         shown = false
-        hideNote.run()
         view = null
         super.onDestroy()
     }
@@ -116,13 +131,16 @@ class BubbleService : AccessibilityService(), BubbleView.Actions, Recording.List
         window?.getBoundsInScreen(keyboard)
         // A dictation saved for later brings no final: it is over for the bubble too.
         val owned = Psst.finalConsumer === consumeFinal && (Recording.active || Psst.state.dictation != Dictation.IDLE)
-        val ime = if (window != null || owned) psstIme() else null
+        val ime = if (window != null || owned || noteShown) psstIme() else null
         // Psst's own panel does what the bubble would.
         val panel = window != null && ime == Settings.Secure.getString(contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD)
+        // A note keeps the bubble it comes out of, so that it can be read after the keyboard has gone.
         val show = ime != null && !panel &&
-            (owned || window != null && takesSpeech(findFocus(AccessibilityNodeInfo.FOCUS_INPUT)))
+            (owned || noteShown || window != null && takesSpeech(findFocus(AccessibilityNodeInfo.FOCUS_INPUT)))
         if (show && !shown) {
             place()
+            // A later window lies over an earlier one.
+            windowManager.addView(note, noteParams)
             windowManager.addView(view, params)
             shown = true
             // So that a tap finds the server's connection up.
@@ -130,6 +148,7 @@ class BubbleService : AccessibilityService(), BubbleView.Actions, Recording.List
         } else if (!show && shown) {
             shown = false
             windowManager.removeView(view)
+            windowManager.removeView(note)
         } else if (show && !dragging) {
             place()
         }
@@ -158,41 +177,41 @@ class BubbleService : AccessibilityService(), BubbleView.Actions, Recording.List
         move(x, y.coerceIn(top, screen.height() - params.height))
     }
 
-    /** Shows [text] beside the bubble, on the side with room, for a few seconds. */
-    @SuppressLint("RtlHardcoded")
+    /** Shows [text] coming out of the bubble, toward the side with room, for a few seconds. */
     private fun note(text: Int) {
-        val note = note ?: TextView(ContextThemeWrapper(this, R.style.Theme_Psst)).also {
-            it.textSize = 14f
-            it.setTextColor(getColor(R.color.fg))
-            it.setPadding(px(16), px(10), px(16), px(10))
-            // The overlay's flash: black, with its hairline.
-            it.background = GradientDrawable().apply {
-                cornerRadius = px(20).toFloat()
-                setColor(getColor(R.color.bg))
-                setStroke(px(1), getColor(R.color.line))
-            }
-            note = it
-        }
+        if (!shown) return
         note.setText(text)
-        val screen = windowManager.currentWindowMetrics.bounds
-        val left = params.x + params.width / 2 < screen.width() / 2
-        val room = (if (left) screen.width() - params.x - params.width else params.x) - px(MARGIN_DP) * 2
-        note.measure(MeasureSpec.makeMeasureSpec(room, MeasureSpec.AT_MOST), MeasureSpec.UNSPECIFIED)
-        val noteParams = WindowManager.LayoutParams(
-            note.measuredWidth,
-            note.measuredHeight,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
-            PixelFormat.TRANSLUCENT,
-        )
-        noteParams.gravity = Gravity.TOP or Gravity.LEFT
-        noteParams.fitInsetsTypes = 0
-        noteParams.x = if (left) params.x + params.width else params.x - note.measuredWidth
-        noteParams.y = params.y + (params.height - note.measuredHeight) / 2
-        if (noteShown) windowManager.updateViewLayout(note, noteParams) else windowManager.addView(note, noteParams)
         noteShown = true
+        placeNote()
+        note.visibility = View.VISIBLE
         main.removeCallbacks(hideNote)
         main.postDelayed(hideNote, NOTE_MS)
+    }
+
+    private fun dismissNote() {
+        main.removeCallbacks(hideNote)
+        noteShown = false
+        note.visibility = View.INVISIBLE
+    }
+
+    private fun placeNote() {
+        val screen = windowManager.currentWindowMetrics.bounds
+        val cx = params.x + params.width / 2
+        val cy = params.y + params.height / 2
+        val right = cx < screen.width() / 2
+        // The pill starts under the disc's centre, its round end inside the disc.
+        val tuck = px(PILL_DP) / 2
+        val disc = params.width / 2 - (BubbleView.PAD_DP * resources.displayMetrics.density).roundToInt()
+        val inner = tuck + disc + px(NOTE_GAP_DP)
+        val outer = px(16)
+        if (right) note.setPadding(inner, px(10), outer, px(10)) else note.setPadding(outer, px(10), inner, px(10))
+        val room = (if (right) screen.width() - cx else cx) + tuck - px(MARGIN_DP)
+        note.measure(MeasureSpec.makeMeasureSpec(room, MeasureSpec.AT_MOST), MeasureSpec.UNSPECIFIED)
+        noteParams.width = note.measuredWidth
+        noteParams.height = note.measuredHeight
+        noteParams.x = if (right) cx - tuck else cx + tuck - note.measuredWidth
+        noteParams.y = cy - note.measuredHeight / 2
+        if (shown) windowManager.updateViewLayout(note, noteParams)
     }
 
     private fun move(x: Int, y: Int) {
@@ -200,6 +219,7 @@ class BubbleService : AccessibilityService(), BubbleView.Actions, Recording.List
         params.x = x
         params.y = y
         if (shown) windowManager.updateViewLayout(view, params)
+        if (noteShown) placeNote()
     }
 
     override fun onDrag(dx: Int, dy: Int) {
@@ -224,6 +244,8 @@ class BubbleService : AccessibilityService(), BubbleView.Actions, Recording.List
     }
 
     override fun onTap() {
+        // Each branch updates the bubble, which the note no longer keeps.
+        if (noteShown) dismissNote()
         when {
             Recording.stop() -> tick()
             // Busy, failed, or blocked: the panel says with what, and what to do about it.
@@ -340,6 +362,25 @@ class BubbleService : AccessibilityService(), BubbleView.Actions, Recording.List
     private fun px(dp: Int) = (dp * resources.displayMetrics.density).roundToInt()
 }
 
+/**
+ * Both of the bubble's windows count from the screen's corner, whatever the language's direction,
+ * and the status bar and cutout are no exception: a window kept clear of the cutout lands lower than
+ * its coordinates say, out of line with the other.
+ */
+@SuppressLint("RtlHardcoded")
+private fun overlay(width: Int, height: Int, flags: Int) = WindowManager.LayoutParams(
+    width,
+    height,
+    WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+    // Never focused: the field keeps the keyboard.
+    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or flags,
+    PixelFormat.TRANSLUCENT,
+).apply {
+    gravity = Gravity.TOP or Gravity.LEFT
+    fitInsetsTypes = 0
+    layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+}
+
 /** The bubble's settings, the user's own: typing in place, and where they dragged it. */
 fun Context.bubblePrefs(): SharedPreferences = getSharedPreferences("bubble", Context.MODE_PRIVATE)
 
@@ -377,9 +418,13 @@ private const val CHROME_ROLE = "AccessibilityNodeInfo.chromeRole"
 private val WEB_TEXT_FIELDS = setOf("textField", "searchBox", "textFieldWithComboBox")
 
 /** The window: the circle with room around it for its halo and shadow. */
-private const val SIZE_DP = 56
+private const val SIZE_DP = 62
 private const val MARGIN_DP = 2
 private const val NOTE_MS = 3000L
+
+/** The note's height on one line: short of the disc's, so that it reads as coming out of it. */
+private const val PILL_DP = 40
+private const val NOTE_GAP_DP = 10
 
 // On the keyboard's top row, at its end, where keyboards keep a voice key of their own: what the
 // bubble covers there is no part of the app.
