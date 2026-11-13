@@ -20,7 +20,7 @@ use psst_proto::{
 };
 use psst_wayland::{
     Chord, HistoryEntry, Listing, MenuAction, MenuOutcome, MenuSpec, ModelChoice, OverlayState, WaylandCmd,
-    WaylandEvent,
+    WaylandEvent, post_processing_label,
 };
 use tokio::{
     net::UnixListener,
@@ -139,6 +139,8 @@ pub async fn spawn(cfg: ClientConfig, paths: Paths, deps: Deps) -> anyhow::Resul
     let listener = bind_socket(&paths.socket)?;
     let store = Store::open(&paths.state_dir)?;
     let profile = menu::load_profile(&paths.state_dir, &cfg.profile).unwrap_or_else(|| cfg.profile.clone());
+    let post_processing = menu::load_post_processing(&paths.state_dir, &cfg.post_processing)
+        .unwrap_or_else(|| cfg.post_processing.clone());
     let recovery = store.recover(&profile)?;
     for id in &recovery.interrupted {
         info!("recording {id} was interrupted; kept as incomplete");
@@ -159,7 +161,7 @@ pub async fn spawn(cfg: ClientConfig, paths: Paths, deps: Deps) -> anyhow::Resul
             }
         }
     });
-    let mut core = Core::new(cfg, profile, store, deps, (tx.clone(), wayland_tx), paths);
+    let mut core = Core::new(cfg, (profile, post_processing), store, deps, (tx.clone(), wayland_tx), paths);
     core.connect(core.t.resume_budget, AttemptKind::Connect);
     let task = tokio::spawn(core.run(rx, wayland_rx));
     Ok(DaemonHandle { tx, task, listener })
@@ -522,6 +524,7 @@ struct MenuState {
     /// As the Wayland thread was last told; `None` while it's closed.
     shown: Option<MenuSpec>,
     profiles: Listing,
+    post_processing: Listing,
     model: Option<ModelChoice>,
     history: Listing<HistoryRow>,
 }
@@ -530,6 +533,8 @@ struct Core {
     cfg: ClientConfig,
     /// The one new dictations use: client.toml's, or the one chosen in the menu since.
     profile: String,
+    /// Likewise.
+    post_processing: String,
     menu: MenuState,
     store: Store,
     deps: Deps,
@@ -587,7 +592,7 @@ struct Core {
 impl Core {
     fn new(
         cfg: ClientConfig,
-        profile: String,
+        (profile, post_processing): (String, String),
         store: Store,
         deps: Deps,
         (tx, wayland_tx): (mpsc::UnboundedSender<Input>, mpsc::UnboundedSender<WaylandEvent>),
@@ -597,10 +602,12 @@ impl Core {
         Core {
             cfg,
             profile,
+            post_processing,
             menu: MenuState {
                 open: false,
                 shown: None,
                 profiles: Listing::Loading,
+                post_processing: Listing::Loading,
                 model: None,
                 history: Listing::Loading,
             },
@@ -840,6 +847,9 @@ impl Core {
         if matches!(self.menu.history, Listing::Failed(_)) {
             self.menu.history = Listing::Loading;
         }
+        if matches!(self.menu.post_processing, Listing::Failed(_)) {
+            self.menu.post_processing = Listing::Loading;
+        }
         self.fetch_menu_facts();
         // Looking at the history is a good moment to send what's saved, failed before or not.
         self.forget_tried();
@@ -874,6 +884,9 @@ impl Core {
             // Switching needs only the names, so a list from before still does.
             menu::Fact::Profiles(Err(_)) if matches!(self.menu.profiles, Listing::Ready(_)) => {}
             menu::Fact::Profiles(Err(reason)) => self.menu.profiles = Listing::Failed(reason),
+            menu::Fact::PostProcessing(Ok(styles)) => self.menu.post_processing = Listing::Ready(styles),
+            menu::Fact::PostProcessing(Err(_)) if matches!(self.menu.post_processing, Listing::Ready(_)) => {}
+            menu::Fact::PostProcessing(Err(reason)) => self.menu.post_processing = Listing::Failed(reason),
             menu::Fact::Model(state) => self.menu.model = Some(menu::choice(state)),
             menu::Fact::History(Ok(rows)) => self.menu.history = Listing::Ready(rows),
             menu::Fact::History(Err(_)) if matches!(self.menu.history, Listing::Ready(_)) => {}
@@ -885,6 +898,7 @@ impl Core {
         info!("menu: {action:?}");
         let progress = match &action {
             MenuAction::SwitchProfile(name) => return self.switch_profile(name.clone()),
+            MenuAction::SwitchPostProcessing(style) => return self.switch_post_processing(style.clone()),
             MenuAction::Paste(key) | MenuAction::Copy(key) | MenuAction::Discard(key) => {
                 let response = self.history_action(key, &action);
                 if !response.ok {
@@ -949,6 +963,19 @@ impl Core {
         self.profile = name;
     }
 
+    fn switch_post_processing(&mut self, style: String) {
+        if let Err(err) = menu::save_post_processing(self.store.state_dir(), &self.cfg.post_processing, &style) {
+            warn!("cannot keep post-processing {style} for the next start: {err}");
+        }
+        info!("post-processing: {style}");
+        self.flash(&format!("Post-processing: {}", post_processing_label(&style)));
+        self.post_processing = style;
+    }
+
+    fn sent_post_processing(&self) -> Option<String> {
+        Some(self.post_processing.clone()).filter(|style| style != "none")
+    }
+
     fn refresh_menu(&mut self) {
         let wanted = (self.menu.open && self.inserting.is_none()).then(|| self.menu_spec());
         if wanted != self.menu.shown {
@@ -993,6 +1020,8 @@ impl Core {
         };
         MenuSpec {
             profile: self.profile.clone(),
+            post_processing: self.post_processing.clone(),
+            post_processing_styles: self.menu.post_processing.clone(),
             profiles: self.menu.profiles.clone(),
             model: self.menu.model,
             saved: saved.iter().map(entry).collect(),
@@ -1184,6 +1213,7 @@ impl Core {
         Status {
             state: state.into(),
             profile: self.profile.clone(),
+            post_processing: self.post_processing.clone(),
             connection,
             error,
             recording: self.recording.as_ref().map(info),
@@ -1495,6 +1525,7 @@ impl Core {
         let Some(rec) = &mut self.recording else { return };
         let (id, profile) = (rec.id, rec.profile.clone());
         let session = client.start(StartOpts {
+            post_processing: self.sent_post_processing(),
             session_id: id,
             profile: Some(profile),
             mode: Mode::Live,
@@ -1521,6 +1552,7 @@ impl Core {
         let (id, profile) = (d.id, d.profile.clone());
         let wav = self.store.wav_path(id);
         let opts = StartOpts {
+            post_processing: self.sent_post_processing(),
             session_id: id,
             profile: Some(profile),
             mode: Mode::Upload,
@@ -1802,6 +1834,7 @@ impl Core {
         let opts = StartOpts {
             session_id: id,
             profile: Some(rec.meta.profile),
+            post_processing: self.sent_post_processing(),
             mode: Mode::Upload,
             resume: true,
             eval: None,

@@ -36,6 +36,7 @@ pub struct AppState {
     pub local: LocalPolicy,
     pub tcp_addrs: Vec<SocketAddr>,
     pub shutdown: watch::Receiver<bool>,
+    pub tidy: crate::tidy::Lab,
 }
 
 impl AppState {

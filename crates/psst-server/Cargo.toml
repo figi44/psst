@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 anyhow = "1.0.104"
 axum = { version = "0.8.9", features = ["ws"] }
+base64 = "0.22.1"
 clap = { version = "4.6.7", features = ["derive"] }
 futures-util = "0.3.34"
 http-body-util = "0.1.5"
@@ -19,6 +20,7 @@ jiff = "0.2.39"
 minijinja = { version = "3.0.5", features = ["serde", "urlencode"] }
 nix = { version = "0.31.3", features = ["user", "signal", "process", "fs", "hostname"] }
 opusic-c = { version = "1.6.1", default-features = false }
+percent-encoding = "2.3.2"
 psst-config = { version = "0.1.0", path = "../psst-config" }
 psst-dict = { version = "0.1.0", path = "../psst-dict" }
 psst-engine-proto = { version = "0.1.0", path = "../psst-engine-proto" }
@@ -33,10 +35,13 @@ sha2 = "0.11.1"
 socket2 = { version = "0.6.5", features = ["all"] }
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["full"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
 toml = "1.2.1"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 uuid = { version = "1.29.0", features = ["v4", "serde"] }
+webpki-roots = "1.0.11"
 zbus = { version = "6.2.1", default-features = false, features = ["tokio"] }
 
 [dev-dependencies]

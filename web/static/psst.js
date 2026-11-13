@@ -342,4 +342,56 @@
     $("span", box).textContent = n + " of " + limit + " tokens";
     $("progress", box).value = Math.min(n, limit);
   }
+
+  // A post-processing style's editor compares its fields with the saved style and the built-in
+  // one, to offer saving, discarding and resetting only when they'd change something.
+  var squash = function (s) { return String(s).trim().replace(/\s+/g, " "); };
+  function styleFields(form) {
+    var f = form.elements;
+    return { prompt: f.prompt.value, model: f.model.value.trim(), effort: f.effort.value, tier: f.tier.value };
+  }
+  function styleStored(form, which) {
+    var t = $("template[data-" + which + "]", form);
+    if (!t) return null;
+    var d = form.dataset;
+    return { prompt: t.content.textContent, model: d[which + "Model"], effort: d[which + "Effort"], tier: d[which + "Tier"] };
+  }
+  function sameStyle(a, b) {
+    return squash(a.prompt) === squash(b.prompt) && a.model === b.model && a.effort === b.effort && a.tier === b.tier;
+  }
+  function refreshStyle(form) {
+    var now = styleFields(form), saved = styleStored(form, "saved"), fallback = styleStored(form, "default");
+    var dirty = !sameStyle(now, saved);
+    $("[data-dirty-note]", form).hidden = !dirty;
+    $("[data-discard]", form).hidden = !dirty;
+    $("[data-save]", form).disabled = !dirty;
+    var reset = $("[data-reset]", form);
+    if (reset) reset.hidden = sameStyle(now, fallback);
+  }
+  function initStyles() { $$("form[data-style]").forEach(refreshStyle); }
+  ["input", "change"].forEach(function (type) {
+    document.addEventListener(type, function (e) {
+      var form = e.target.form;
+      if (form && form.hasAttribute("data-style")) refreshStyle(form);
+    });
+  });
+  document.addEventListener("click", function (e) {
+    var button = e.target.closest && e.target.closest("[data-discard], [data-reset], [data-confirm]");
+    if (!button) return;
+    if (button.hasAttribute("data-confirm")) {
+      if (!confirm(button.dataset.confirm)) e.preventDefault();
+      return;
+    }
+    var form = button.form;
+    var to = styleStored(form, button.hasAttribute("data-reset") ? "default" : "saved");
+    e.preventDefault();
+    form.elements.prompt.value = to.prompt;
+    form.elements.model.value = to.model;
+    form.elements.effort.value = to.effort;
+    form.elements.tier.value = to.tier;
+    refreshStyle(form);
+  });
+  document.addEventListener("htmx:afterSettle", initStyles);
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initStyles);
+  else initStyles();
 })();

@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+{% block title %}Post-processing · psst{% endblock %}
+
+{%- macro chevron() -%}<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>{%- endmacro %}
+{%- macro plus() -%}<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>{%- endmacro %}
+
+{% block main %}
+<div class="page lab">
+  <div class="head">
+    <div class="head-row"><h1>Post-processing</h1></div>
+    <p class="sub">An OpenAI model cleans up each dictation after psst's own clean-up, on your ChatGPT plan. Pick a style in the quick menu: double-tap the hotkey.</p>
+  </div>
+  {%- if error %}
+  <div class="notice" role="alert">{{ error }}</div>
+  {%- endif %}
+
+  <section id="lab-connect" class="lab-connect{% if not email %} callout{% endif %}"{% if pending %} hx-get="/post-processing" hx-trigger="every 3s" hx-select="#lab-connect" hx-target="this" hx-swap="outerHTML"{% endif %}>
+  {%- if email %}
+    <p>Using your ChatGPT plan as <strong>{{ email }}</strong>. <a href="{{ manage_usage }}" target="_blank" rel="noopener">Manage usage</a></p>
+    <form method="post" action="/post-processing/disconnect"><button class="btn sm quiet" type="submit">Disconnect</button></form>
+  {%- elif pending %}
+    <ol class="lab-steps">
+      <li><a href="{{ pending.url }}" target="_blank" rel="noopener">Open the ChatGPT sign-in</a> and approve psst.</li>
+      <li>{% if pending.listening %}If your browser runs on psst's server, this page notices by itself. Otherwise the{% else %}The{% endif %} sign-in ends on a page that doesn't load: copy its address and paste it here.
+        <form method="post" action="/post-processing/connect/paste" class="inline-add">
+          <input class="input" name="url" placeholder="http://127.0.0.1:1455/auth/callback?code=…" required autocomplete="off" spellcheck="false" aria-label="Address the sign-in ended on">
+          <button class="btn primary" type="submit">Connect</button>
+        </form>
+      </li>
+    </ol>
+    <form method="post" action="/post-processing/connect/cancel"><button class="btn sm quiet" type="submit">Cancel</button></form>
+  {%- else %}
+    <p><strong>Connect your ChatGPT plan</strong> to post-process dictations. It counts against your Plus or Pro plan's usage, not API credits.</p>
+    <form method="post" action="/post-processing/connect"><button class="btn primary" type="submit">Continue with ChatGPT</button></form>
+  {%- endif %}
+  </section>
+
+  <section class="pp">
+    <div class="pp-bar">
+      <nav class="seg" aria-label="Styles">
+        {%- for s in switch %}
+        <a href="{{ s.href }}"{% if s.current %} aria-current="true"{% endif %}>{{ s.name }}{% if s.changed %}<i class="pp-dot" title="Changed from the built-in style"></i>{% endif %}</a>
+        {%- endfor %}
+      </nav>
+      <details class="pp-new">
+        <summary class="btn sm quiet">{{ plus() }}New style</summary>
+        <form method="post" action="/post-processing/styles" class="pp-new-form">
+          <input type="hidden" name="from" value="{{ style.id }}">
+          <input class="input" name="name" placeholder="Name, like Email" required maxlength="32" autocomplete="off" aria-label="New style's name">
+          <button class="btn primary" type="submit">Create</button>
+          <p class="hint">It starts as a copy of {{ style.name }}, and shows up in the quick menu.</p>
+        </form>
+      </details>
+    </div>
+
+    <form method="post" action="{{ style.action }}" class="pp-editor" data-style data-saved-model="{{ style.model }}" data-saved-effort="{{ style.effort }}" data-saved-tier="{{ style.tier }}"{% if style.default %} data-default-model="{{ style.default.model }}" data-default-effort="{{ style.default.effort }}" data-default-tier="{{ style.default.tier }}"{% endif %}>
+      {#- Enter in a field presses a form's first submit button: let that be Save. -#}
+      <button class="sr" type="submit" name="action" value="save" tabindex="-1" aria-hidden="true">Save</button>
+      <div class="pp-head">
+        <h2>{{ style.name }}</h2>
+        {%- if style.edited %}<span class="lab-badge">Changed</span>{% endif %}
+      </div>
+      <p class="hint">{% if style.custom %}Your own style. Pick it in the quick menu like the others.{% else %}{{ style.name }} {{ style.about }}.{% endif %}</p>
+      <div class="field">
+        <label for="pp-prompt">Prompt</label>
+        <textarea class="input lab-prompt" id="pp-prompt" name="prompt" rows="16" spellcheck="false">{{ style.prompt }}</textarea>
+        <p class="hint">Sent as the model's instructions, followed by your {{ words }} dictionary words so it keeps their spelling. The transcript goes as the message.</p>
+      </div>
+      <div class="lab-knobs">
+        <div class="field">
+          <label for="pp-model">Model</label>
+          <input class="input" id="pp-model" name="model" value="{{ style.model }}" list="pp-models" autocomplete="off" spellcheck="false">
+          <datalist id="pp-models">{% for m in models %}<option value="{{ m.slug }}">{{ m.name }}</option>{% endfor %}</datalist>
+        </div>
+        <div class="field">
+          <label for="pp-effort">Reasoning</label>
+          <select class="input" id="pp-effort" name="effort">{% for o in style.efforts %}<option value="{{ o.id }}"{% if o.selected %} selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
+        </div>
+        <div class="field">
+          <label for="pp-tier">Speed</label>
+          <select class="input" id="pp-tier" name="tier">{% for o in style.tiers %}<option value="{{ o.id }}"{% if o.selected %} selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
+        </div>
+      </div>
+      {%- if models_error %}
+      <p class="hint">Couldn't list your plan's models: {{ models_error }}</p>
+      {%- endif %}
+      <template data-saved>{{ style.prompt }}</template>
+      {%- if style.default %}
+      <template data-default>{{ style.default.prompt }}</template>
+      {%- endif %}
+      <div class="pp-foot">
+        <span class="pp-status hint" data-dirty-note hidden>Unsaved changes</span>
+        <span class="spacer"></span>
+        {%- if style.custom %}
+        <button class="btn quiet danger" type="submit" name="action" value="delete" data-confirm="Delete the {{ style.name }} style?">Delete style</button>
+        {%- endif %}
+        <button class="btn quiet" type="button" data-discard hidden>Discard changes</button>
+        {%- if style.default %}
+        <button class="btn quiet" type="submit" name="action" value="reset" data-reset{% if not style.edited %} hidden{% endif %}>Reset to default</button>
+        {%- endif %}
+        <button class="btn primary" type="submit" name="action" value="save" data-save>Save</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="lab-section">
+    <h2>Try it</h2>
+    <form method="post" action="/post-processing" class="lab-form">
+      <button class="sr" type="submit" name="action" value="run" tabindex="-1" aria-hidden="true">Run</button>
+      <input type="hidden" name="variant" value="{{ style.id }}">
+      <div class="field">
+        <label for="lab-input">Transcript</label>
+        <textarea class="input" id="lab-input" name="input" rows="4" placeholder="What you dictated, as psst wrote it">{{ input }}</textarea>
+        <div class="lab-load">
+          <div class="lab-example">
+            <select class="input" name="example" aria-label="Example transcript">
+              {%- for e in examples %}<option value="{{ e.id }}">{{ e.id }}: {{ e.text }}</option>{% endfor %}
+            </select>
+            <button class="btn sm" type="submit" name="action" value="example">Load example</button>
+          </div>
+          {%- if recent %}
+          <details class="adv">
+            <summary>{{ chevron() }}Your recent dictations</summary>
+            <div class="adv-body">
+              <ul class="lab-recent">
+                {%- for r in recent %}
+                <li><button class="linkbtn" type="submit" name="load" value="h:{{ r.id }}">{{ r.text }}</button></li>
+                {%- endfor %}
+              </ul>
+            </div>
+          </details>
+          {%- endif %}
+        </div>
+      </div>
+      <div class="actions lab-actions">
+        <button class="btn primary" type="submit" name="action" value="run"{% if not email %} disabled{% endif %}>Run {{ style.name }}</button>
+        <button class="btn" type="submit" name="action" value="all"{% if not email %} disabled{% endif %}>Run all {{ styles_count }} styles</button>
+        <span class="lab-busy hint" aria-live="polite">Running…</span>
+      </div>
+      <p class="hint">Runs use each style as saved, exactly as a dictation would.</p>
+    </form>
+
+    {%- if runs %}
+    <div class="head-row lab-runs-head">
+      <h3>Runs</h3>
+      <form method="post" action="/post-processing/runs/clear"><button class="btn sm quiet" type="submit">Clear</button></form>
+    </div>
+    <ol class="lab-runs">
+      {%- for run in runs %}
+      <li class="lab-run">
+        <p class="meta"><strong>{{ run.variant }}{% if run.edited %} (changed){% endif %}</strong><span class="sep"></span><span>{{ run.model }}</span><span class="sep"></span><span>reasoning {{ run.effort }}</span><span class="sep"></span><span>{{ run.tier }}</span><span class="sep"></span><span>{{ run.time }}</span></p>
+        {%- if run.ok %}
+        <p class="lab-stats"><strong>{{ run.total_ms }} ms</strong> · first word {{ run.first_ms }} · {{ run.tokens }}{% if run.connect_ms %} · after {{ run.connect_ms }} ms opening the connection{% endif %}</p>
+        <div class="lab-out">{% if run.segments %}{% for s in run.segments %}<span class="d-{{ s.kind }}">{{ s.text }}</span>{% endfor %}{% else %}{{ run.text }}{% endif %}</div>
+        {%- else %}
+        <div class="notice" role="alert">{{ run.error }}{% if run.usage_limit %} <a href="{{ manage_usage }}" target="_blank" rel="noopener">Manage usage</a>{% endif %}</div>
+        {%- endif %}
+        <details class="adv">
+          <summary>{{ chevron() }}Details</summary>
+          <div class="adv-body source">
+            <span class="label">Transcript</span>
+            <pre>{{ run.input }}</pre>
+            {%- if run.ok %}
+            <span class="label">Post-processed</span>
+            <pre>{{ run.text }}</pre>
+            {%- endif %}
+            <span class="label">Prompt sent</span>
+            <pre>{{ run.instructions }}</pre>
+          </div>
+        </details>
+      </li>
+      {%- endfor %}
+    </ol>
+    {%- endif %}
+  </section>
+</div>
+{% endblock %}

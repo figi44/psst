@@ -12,10 +12,21 @@ const MAX_WORD: usize = 100;
 /// The history page doesn't scroll.
 const HISTORY_ROWS: usize = 10;
 
+/// The built-in post-processing styles' names, by id. A custom style's id is its name.
+const POST_PROCESSING_NAMES: [(&str, &str); 3] = [("none", "None"), ("light", "Light"), ("polished", "Polished")];
+
+pub fn post_processing_label(id: &str) -> &str {
+    POST_PROCESSING_NAMES.iter().find(|(i, _)| *i == id).map_or(id, |(_, label)| label)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MenuSpec {
     /// The profile dictations use now.
     pub profile: String,
+    /// The post-processing style dictations use now.
+    pub post_processing: String,
+    /// The styles the server offers, besides `none`.
+    pub post_processing_styles: Listing,
     pub profiles: Listing,
     /// `None` until the server says whether its model is loaded.
     pub model: Option<ModelChoice>,
@@ -54,6 +65,7 @@ pub enum ModelChoice {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuAction {
     SwitchProfile(String),
+    SwitchPostProcessing(String),
     AddWord(String),
     UnloadModel,
     LoadModel,
@@ -97,6 +109,7 @@ enum Page {
     Main,
     History,
     Profiles,
+    PostProcessing,
     AddWord,
 }
 
@@ -104,10 +117,12 @@ enum Page {
 enum Act {
     History,
     Profiles,
+    PostProcessings,
     AddWord,
     Model(ModelChoice),
     WebUi,
     Profile(String),
+    PostProcessing(String),
     Saved(String),
     Past(String),
     Nothing,
@@ -297,8 +312,13 @@ impl Menu {
                     Some(choice @ ModelChoice::Load) => Item::new("Load model", Act::Model(choice)),
                     None => Item { detail: Some("\u{2026}".into()), ..Item::new("Model", Act::Nothing) },
                 };
+                let post_processing = Item {
+                    detail: Some(post_processing_label(&self.spec.post_processing).into()),
+                    mark: Mark::Chevron,
+                    ..Item::new("Post-processing", Act::PostProcessings)
+                };
                 let add_word = Item { mark: Mark::Chevron, ..Item::new("Add to dictionary", Act::AddWord) };
-                [history, profile, add_word, model, Item::new("Open web UI", Act::WebUi)]
+                [history, profile, post_processing, add_word, model, Item::new("Open web UI", Act::WebUi)]
                     .into_iter()
                     .map(Line::Item)
                     .collect()
@@ -314,6 +334,19 @@ impl Menu {
                         let mark = if *name == self.spec.profile { Mark::Check } else { Mark::None };
                         Line::Item(Item { mark, ..Item::new(name, Act::Profile(name.clone())) })
                     })),
+                }
+                lines
+            }
+            Page::PostProcessing => {
+                let item = |id: &str| {
+                    let mark = if id == self.spec.post_processing { Mark::Check } else { Mark::None };
+                    Line::Item(Item { mark, ..Item::new(post_processing_label(id), Act::PostProcessing(id.into())) })
+                };
+                let mut lines = vec![Line::Header("Post-processing"), item("none")];
+                match &self.spec.post_processing_styles {
+                    Listing::Loading => lines.push(Line::Note("Loading\u{2026}".into())),
+                    Listing::Failed(reason) => lines.push(Line::Note(reason.clone())),
+                    Listing::Ready(ids) => lines.extend(ids.iter().map(|id| item(id))),
                 }
                 lines
             }
@@ -419,6 +452,11 @@ impl Menu {
                 self.select_default();
                 None
             }
+            Act::PostProcessings => {
+                self.page = Page::PostProcessing;
+                self.select_default();
+                None
+            }
             Act::AddWord => {
                 self.page = Page::AddWord;
                 self.selected = None;
@@ -430,6 +468,7 @@ impl Menu {
             Act::Model(ModelChoice::Load) => chose(MenuAction::LoadModel),
             Act::WebUi => chose(MenuAction::OpenWebUi),
             Act::Profile(name) => chose(MenuAction::SwitchProfile(name)),
+            Act::PostProcessing(id) => chose(MenuAction::SwitchPostProcessing(id)),
             // One still waiting for the server has nothing to paste yet.
             Act::Saved(key) if self.saved(&key)?.text.is_none() => None,
             Act::Saved(key) | Act::Past(key) => chose(MenuAction::Paste(key)),
@@ -462,6 +501,7 @@ impl Menu {
             Page::Main => return,
             Page::History => Act::History,
             Page::Profiles => Act::Profiles,
+            Page::PostProcessing => Act::PostProcessings,
             Page::AddWord => Act::AddWord,
         };
         self.page = Page::Main;
@@ -530,6 +570,8 @@ mod tests {
     fn spec() -> MenuSpec {
         MenuSpec {
             profile: "en".into(),
+            post_processing: "none".into(),
+            post_processing_styles: Listing::Loading,
             profiles: Listing::Loading,
             model: None,
             saved: vec![],
@@ -569,17 +611,17 @@ mod tests {
     fn arrows_skip_the_model_until_its_state_is_known_and_wrap() {
         let mut menu = Menu::new(spec());
         assert_eq!(menu.selected(), Some(0));
-        for _ in 0..3 {
+        for _ in 0..4 {
             menu.key(Key::Down);
         }
-        assert_eq!(menu.selected(), Some(4), "the model item waits for the server");
+        assert_eq!(menu.selected(), Some(5), "the model item waits for the server");
         menu.key(Key::Down);
         assert_eq!(menu.selected(), Some(0));
         menu.key(Key::Up);
-        assert_eq!(menu.selected(), Some(4));
+        assert_eq!(menu.selected(), Some(5));
 
         menu.update(MenuSpec { model: Some(ModelChoice::Unload), ..spec() });
-        assert_eq!(menu.selected(), Some(4), "an update keeps the selected item");
+        assert_eq!(menu.selected(), Some(5), "an update keeps the selected item");
         menu.key(Key::Up);
         assert_eq!(menu.key(Key::Enter), chose(MenuAction::UnloadModel));
     }
@@ -587,8 +629,8 @@ mod tests {
     #[test]
     fn digits_choose_items_by_position() {
         let mut menu = Menu::new(MenuSpec { model: Some(ModelChoice::Load), ..spec() });
-        assert_eq!(text(&mut menu, "4"), chose(MenuAction::LoadModel));
-        assert_eq!(text(&mut menu, "5"), chose(MenuAction::OpenWebUi));
+        assert_eq!(text(&mut menu, "5"), chose(MenuAction::LoadModel));
+        assert_eq!(text(&mut menu, "6"), chose(MenuAction::OpenWebUi));
         assert_eq!(text(&mut menu, "9"), None);
         assert_eq!(text(&mut menu, "0"), None);
     }
@@ -610,10 +652,11 @@ mod tests {
     #[test]
     fn escape_goes_back_a_page_then_closes() {
         let mut menu = Menu::new(MenuSpec { profiles: ready(&["en"]), ..spec() });
-        text(&mut menu, "3");
+        text(&mut menu, "4");
         assert_eq!(menu.lines(), vec![Line::Header("Add to dictionary"), Line::Field]);
         assert_eq!(menu.key(Key::Escape), None);
-        assert_eq!(menu.selected(), Some(2), "back on the item that opened the page");
+        assert_eq!(menu.selected(), Some(3), "back on the item that opened the page");
+        menu.key(Key::Up);
         menu.key(Key::Up);
         menu.key(Key::Right);
         assert_eq!(menu.key(Key::Left), None);
@@ -624,7 +667,7 @@ mod tests {
     #[test]
     fn the_word_field_edits_like_a_text_field() {
         let mut menu = Menu::new(spec());
-        text(&mut menu, "3");
+        text(&mut menu, "4");
         assert_eq!(menu.key(Key::Enter), None, "nothing to add yet");
         for key in ["K", "u", "b", "e", "r", "n", "ě", "t"] {
             text(&mut menu, key);
@@ -652,13 +695,13 @@ mod tests {
         let mut menu = Menu::new(MenuSpec { profiles: ready(&["cs", "en"]), ..spec() });
         let row = |i: usize| (PAD + ROW * (i as f32 + 0.5)) as f64;
         assert!(!menu.hover(100.0, row(0)), "already selected");
-        assert!(!menu.hover(100.0, row(3)), "the model item can't be selected yet");
-        assert!(menu.hover(100.0, row(4)));
+        assert!(!menu.hover(100.0, row(4)), "the model item can't be selected yet");
+        assert!(menu.hover(100.0, row(5)));
         assert!(!menu.hover(2.0, row(1)), "the margin isn't a row");
         assert_eq!(menu.click(100.0, row(1)), None);
         assert_eq!(menu.size(), (MENU_WIDTH, (2.0 * PAD + 3.0 * ROW) as u32));
         assert_eq!(menu.click(100.0, row(0)), None, "the header");
-        assert_eq!(menu.click(100.0, row(4)), chose(MenuAction::OpenWebUi));
+        assert_eq!(menu.click(100.0, row(5)), chose(MenuAction::OpenWebUi));
     }
 
     #[test]

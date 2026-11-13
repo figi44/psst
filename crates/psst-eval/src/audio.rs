@@ -240,6 +240,7 @@ fn start_opts(profile: &psst_config::Profile, mode: Mode, bias: bool, codec: Aud
     StartOpts {
         session_id: Uuid::new_v4(),
         profile: Some(profile.name.clone()),
+        post_processing: None,
         mode,
         resume: false,
         eval: (!bias).then_some(EvalOpts { bias: false }),

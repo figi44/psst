@@ -314,4 +314,64 @@ body:has(.panel) { overflow: hidden; }
 .cmd { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); padding: 10px 14px; }
 .cmd code { font-size: 16px; }
 
+.lab .head { margin-bottom: 0; }
+.lab-connect { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between; }
+.lab-connect:not(.callout) { font-size: 15px; color: var(--muted); }
+.lab-connect p { margin: 0; }
+.lab-connect form { margin: 0; }
+.lab-steps { margin: 0; padding-left: 1.3rem; display: grid; gap: 10px; flex: 1 1 22rem; }
+.lab-steps .inline-add { margin-top: 8px; }
+.lab-form { display: grid; gap: 18px; }
+.lab-section { display: grid; gap: 14px; }
+.lab-section > h2 { font-size: 20px; margin-top: 8px; }
+.lab-badge { font-size: 12px; font-weight: 500; color: var(--accent); border: 1px solid var(--accent-line); border-radius: 999px; padding: 1px 8px; }
+.pp { display: grid; gap: 12px; }
+.pp-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.seg { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 3px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); }
+.seg a { display: inline-flex; align-items: center; gap: 7px; min-height: 34px; padding: 0 14px; border-radius: 7px; color: var(--muted); text-decoration: none; font-weight: 500; font-size: 15px; }
+.seg a:hover { color: var(--fg); }
+.seg a[aria-current="true"] { background: var(--line-strong); color: var(--fg); }
+.pp-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.pp-new { position: relative; }
+.pp-new > summary { list-style: none; }
+.pp-new > summary::-webkit-details-marker { display: none; }
+.pp-new[open] > summary { color: var(--fg); background: var(--line); }
+.pp-new-form { position: absolute; right: 0; top: calc(100% + 6px); z-index: 5; width: min(22rem, calc(100vw - 32px)); display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 12px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5); }
+.pp-new-form .hint { grid-column: 1 / -1; margin: 0; }
+@media (max-width: 560px) {
+  .pp-bar { position: relative; }
+  .pp-new { position: static; }
+  .pp-new-form { left: 0; right: 0; top: calc(100% + 6px); width: auto; }
+}
+.pp-editor { border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: grid; gap: 14px; }
+.pp-head { display: flex; align-items: center; gap: 10px; }
+.pp-head h2 { font-size: 20px; }
+.pp-editor > .hint { margin: -8px 0 0; }
+.pp-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; border-top: 1px solid var(--line); padding-top: 14px; }
+.pp-foot .spacer { flex: 1; }
+.pp-status { color: var(--warn); }
+.lab-load { display: grid; gap: 4px; }
+.lab-example { display: flex; gap: 8px; align-items: center; }
+.lab-example select { flex: 1; min-width: 0; }
+.lab-recent { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.lab-recent .linkbtn { text-align: left; }
+.lab-prompt { font-family: var(--mono); font-size: 13px; line-height: 1.5; }
+.lab-knobs { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 12px; }
+.lab-busy { display: none; }
+.lab-form.htmx-request .lab-actions .btn { opacity: 0.55; pointer-events: none; }
+.lab-form.htmx-request .lab-busy { display: inline; }
+.lab-runs-head { margin-top: 12px; }
+.lab-runs-head h3 { font-size: 17px; }
+.lab-runs-head form { margin: 0; }
+.lab-runs { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.lab-run { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px 4px; display: grid; gap: 8px; }
+.lab-run .meta { padding-right: 0; }
+.lab-run .meta strong { color: var(--fg); font-weight: 600; }
+.lab-stats { margin: 0; font-size: 13px; color: var(--muted); }
+.lab-stats strong { color: var(--fg); }
+.lab-out { font-size: 17px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.lab-out .d-ins { background: color-mix(in srgb, var(--ok) 24%, transparent); border-radius: 3px; }
+.lab-out .d-del { color: var(--danger); text-decoration: line-through; opacity: 0.75; }
+@media (max-width: 420px) { .tabs a { font-size: 14px; } }
+
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }

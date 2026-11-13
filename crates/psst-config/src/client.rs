@@ -10,6 +10,9 @@ use crate::{ConfigFile, DEFAULT_PROFILE};
 pub struct ClientConfig {
     pub server: Endpoint,
     pub profile: String,
+    /// How an LLM post-processes new dictations: `none`, `light` or `polished`. The quick menu
+    /// switches it until this changes.
+    pub post_processing: String,
     pub sounds: Sounds,
     pub audio: AudioConfig,
     pub overlay: OverlayConfig,
@@ -26,6 +29,7 @@ impl Default for ClientConfig {
         Self {
             server: Endpoint::Unix(DEFAULT_SOCKET.into()),
             profile: DEFAULT_PROFILE.into(),
+            post_processing: "none".into(),
             sounds: Sounds::default(),
             audio: AudioConfig::default(),
             overlay: OverlayConfig::default(),

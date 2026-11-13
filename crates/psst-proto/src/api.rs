@@ -33,6 +33,7 @@ pub mod routes {
     pub const DICTIONARY_EXPORT: &str = "/api/dictionary/export";
     pub const DICTIONARY_TEST: &str = "/api/dictionary/test";
     pub const PROFILES: &str = "/api/profiles";
+    pub const POST_PROCESSING: &str = "/api/post-processing";
     pub const PROFILES_EXPORT: &str = "/api/profiles/export";
     /// Singular, so that every name (`export` too) has a path.
     pub const PROFILE: &str = "/api/profile/{name}";
@@ -339,6 +340,12 @@ pub struct DictionaryTest {
     /// The `default` profile's when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+}
+
+/// The post-processing styles a dictation can ask for, besides `none`: built-in ones first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PostProcessingView {
+    pub styles: Vec<String>,
 }
 
 /// The keys of a `[profiles.<name>]` table in `profiles.toml`, with the same defaults. As in the

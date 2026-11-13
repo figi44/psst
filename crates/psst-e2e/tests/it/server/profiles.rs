@@ -67,6 +67,7 @@ async fn dictate(server: &TestServer, profile: &str) -> (String, String, String)
     let session_id = SessionId::new_v4();
     client
         .start_with(StartMsg {
+            post_processing: None,
             session_id,
             profile: Some(profile.into()),
             audio: AudioFormat::default(),

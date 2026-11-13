@@ -7,8 +7,8 @@ use psst_client::api::{ApiCallError, ApiClient, Method};
 use psst_proto::{
     DeviceId,
     api::{
-        ApiErrorCode, HistoryRow, LoginLink, ModelState, ModelStatus, ProfilesView, Term, TermChange, encode_segment,
-        routes,
+        ApiErrorCode, HistoryRow, LoginLink, ModelState, ModelStatus, PostProcessingView, ProfilesView, Term,
+        TermChange, encode_segment, routes,
     },
 };
 use psst_wayland::{MenuAction, ModelChoice};
@@ -24,9 +24,11 @@ const ACTION_TIMEOUT: Duration = Duration::from_secs(15);
 const PROFILE_FILE: &str = "profile.json";
 /// As many as the history page shows.
 const HISTORY_LIMIT: usize = 10;
+const POST_PROCESSING_FILE: &str = "post_processing.json";
 
 pub enum Fact {
     Profiles(Result<Vec<String>, String>),
+    PostProcessing(Result<Vec<String>, String>),
     Model(ModelState),
     /// This machine's dictations that have text, newest first.
     History(Result<Vec<HistoryRow>, String>),
@@ -50,6 +52,11 @@ pub fn choice(state: ModelState) -> ModelChoice {
 pub fn fetch(api: ApiClient, device: Option<DeviceId>, report: impl Fn(Fact) + Clone + Send + 'static) {
     let (api2, report2) = (api.clone(), report.clone());
     let (api3, report3) = (api.clone(), report.clone());
+    let (api4, report4) = (api.clone(), report.clone());
+    tokio::spawn(async move {
+        let styles = call::<PostProcessingView>(&api4, Method::Get, routes::POST_PROCESSING, FACTS_TIMEOUT).await;
+        report4(Fact::PostProcessing(styles.map(|view| view.styles)));
+    });
     tokio::spawn(async move {
         let profiles = call::<ProfilesView>(&api, Method::Get, routes::PROFILES, FACTS_TIMEOUT).await;
         report(Fact::Profiles(profiles.map(|view| view.profiles.into_iter().map(|p| p.name).collect())));
@@ -110,9 +117,11 @@ pub async fn act(api: ApiClient, action: MenuAction) -> Done {
             .await
         }
         MenuAction::OpenWebUi => Done { result: open_web_ui(&api).await, model: None },
-        MenuAction::SwitchProfile(_) | MenuAction::Paste(_) | MenuAction::Copy(_) | MenuAction::Discard(_) => {
-            unreachable!("done by the daemon")
-        }
+        MenuAction::SwitchProfile(_)
+        | MenuAction::SwitchPostProcessing(_)
+        | MenuAction::Paste(_)
+        | MenuAction::Copy(_)
+        | MenuAction::Discard(_) => unreachable!("done by the daemon"),
     }
 }
 
@@ -179,21 +188,38 @@ fn describe(err: ApiCallError) -> String {
     }
 }
 
-/// The profile chosen in the menu, kept until client.toml names another one.
+/// A choice made in the menu, kept until client.toml names another one.
 #[derive(Debug, Serialize, Deserialize)]
 struct Chosen {
-    profile: String,
-    /// client.toml's profile when it was chosen.
+    /// Named for the profile, the first choice kept this way.
+    #[serde(rename = "profile")]
+    choice: String,
+    /// client.toml's value when it was chosen.
     instead_of: String,
 }
 
 pub fn load_profile(state_dir: &Path, configured: &str) -> Option<String> {
-    let path = state_dir.join(PROFILE_FILE);
-    match read_json::<Chosen>(&path) {
-        Ok(chosen) if chosen.instead_of == configured => Some(chosen.profile),
+    load(&state_dir.join(PROFILE_FILE), "profile", configured)
+}
+
+pub fn save_profile(state_dir: &Path, configured: &str, profile: &str) -> io::Result<()> {
+    save(&state_dir.join(PROFILE_FILE), configured, profile)
+}
+
+pub fn load_post_processing(state_dir: &Path, configured: &str) -> Option<String> {
+    load(&state_dir.join(POST_PROCESSING_FILE), "post_processing", configured)
+}
+
+pub fn save_post_processing(state_dir: &Path, configured: &str, style: &str) -> io::Result<()> {
+    save(&state_dir.join(POST_PROCESSING_FILE), configured, style)
+}
+
+fn load(path: &Path, key: &str, configured: &str) -> Option<String> {
+    match read_json::<Chosen>(path) {
+        Ok(chosen) if chosen.instead_of == configured => Some(chosen.choice),
         Ok(chosen) => {
-            info!("client.toml's profile is now {configured}, so it replaces {} from the menu", chosen.profile);
-            let _ = std::fs::remove_file(&path);
+            info!("client.toml's {key} is now {configured}, so it replaces {} from the menu", chosen.choice);
+            let _ = std::fs::remove_file(path);
             None
         }
         Err(err) if err.kind() == io::ErrorKind::NotFound => None,
@@ -204,15 +230,14 @@ pub fn load_profile(state_dir: &Path, configured: &str) -> Option<String> {
     }
 }
 
-pub fn save_profile(state_dir: &Path, configured: &str, profile: &str) -> io::Result<()> {
-    let path = state_dir.join(PROFILE_FILE);
-    if profile == configured {
-        return match std::fs::remove_file(&path) {
+fn save(path: &Path, configured: &str, choice: &str) -> io::Result<()> {
+    if choice == configured {
+        return match std::fs::remove_file(path) {
             Err(err) if err.kind() != io::ErrorKind::NotFound => Err(err),
             _ => Ok(()),
         };
     }
-    write_json_atomic(&path, &Chosen { profile: profile.into(), instead_of: configured.into() }, 0o600)
+    write_json_atomic(path, &Chosen { choice: choice.into(), instead_of: configured.into() }, 0o600)
 }
 
 #[cfg(test)]

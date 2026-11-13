@@ -245,7 +245,9 @@ fn the_menu_switches_the_profile_and_adds_a_word_from_the_keyboard() {
 
     assert_eq!(desk.ok(&["menu"]).trim(), "opened the menu");
     desk.app.wait("leave", WAIT);
-    for key in [keys::KEY_DOWN, keys::KEY_DOWN, keys::KEY_ENTER, keys::KEY_A, keys::KEY_2, keys::KEY_ENTER] {
+    for key in
+        [keys::KEY_DOWN, keys::KEY_DOWN, keys::KEY_DOWN, keys::KEY_ENTER, keys::KEY_A, keys::KEY_2, keys::KEY_ENTER]
+    {
         keyboard.tap(key);
     }
     let deadline = Instant::now() + WAIT;

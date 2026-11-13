@@ -94,6 +94,7 @@ fn a_welcome_without_codecs_offers_only_pcm() {
 fn start_with_defaults_omits_optional_fields() {
     assert_wire(
         &ClientMsg::Start(StartMsg {
+            post_processing: None,
             session_id: sid(),
             profile: None,
             audio: AudioFormat::default(),
@@ -110,6 +111,7 @@ fn start_with_defaults_omits_optional_fields() {
 fn start_with_opus() {
     assert_wire(
         &ClientMsg::Start(StartMsg {
+            post_processing: None,
             session_id: sid(),
             profile: None,
             audio: AudioFormat { codec: Codec::Opus, ..AudioFormat::default() },
@@ -126,6 +128,7 @@ fn start_with_opus() {
 fn start_with_every_field() {
     assert_wire(
         &ClientMsg::Start(StartMsg {
+            post_processing: None,
             session_id: sid(),
             profile: Some("czech".into()),
             audio: AudioFormat::default(),

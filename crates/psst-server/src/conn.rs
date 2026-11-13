@@ -169,6 +169,7 @@ struct Recording {
     last_frame: Instant,
     history_id: HistoryId,
     profile: Profile,
+    post_processing: Option<String>,
     dictionary: Arc<Dictionary>,
     bias: bool,
 }
@@ -299,6 +300,7 @@ impl Conn {
                     last_frame: Instant::now(),
                     history_id,
                     profile,
+                    post_processing: start.post_processing.clone().filter(|style| style != "none"),
                     dictionary,
                     bias,
                 };
@@ -418,6 +420,7 @@ impl Conn {
             epoch,
             history_id: recording.history_id,
             profile: recording.profile,
+            post_processing: recording.post_processing,
             dictionary: recording.dictionary,
             pipeline: PipelineOptions { dictionary: recording.bias },
             audio_ms,
@@ -587,6 +590,7 @@ struct SessionJob {
     epoch: u64,
     history_id: HistoryId,
     profile: Profile,
+    post_processing: Option<String>,
     dictionary: Arc<Dictionary>,
     pipeline: PipelineOptions,
     audio_ms: u32,
@@ -610,8 +614,11 @@ impl SessionJob {
             }
             JobOutcome::Done(done) => {
                 let started = Instant::now();
-                let fin = psst_pipeline::run(&done.result.trace, &self.profile, &self.dictionary, &self.pipeline);
+                let mut fin = psst_pipeline::run(&done.result.trace, &self.profile, &self.dictionary, &self.pipeline);
                 let pipeline_ms = millis(started.elapsed());
+                if let Some(style) = &self.post_processing {
+                    crate::tidy::dictation(&state, style, &mut fin).await;
+                }
                 let timings = ServerTimings {
                     audio_ms: self.audio_ms,
                     queue_ms: done.queue_ms,

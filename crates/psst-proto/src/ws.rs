@@ -80,6 +80,10 @@ pub struct StartMsg {
     pub session_id: SessionId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    /// A post-processing style (`light` or `polished`) an LLM applies to the final text, on the
+    /// ChatGPT plan the server's web UI is connected to. Unset or `none`, none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_processing: Option<String>,
     pub audio: AudioFormat,
     pub mode: Mode,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

@@ -11,6 +11,7 @@ use super::harness::*;
 
 fn opus_opts(mode: Mode) -> StartOpts {
     StartOpts {
+        post_processing: None,
         session_id: SessionId::new_v4(),
         profile: None,
         mode,
@@ -97,7 +98,15 @@ async fn a_message_that_is_not_a_20_ms_opus_packet_is_bad_audio() {
         let id = SessionId::new_v4();
         let audio = AudioFormat { codec: Codec::Opus, ..AudioFormat::default() };
         client
-            .start_with(StartMsg { session_id: id, profile: None, audio, mode: Mode::Live, resume: false, eval: None })
+            .start_with(StartMsg {
+                post_processing: None,
+                session_id: id,
+                profile: None,
+                audio,
+                mode: Mode::Live,
+                resume: false,
+                eval: None,
+            })
             .await;
         client.ready().await;
         client.send_binary(packet).await;

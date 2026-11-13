@@ -11,6 +11,7 @@ mod registry;
 mod sleep;
 mod state;
 mod tailscale;
+mod tidy;
 mod web;
 
 use std::{
@@ -180,6 +181,7 @@ async fn start(cfg: ServeConfig, systemd: Option<std::os::unix::net::UnixListene
         local: LocalPolicy { users: server.local_users.clone(), own_uid },
         tcp_addrs: tcp_addrs.clone(),
         shutdown: shutdown_rx.clone(),
+        tidy: Default::default(),
         server,
     });
 

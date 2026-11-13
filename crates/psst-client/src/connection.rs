@@ -423,6 +423,7 @@ impl Actor {
     fn send_start(&mut self, new: NewSession) -> Flow {
         let NewSession { opts, events, frames, ready, encoder } = new;
         let start = ClientMsg::Start(StartMsg {
+            post_processing: opts.post_processing,
             session_id: opts.session_id,
             profile: opts.profile,
             audio: AudioFormat { codec: encoder.codec(), ..AudioFormat::default() },

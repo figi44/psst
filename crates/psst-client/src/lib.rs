@@ -213,6 +213,7 @@ impl Client {
 pub struct StartOpts {
     pub session_id: SessionId,
     pub profile: Option<String>,
+    pub post_processing: Option<String>,
     pub mode: Mode,
     pub resume: bool,
     pub eval: Option<EvalOpts>,

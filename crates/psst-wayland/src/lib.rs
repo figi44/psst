@@ -15,6 +15,7 @@ mod thread;
 
 pub use psst_overlay::{
     HistoryEntry, Listing, MenuAction, MenuOutcome, MenuSpec, ModelChoice, OverlayState, Rgba, Style,
+    post_processing_label,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

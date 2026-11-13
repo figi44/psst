@@ -49,7 +49,16 @@ fn cases() -> Vec<(&'static str, OverlayState, Wave)> {
 }
 
 fn menu(model: Option<ModelChoice>, profiles: Listing, keys: &[Key]) -> Menu {
-    let spec = MenuSpec { profile: "en".into(), profiles, model, saved: vec![], history: Listing::Loading };
+    let styles = Listing::Ready(["light", "polished", "Email"].map(String::from).to_vec());
+    let spec = MenuSpec {
+        profile: "en".into(),
+        post_processing: "polished".into(),
+        post_processing_styles: styles,
+        profiles,
+        model,
+        saved: vec![],
+        history: Listing::Loading,
+    };
     keyed(spec, keys)
 }
 
@@ -75,6 +84,8 @@ fn history(keys: &[Key]) -> Menu {
     let profiles = Listing::Ready(["en"].map(String::from).to_vec());
     let spec = MenuSpec {
         profile: "en".into(),
+        post_processing: "none".into(),
+        post_processing_styles: Listing::Loading,
         profiles,
         model: Some(ModelChoice::Unload),
         saved,
@@ -85,7 +96,7 @@ fn history(keys: &[Key]) -> Menu {
 
 fn menu_cases() -> Vec<(&'static str, Menu)> {
     let ready = Listing::Ready(["cs", "en", "work"].map(String::from).to_vec());
-    let typed = |text: &str| [Key::Text("3".into()), Key::Text(text.into())];
+    let typed = |text: &str| [Key::Text("4".into()), Key::Text(text.into())];
     vec![
         ("menu", menu(Some(ModelChoice::Unload), ready.clone(), &[])),
         ("menu-checking-model", menu(None, Listing::Loading, &[Key::Down])),
@@ -95,7 +106,8 @@ fn menu_cases() -> Vec<(&'static str, Menu)> {
             "menu-profiles-failed",
             menu(None, Listing::Failed("cannot reach the server".into()), &[Key::Text("2".into())]),
         ),
-        ("menu-add-word", menu(None, Listing::Loading, &[Key::Text("3".into())])),
+        ("menu-post-processing", menu(Some(ModelChoice::Load), Listing::Loading, &[Key::Text("3".into())])),
+        ("menu-add-word", menu(None, Listing::Loading, &[Key::Text("4".into())])),
         ("menu-add-word-typed", menu(None, Listing::Loading, &typed("Kubernetes"))),
         ("menu-add-word-long", menu(None, Listing::Loading, &typed("Pneumonoultramicroscopicsilicovolcanoconiosis"))),
         ("menu-with-saved", history(&[])),

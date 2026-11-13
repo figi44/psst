@@ -18,8 +18,8 @@ use psst_proto::{
     api::{
         ApiError, ApiErrorCode, Device, DictionaryExport, DictionaryTest, DictionaryView, Health, HistoryQuery,
         HistoryRow, LoginLink, ModelStatus, NeverRule, NeverRuleId, NewNeverRule, PairRedeem, PairRedeemed, Pairing,
-        PairingRequest, Percentiles, Profile, ProfileChange, ProfilesExport, ProfilesView, Stats, Term, TermChange,
-        routes,
+        PairingRequest, Percentiles, PostProcessingView, Profile, ProfileChange, ProfilesExport, ProfilesView, Stats,
+        Term, TermChange, routes,
     },
 };
 use serde::de::DeserializeOwned;
@@ -64,6 +64,7 @@ pub fn router(state: AppRef) -> Router {
         .route(routes::DICTIONARY_EXPORT, get(export_dictionary))
         .route(routes::DICTIONARY_TEST, post(test_dictionary))
         .route(routes::PROFILES, get(profiles_view))
+        .route(routes::POST_PROCESSING, get(post_processing_view))
         .route(routes::PROFILES_EXPORT, get(export_profiles))
         .route(routes::PROFILE, put(put_profile))
         .route(routes::PROFILE_RESET, post(reset_profile))
@@ -550,6 +551,10 @@ async fn test_dictionary(
     };
     let dictionary = state.live.dictionary();
     Ok(Json(psst_pipeline::run(&trace, &profile, &dictionary, &PipelineOptions::default())))
+}
+
+async fn post_processing_view(_: Admin, State(state): State<AppRef>) -> Json<PostProcessingView> {
+    Json(PostProcessingView { styles: crate::tidy::entries(&state).into_iter().map(|entry| entry.id).collect() })
 }
 
 async fn profiles_view(_: Admin, State(state): State<AppRef>) -> Json<ProfilesView> {

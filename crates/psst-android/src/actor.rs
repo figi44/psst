@@ -852,6 +852,7 @@ impl Actor {
         let opts = StartOpts {
             session_id: rec.id,
             profile: Some(rec.meta.profile).filter(|profile| !profile.is_empty()),
+            post_processing: None,
             mode: Mode::Upload,
             resume: true,
             eval: None,
@@ -1079,6 +1080,7 @@ impl Actor {
         self.seq += 1;
         job.limit = limit(client.welcome().limits.max_recording_s);
         let session = client.start(StartOpts {
+            post_processing: None,
             session_id: job.id,
             profile: None,
             mode: Mode::Live,
@@ -1098,6 +1100,7 @@ impl Actor {
         info!("re-delivering {}", job.id);
         self.seq += 1;
         let session = client.start(StartOpts {
+            post_processing: None,
             session_id: job.id,
             profile: None,
             mode: Mode::Upload,

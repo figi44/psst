@@ -339,6 +339,7 @@ async fn malformed_messages_and_unknown_profiles_are_bad_requests() {
     let id = new_id();
     client
         .start_with(StartMsg {
+            post_processing: None,
             session_id: id,
             profile: Some("klingon".into()),
             audio: AudioFormat::default(),

@@ -5,6 +5,7 @@ mod history;
 mod login;
 mod pair;
 mod profiles;
+mod tidy;
 
 use std::sync::{Arc, OnceLock};
 
@@ -44,6 +45,7 @@ const TEMPLATES: &[(&str, &str)] = &[
     ("dictionary.html", include_str!("../../../../web/templates/dictionary.html")),
     ("profiles.html", include_str!("../../../../web/templates/profiles.html")),
     ("history.html", include_str!("../../../../web/templates/history.html")),
+    ("post-processing.html", include_str!("../../../../web/templates/post-processing.html")),
 ];
 
 const ASSETS: &[(&str, &str, &[u8])] = &[
@@ -75,6 +77,16 @@ pub fn router() -> Router<AppRef> {
         .route("/profiles.toml", get(profiles::export))
         .route("/profiles/{name}", post(profiles::save))
         .route("/profiles/{name}/reset", post(profiles::reset))
+        .route("/post-processing", get(tidy::show).post(tidy::act))
+        .route("/post-processing/styles", post(tidy::create_style))
+        .route("/post-processing/styles/{id}", post(tidy::save_style))
+        .route("/post-processing/connect", post(tidy::connect))
+        .route("/post-processing/connect/paste", post(tidy::paste))
+        .route("/post-processing/connect/cancel", post(tidy::cancel))
+        .route("/post-processing/disconnect", post(tidy::disconnect))
+        .route("/post-processing/runs/clear", post(tidy::clear))
+        .route("/post-processing/eval", post(tidy::eval))
+        .route("/post-processing/eval/models", get(tidy::eval_models))
         .route("/static/{file}", get(asset))
 }
 

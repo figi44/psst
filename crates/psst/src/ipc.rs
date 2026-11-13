@@ -68,6 +68,9 @@ pub struct Status {
     /// The one new dictations use: client.toml's, or the menu's choice since.
     #[serde(default)]
     pub profile: String,
+    /// Likewise.
+    #[serde(default)]
+    pub post_processing: String,
     pub connection: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -124,6 +127,7 @@ impl Status {
         Status {
             state: "stopped".into(),
             profile: String::new(),
+            post_processing: String::new(),
             connection: "offline: the daemon isn't running".into(),
             error: None,
             recording: None,
@@ -139,7 +143,10 @@ impl Status {
     }
 
     pub fn render(&self) -> String {
-        let mut out = format!("state: {}\nprofile: {}\nserver: {}\n", self.state, self.profile, self.connection);
+        let mut out = format!(
+            "state: {}\nprofile: {}\npost-processing: {}\nserver: {}\n",
+            self.state, self.profile, self.post_processing, self.connection
+        );
         if let Some(error) = &self.error {
             out += &format!("error: {error}\n");
         }
