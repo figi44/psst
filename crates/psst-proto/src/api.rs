@@ -513,6 +513,9 @@ pub enum SettingKind {
     },
     Choice {
         options: Vec<SettingOption>,
+        /// What a value outside `options` stands for, when one is allowed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        other: Option<String>,
     },
     /// An optional one is unset when empty.
     Text {

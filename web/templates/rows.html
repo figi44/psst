@@ -33,7 +33,10 @@
     {%- elif f.kind == "int" %}
     <span class="s-num"><input class="input" type="number" inputmode="numeric" id="i-{{ f.id }}" name="value" value="{{ f.value }}" min="{{ f.min }}" max="{{ f.max }}"{% if f.error %} aria-invalid="true"{% endif %}><span class="unit">{{ f.unit }}</span></span>
     {%- elif f.kind == "choice" %}
-    <select class="input" id="i-{{ f.id }}" name="value">{% for o in f.options %}<option value="{{ o.value }}"{% if o.selected %} selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
+    <select class="input" id="i-{{ f.id }}" name="value"{% if f.other %} data-other{% endif %}>{% for o in f.options %}<option value="{{ o.value }}"{% if o.selected %} selected{% endif %}>{{ o.label }}</option>{% endfor %}{% if f.other %}<option value="">{{ f.other }}…</option>{% endif %}</select>
+    {%- if f.other %}
+    <input class="input s-other" name="other" placeholder="owner/name" aria-label="{{ f.other }}" autocomplete="off" spellcheck="false">
+    {%- endif %}
     {%- elif f.kind == "color" %}
     <span class="s-color"><svg class="swatch" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="9" fill="{{ f.value }}"/></svg><input class="input" id="i-{{ f.id }}" name="value" value="{{ f.value }}" autocomplete="off" spellcheck="false"{% if f.error %} aria-invalid="true"{% endif %}></span>
     {%- elif f.kind == "list" %}

@@ -63,6 +63,28 @@ async fn server_settings_change_and_reset_through_the_page() {
 }
 
 #[tokio::test]
+async fn a_model_is_picked_from_the_list_or_named_by_its_repository() {
+    let server = web_server();
+    let browser = logged_in(&server).await;
+    let api = api(&server);
+
+    let page = browser.get("/settings").await;
+    assert!(page.body.contains(">Large v3 Turbo</option>"), "{}", page.body);
+
+    // Without JavaScript the repository box shows beside the list, and what's typed in it wins.
+    let saved =
+        browser.post("/settings/model.model", &[("value", "large-v3-turbo"), ("other", "acme/whisper-ct2")]).await;
+    see_other(&saved, "/settings?saved=model.model#s-model-model");
+    assert_eq!(view(&api).await.field("model.model").unwrap().value, json!("acme/whisper-ct2"));
+    let page = browser.get("/settings").await;
+    assert!(page.body.contains("whisper-ct2\" selected>"), "{}", page.body);
+
+    browser.post("/settings/model.model", &[("value", "small.en"), ("other", "")]).await;
+    assert_eq!(view(&api).await.field("model.model").unwrap().value, json!("small.en"));
+    refused_with(&browser.post("/settings/model.model", &[("value", "")]).await, "Model");
+}
+
+#[tokio::test]
 async fn advanced_settings_stay_folded_until_one_of_them_is_saved() {
     let server = web_server();
     let browser = logged_in(&server).await;

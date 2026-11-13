@@ -26,6 +26,11 @@ pub enum Kind {
         unit: &'static str,
     },
     Choice(&'static [(&'static str, &'static str)]),
+    /// A choice that also takes a value of the user's own, which `other` names.
+    OpenChoice {
+        options: &'static [(&'static str, &'static str)],
+        other: &'static str,
+    },
     /// The server's profiles.
     Profiles,
     /// `none` and the server's post-processing styles.
@@ -90,8 +95,23 @@ pub const SERVER: &[Group] = &[
             editable(
                 "model.model",
                 "Model",
-                "The Whisper model to load, by name or Hugging Face repository.",
-                Kind::Text { optional: false },
+                "Bigger models are more accurate and need more memory and time. Small and below run well on a CPU.",
+                Kind::OpenChoice {
+                    options: &[
+                        ("large-v3-turbo", "Large v3 Turbo"),
+                        ("large-v3", "Large v3 (slower)"),
+                        ("distil-large-v3.5", "Distil Large v3.5 (English)"),
+                        ("medium", "Medium"),
+                        ("medium.en", "Medium (English)"),
+                        ("small", "Small"),
+                        ("small.en", "Small (English)"),
+                        ("base", "Base"),
+                        ("base.en", "Base (English)"),
+                        ("tiny", "Tiny"),
+                        ("tiny.en", "Tiny (English)"),
+                    ],
+                    other: "Hugging Face repo",
+                },
                 Applies::ModelReload,
             ),
             editable(

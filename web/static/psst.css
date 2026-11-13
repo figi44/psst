@@ -442,6 +442,8 @@ details.s-adv > summary { padding: 0 4px; }
 .s-text .err { padding: 0; margin-top: 3px; }
 .s-control { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; position: relative; }
 .s-control > .input, .s-color, .s-control > select.input { width: 100%; }
+.s-control:has(.s-other) { flex-wrap: wrap; }
+.js .s-other:not(.on) { display: none; }
 .s-control .input { min-height: 40px; padding: 8px 14px; }
 .s-control select.input { padding-right: 38px; }
 .s-control textarea.input { min-height: 72px; font-family: var(--mono); font-size: 13px; }
