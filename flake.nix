@@ -4,9 +4,18 @@
   # Pinned to the revision the host config uses, so builds hit derivations already in the local store and
   # in the caches the host config uses (plan section 11).
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/1d060086d60cb76a40cf37109f979d88a5bd6396";
+  # Only for evaluating the Home Manager module in `checks`; pinned to the host config's revision too.
+  inputs.home-manager = {
+    url = "github:nix-community/home-manager/b787c48e2ec57a9d098f5c2721882a3bc1e16f97";
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
 
   outputs =
-    { self, nixpkgs }:
+    {
+      self,
+      nixpkgs,
+      home-manager,
+    }:
     let
       inherit (nixpkgs) lib;
       systems = [
@@ -80,9 +89,21 @@
         });
       });
 
+      # CI evaluates these (`nix flake check --no-build`); building them, the VM test included,
+      # runs locally. The CUDA engine is left out: it's unfree, and checked with
+      # `nix build --dry-run .#psst-engine-faster-whisper-cuda` instead.
       checks = forAllSystems (pkgs: {
         devShell = self.devShells.${pkgs.stdenv.hostPlatform.system}.default;
         inherit (pkgs) psst psst-server;
+        modules = import ./nix/tests/modules.nix {
+          inherit
+            self
+            nixpkgs
+            home-manager
+            pkgs
+            ;
+        };
+        vm = import ./nix/tests/vm.nix { inherit self pkgs; };
       });
 
       formatter = forAllSystems (pkgs: pkgs.nixfmt);
