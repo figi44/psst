@@ -500,6 +500,8 @@ dependencies = [
  "psst-engine-proto",
  "psst-pipeline",
  "psst-proto",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
