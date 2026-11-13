@@ -433,8 +433,12 @@ impl Conn {
             }
             ConnEvent::Detached { session_id } => {
                 if self.active.as_ref().is_some_and(|active| active.key.session_id == session_id) {
+                    // Its outcome now goes to the other connection, so this one can't end the
+                    // session with a terminal message; closing it is how its client learns.
                     tracing::info!("session {session_id} of {} was resumed on another connection", self.device);
                     self.active = None;
+                    close(ws, close_code::NORMAL, "the session was resumed on another connection").await;
+                    return Flow::Closed;
                 }
                 Flow::Continue
             }

@@ -128,6 +128,22 @@ async fn a_disconnect_does_not_cancel_and_a_resume_attaches_to_the_running_reque
 }
 
 #[tokio::test]
+async fn resuming_on_another_connection_closes_the_one_that_held_the_session() {
+    let server = server(script(vec![result("moved", 1500)]), |_| {});
+    wait_model(&server, ModelState::Loaded).await;
+    let mut first = Client::connect(&server).await;
+    let id = new_id();
+    first.upload(id, SECOND).await;
+    first.progress_until(|p| p.state == ProgressState::Transcribing).await;
+
+    let mut second = Client::connect(&server).await;
+    second.start(id, Mode::Upload, true).await;
+    assert!(second.ready().await.resumed);
+    assert!(first.closed().await, "the connection that lost the session is closed");
+    assert_eq!(second.final_msg().await.r#final.raw_text, "moved");
+}
+
+#[tokio::test]
 async fn resuming_an_unknown_session_asks_for_its_audio() {
     let server = default_server();
     let mut client = Client::connect(&server).await;
