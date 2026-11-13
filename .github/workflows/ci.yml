@@ -1,5 +1,5 @@
-# fmt, clippy, tests, the Rust half of the golden frames, and the flake. Everything runs in the
-# flake's dev shell, so CI uses exactly the toolchain agents use locally.
+# fmt, clippy, tests and the Rust half of the golden frames, in the flake's dev shell, so CI uses
+# exactly the toolchain agents use locally; and the flake itself.
 name: CI
 
 on:
@@ -15,6 +15,17 @@ permissions:
   contents: read
 
 jobs:
+  # A job of its own, so evaluating the flake doesn't hold up the Rust job.
+  nix:
+    name: Nix
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+      - name: Check the flake
+        run: nix flake check --no-build
+
   rust:
     name: Rust
     runs-on: ubuntu-latest
@@ -22,13 +33,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: cachix/install-nix-action@v31
-      - name: Check the flake
-        run: nix flake check --no-build
+      # The compositor tests' sway, niri and mesa (psst-testkit's tools.rs), the same `nix build`
+      # the first of those tests would run, but while the dev shell and the cache download. A
+      # test that gets there first waits for this download instead of starting another.
+      - name: Fetch the test compositors in the background
+        run: nohup nix build --no-link --inputs-from . nixpkgs#sway nixpkgs#niri nixpkgs#mesa > "$RUNNER_TEMP/compositors.log" 2>&1 &
       - name: Enter the dev shell
         uses: nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a # v1.2.1
+      # Only main saves the cache. A pull request's cache is visible only to that pull request,
+      # pushes main's out of the 10 GB limit, and its later runs restore it over main's newer one.
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo nextest run --workspace --locked --no-fail-fast
+      - run: cargo nextest run --workspace --locked --profile ci
       - name: Golden frames match the committed ones
         run: git diff --exit-code -- engines/faster-whisper/tests/golden

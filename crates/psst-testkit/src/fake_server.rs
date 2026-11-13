@@ -337,6 +337,12 @@ async fn serve(inner: Arc<Inner>, unix: std::os::unix::net::UnixListener, tcp: O
 }
 
 async fn connection<S: AsyncRead + AsyncWrite + Unpin>(inner: Arc<Inner>, mut stream: S, tcp: bool) {
+    // Subscribe before the handshake, then check `listening`: `set_listening(false)` turns it
+    // off before it disconnects, so a connection still in its handshake sees one or the other.
+    let mut disconnect = inner.disconnect.subscribe();
+    if !*inner.listening.borrow() {
+        return;
+    }
     // `/api/pair/redeem` is plain HTTP; everything else is the WebSocket.
     const PAIR: &[u8] = b"POST /api/pair/redeem";
     let mut head = [0u8; PAIR.len()];
@@ -397,7 +403,6 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(inner: Arc<Inner>, mut st
     let _ = inner.replaced.send((device.clone(), conn_id));
     let replaced_by_newer = |msg: Result<(String, u64), _>| matches!(msg, Ok((d, id)) if d == device && id > conn_id);
 
-    let mut disconnect = inner.disconnect.subscribe();
     let mut active: Option<(SessionId, bool)> = None; // (id, need_audio)
     let mut next_progress = tokio::time::Instant::now();
     loop {
@@ -420,6 +425,9 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(inner: Arc<Inner>, mut st
         });
         let mut out = Vec::new();
         tokio::select! {
+            // In order, so a disconnect wins over a message that arrived with it: under load this
+            // task may first run after both, and after `set_listening(false)` no `start` may get in.
+            biased;
             _ = disconnect.recv() => break,
             msg = replaced.recv() => if replaced_by_newer(msg) { break },
             _ = tokio::time::sleep(Duration::from_millis(10)) => {} // re-check `stalled`

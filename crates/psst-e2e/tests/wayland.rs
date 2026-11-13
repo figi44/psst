@@ -63,10 +63,13 @@ impl Paster {
         }
     }
 
-    /// Snapshot, paste and wait for `Pasted`; returns the time from sending `Paste` (the text is
-    /// ready) to `Pasted` (dispatched).
+    /// A dictation: snapshot, a short recording, then paste and wait for `Pasted`; returns the
+    /// time from sending `Paste` (the text is ready) to `Pasted` (dispatched). The daemon
+    /// snapshots at `toggle`, so the read has the recording's time; tests of the snapshot's own
+    /// timing send it and paste right after.
     fn dictate(&self, generation: u64, text: &str, chord: Chord) -> Duration {
         self.send(WaylandCmd::SnapshotClipboard { generation });
+        thread::sleep(Duration::from_millis(300));
         self.paste(generation, text, chord)
     }
 
@@ -100,6 +103,25 @@ fn assert_five_text_types(v: &Value) {
 fn wait_for_restore(pasted_at: Instant, restore: Duration) {
     let due = pasted_at + restore + Duration::from_millis(500);
     thread::sleep(due.saturating_duration_since(Instant::now()));
+}
+
+/// The first probe after the restore is due that `restored` accepts, or the last one 5 s later:
+/// on a loaded machine the restore can land late, and a probe while it lands reads nothing.
+fn probe_restored(app: &mut App, pasted_at: Instant, restore: Duration, restored: impl Fn(&Value) -> bool) -> Value {
+    thread::sleep((pasted_at + restore).saturating_duration_since(Instant::now()));
+    let give_up = Instant::now() + Duration::from_secs(5);
+    loop {
+        let probe = app.probe();
+        if restored(&probe) || Instant::now() > give_up {
+            return probe;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// [`probe_restored`] until the app pastes `want`.
+fn probe_restored_text(app: &mut App, pasted_at: Instant, restore: Duration, want: &str) -> Value {
+    probe_restored(app, pasted_at, restore, |probe| text(probe) == Some(want))
 }
 
 fn pseudo_random(n: usize, seed: u64) -> Vec<u8> {
@@ -171,8 +193,7 @@ fn pastes_plain_text_and_restores_the_clipboard_after_5_s() {
     thread::sleep(Duration::from_secs(4).saturating_sub(pasted_at.elapsed()));
     assert_text(&app.probe(), DICTATED);
     // ...but after.
-    wait_for_restore(pasted_at, Duration::from_secs(5));
-    let after = app.probe();
+    let after = probe_restored_text(&mut app, pasted_at, Duration::from_secs(5), "orig plain ✓");
     assert_text(&after, "orig plain ✓");
     assert_five_text_types(&after);
     let clipboard = read_clipboard(&sandbox).expect("a clipboard");
@@ -195,8 +216,7 @@ fn rich_text_comes_back_as_plain_text() {
     paster.dictate(1, DICTATED, Chord::CtrlV);
     let pasted_at = Instant::now();
     assert_text(&app.pasted(), DICTATED);
-    wait_for_restore(pasted_at, RESTORE);
-    let after = app.probe();
+    let after = probe_restored_text(&mut app, pasted_at, RESTORE, "rich text");
     assert_text(&after, "rich text");
     // One representation only: the formatting is gone.
     assert_five_text_types(&after);
@@ -212,8 +232,7 @@ fn an_image_comes_back_byte_for_byte() {
     paster.dictate(1, DICTATED, Chord::CtrlV);
     let pasted_at = Instant::now();
     assert_text(&app.pasted(), DICTATED);
-    wait_for_restore(pasted_at, RESTORE);
-    let after = app.probe();
+    let after = probe_restored(&mut app, pasted_at, RESTORE, |probe| mimes(probe) == ["image/png"]);
     assert_eq!(mimes(&after), ["image/png"]);
     assert_eq!(after["blobs"]["image/png"]["len"], png.len());
     assert_eq!(after["blobs"]["image/png"]["fnv"], fnv1a(&png));
@@ -229,16 +248,15 @@ fn two_quick_dictations_bring_back_the_original() {
     paster.dictate(1, "first dictation", Chord::CtrlV);
     let first_at = Instant::now();
     assert_text(&app.pasted(), "first dictation");
-    thread::sleep(Duration::from_millis(700));
+    thread::sleep(Duration::from_millis(500));
     paster.dictate(2, "second dictation", Chord::CtrlV);
     let second_at = Instant::now();
     assert_text(&app.pasted(), "second dictation");
     // The first dictation's timer is ignored...
-    wait_for_restore(first_at, RESTORE);
+    thread::sleep((first_at + RESTORE + Duration::from_millis(200)).saturating_duration_since(Instant::now()));
     assert_text(&app.probe(), "second dictation");
     // ...and the second one restores what was there before both.
-    wait_for_restore(second_at, RESTORE);
-    assert_text(&app.probe(), "orig two");
+    assert_text(&probe_restored_text(&mut app, second_at, RESTORE, "orig two"), "orig two");
 }
 
 #[test]
@@ -258,8 +276,7 @@ fn a_clipboard_manager_holding_the_dictation_doesnt_lose_the_original() {
     paster.dictate(2, "second via manager", Chord::CtrlV);
     let pasted_at = Instant::now();
     assert_text(&app.pasted(), "second via manager");
-    wait_for_restore(pasted_at, RESTORE);
-    assert_text(&app.probe(), "orig mgr");
+    assert_text(&probe_restored_text(&mut app, pasted_at, RESTORE, "orig mgr"), "orig mgr");
 }
 
 #[test]
@@ -290,8 +307,7 @@ fn a_change_between_snapshot_and_paste_is_what_comes_back() {
     paster.paste(1, "dictation x", Chord::CtrlV);
     let pasted_at = Instant::now();
     assert_text(&app.pasted(), "dictation x");
-    wait_for_restore(pasted_at, RESTORE);
-    assert_text(&app.probe(), "orig x2");
+    assert_text(&probe_restored_text(&mut app, pasted_at, RESTORE, "orig x2"), "orig x2");
 }
 
 #[test]
@@ -326,7 +342,8 @@ fn unreadable_snapshots_paste_without_restoring() {
     // Answers after 500 ms: the paste waits at most 100 ms for it, then goes without a restore.
     let _slow =
         ClipboardOwner::slow(&sandbox, &[("text/plain;charset=utf-8", b"orig slow")], Duration::from_millis(500));
-    let took = paster.dictate(2, "dictation slow", Chord::CtrlV);
+    paster.send(WaylandCmd::SnapshotClipboard { generation: 2 });
+    let took = paster.paste(2, "dictation slow", Chord::CtrlV);
     let pasted_at = Instant::now();
     assert!(took >= Duration::from_millis(90) && took < Duration::from_millis(400), "the paste took {took:?}");
     assert_text(&app.pasted(), "dictation slow");
@@ -396,8 +413,7 @@ fn the_wlr_data_control_fallback_pastes_and_restores() {
     paster.dictate(1, DICTATED, Chord::CtrlV);
     let pasted_at = Instant::now();
     assert_text(&app.pasted(), DICTATED);
-    wait_for_restore(pasted_at, RESTORE);
-    assert_text(&app.probe(), "orig wlr");
+    assert_text(&probe_restored_text(&mut app, pasted_at, RESTORE, "orig wlr"), "orig wlr");
 }
 
 // ---------------------------------------------------------------------- keyboard layouts

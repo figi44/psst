@@ -1,0 +1,11 @@
+# `paste_timing` asserts a 50 ms p95 through llvmpipe, so it runs alone.
+[[profile.default.overrides]]
+filter = 'binary_id(psst-e2e::wayland) & test(=paste_timing)'
+threads-required = "num-test-threads"
+
+# CI's runners have 2 CPUs, but most of the suite's time is spent waiting on real timers (a 10 s
+# audio timeout, 5 s clipboard restores, retry windows), so it runs 8 tests at a time: 72 s → 22 s
+# on 2 CPUs.
+[profile.ci]
+test-threads = 8
+fail-fast = false
