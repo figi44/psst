@@ -79,12 +79,21 @@ pub async fn run(state: Arc<AppState>, mut ws: WebSocket, identity: Result<Ident
     let (tx, mut events) = mpsc::unbounded_channel();
     let conn_id = state.conns.next_id();
     let attachment = Attachment { conn_id, tx };
+    if let Identity::Token { device_id } = &identity {
+        state.conns.replace(&device, attachment.clone());
+        // A revoke between the upgrade and `hello` must not let the device in: either the revoke
+        // finds this connection registered, or this check finds the device revoked.
+        if !state.db.device_active(device_id).unwrap_or(false) {
+            state.conns.remove(&device, conn_id);
+            let message = "missing, unknown or revoked device token";
+            send(&mut ws, &ServerMsg::Error(ErrorMsg::new(None, ErrorCode::Unauthorized, message))).await;
+            close(&mut ws, close_code::POLICY, "unauthorized").await;
+            return;
+        }
+    }
     let recorded = match &identity {
         Identity::Local { user } => state.db.touch_local(user),
-        Identity::Token { device_id } => {
-            state.conns.replace(&device, attachment.clone());
-            state.db.touch(device_id)
-        }
+        Identity::Token { device_id } => state.db.touch(device_id),
     };
     if let Err(err) = recorded {
         tracing::error!("cannot record device {device}: {err:#}");

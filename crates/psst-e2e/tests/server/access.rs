@@ -112,6 +112,16 @@ async fn revoking_a_device_closes_its_connection_and_refuses_its_token() {
 }
 
 #[tokio::test]
+async fn a_device_revoked_before_its_hello_is_refused() {
+    let server = tcp_server();
+    let paired = pair(&server).await;
+    let socket = Socket::tcp(server.tcp_addr().unwrap(), Some(paired.token.as_str())).await;
+    assert!(admin(&server, &["devices", "revoke", &paired.device_id]).status.success());
+    let err = socket.hello().await.err().expect("refused");
+    assert_eq!(err.code, ErrorCode::Unauthorized);
+}
+
+#[tokio::test]
 async fn a_device_that_connects_again_replaces_its_older_connection() {
     let server = tcp_server();
     let addr = server.tcp_addr().unwrap();

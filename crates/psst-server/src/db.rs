@@ -155,6 +155,15 @@ impl Db {
             .optional()?)
     }
 
+    /// Whether the device exists and isn't revoked.
+    pub fn device_active(&self, id: &str) -> Result<bool> {
+        Ok(self
+            .conn()
+            .query_row("SELECT 1 FROM devices WHERE id = ?1 AND revoked_ms IS NULL", params![id], |_| Ok(()))
+            .optional()?
+            .is_some())
+    }
+
     pub fn touch(&self, id: &str) -> Result<()> {
         self.conn().execute("UPDATE devices SET last_seen_ms = ?2 WHERE id = ?1", params![id, now_ms()])?;
         Ok(())
