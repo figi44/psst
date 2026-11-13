@@ -427,6 +427,8 @@ body:has(.panel) { overflow: hidden; }
 details.s-adv { border-top: 0; }
 details.s-adv > summary { padding: 0 4px; }
 .s-adv-body { display: grid; gap: 32px; padding-top: 24px; }
+.unpair { margin: 0; border-top: 1px solid var(--line); padding-top: 18px; display: flex; flex-wrap: wrap; gap: 10px 20px; align-items: center; justify-content: space-between; }
+.unpair .hint { margin: 0; flex: 1 1 20rem; }
 .srows { border-radius: 20px; background: var(--well); box-shadow: inset 0 0 0 1px var(--line); }
 .srow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(11rem, 17rem); gap: 10px 28px; align-items: center; padding: 16px 20px; margin: 0; scroll-margin-top: 24px; }
 .srow + .srow { border-top: 1px solid var(--line); }

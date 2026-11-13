@@ -258,7 +258,7 @@ impl ConnTable {
         self.send(Feature::Limits, |_| true, ServerMsg::Limits(limits))
     }
 
-    pub fn close(&self, device: &DeviceId, reason: &str) {
+    pub fn close(&self, device: &str, reason: &str) {
         if let Some(conn) = self.by_device.lock().unwrap_or_else(|e| e.into_inner()).remove(device) {
             let _ = conn.tx.send(ConnEvent::Close { reason: reason.into() });
         }

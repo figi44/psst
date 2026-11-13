@@ -103,6 +103,7 @@ pub fn router() -> Router<AppRef> {
         .route("/devices", get(settings::devices))
         .route("/devices/{id}", get(settings::device))
         .route("/devices/{id}/client.toml", get(settings::export_device))
+        .route("/devices/{id}/unpair", post(settings::unpair))
         .route("/devices/{id}/setting/{key}", post(settings::set_device))
         .route("/devices/{id}/setting/{key}/reset", post(settings::reset_device))
         .route("/devices/{id}/app", post(settings::set_app))
@@ -262,6 +263,8 @@ fn log_in_first() -> Response {
 
 pub(crate) struct Viewer {
     session: Option<String>,
+    /// The device whose login link this browser used, whose unpairing logs it out.
+    device: Option<psst_proto::DeviceId>,
 }
 
 impl FromRequestParts<AppRef> for Viewer {
@@ -269,8 +272,8 @@ impl FromRequestParts<AppRef> for Viewer {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppRef) -> Result<Self, Response> {
         match api::authenticate(state, parts) {
-            Ok(Caller::Browser { session, .. }) => Ok(Viewer { session: Some(session) }),
-            Ok(Caller::Identity(_)) => Ok(Viewer { session: None }),
+            Ok(Caller::Browser { session, device }) => Ok(Viewer { session: Some(session), device: Some(device) }),
+            Ok(Caller::Identity(_)) => Ok(Viewer { session: None, device: None }),
             Err(Refusal::Unauthorized) => Err(log_in_first()),
             Err(Refusal::Forbidden) => {
                 Err(message(StatusCode::FORBIDDEN, "Not allowed", "This user isn't in the server's local_users.", None))
