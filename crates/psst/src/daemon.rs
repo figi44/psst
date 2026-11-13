@@ -138,6 +138,8 @@ impl DaemonHandle {
 /// Starts the daemon: recovers the recordings, binds the command socket, connects to the server
 /// once, and runs until [`DaemonHandle::shutdown`].
 pub async fn spawn(cfg: ClientConfig, paths: Paths, deps: Deps) -> anyhow::Result<DaemonHandle> {
+    // The socket first: it's what proves no other daemon is using the recordings.
+    let listener = bind_socket(&paths.socket)?;
     let store = Store::open(&paths.state_dir)?;
     let recovery = store.recover(&cfg.profile)?;
     for id in &recovery.interrupted {
@@ -146,7 +148,6 @@ pub async fn spawn(cfg: ClientConfig, paths: Paths, deps: Deps) -> anyhow::Resul
     for id in &recovery.adopted {
         info!("adopted orphaned recording {id} as incomplete");
     }
-    let listener = bind_socket(&paths.socket)?;
     let (tx, rx) = mpsc::unbounded_channel();
     let (wayland_tx, wayland_rx) = mpsc::unbounded_channel();
     tokio::spawn(serve_socket(listener, tx.clone()));

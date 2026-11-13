@@ -220,10 +220,13 @@ fn commands_fail_clearly_without_a_daemon() {
 }
 
 #[test]
-fn a_second_daemon_refuses_to_start() {
+fn a_second_daemon_refuses_to_start_and_leaves_the_recordings_alone() {
     let server = Server::start(&[], false);
     let client = Client::start(server.endpoint());
+    client.ok(&["toggle"]);
     let out = client.sandbox.command(DAEMON).arg("daemon").output().unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("another psst daemon"));
+    let status = client.status();
+    assert_eq!(status["retained"][0]["state"], "recording", "not recovered under the running daemon: {status}");
 }
