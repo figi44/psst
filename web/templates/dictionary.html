@@ -121,7 +121,7 @@
             <span class="label">Where it comes from</span>
             <p>{{ panel.source }}</p>
             {%- if panel.file %}<pre>{{ panel.file }}</pre>{% endif %}
-            {%- if panel.layer == "replaced" %}<div class="actions"><button class="btn" type="submit" form="word-reset">Use the Nix version</button></div>{% endif %}
+            {%- if panel.layer == "replaced" %}<div class="actions"><button class="btn" type="submit" form="word-reset">{% if panel.built_in %}Use psst's version{% else %}Use the Nix version{% endif %}</button></div>{% endif %}
           </div>
           {%- endif %}
         </div>
@@ -142,7 +142,7 @@
       <button class="btn danger" type="submit" form="word-hide">Remove word</button>
       {%- else %}
       <button class="btn" type="submit" form="word-hide" aria-describedby="hide-hint">Hide word</button>
-      <span class="hint" id="hide-hint">It stays in your Nix config.</span>
+      <span class="hint" id="hide-hint">{% if panel.built_in %}It's built into psst.{% else %}It stays in your Nix config.{% endif %}</span>
       {%- endif %}
       {%- endif %}
       {%- endif %}

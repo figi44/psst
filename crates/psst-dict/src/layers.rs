@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use psst_config::{DictionaryFile, TermSpec};
 use psst_proto::TermId;
 
-use crate::{Dictionary, Error, NeverRule, Result, term_id};
+use crate::{Dictionary, Error, NeverRule, Result, built_in_terms, term_id};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LayerEntry {
@@ -45,8 +45,9 @@ impl Dictionary {
                 );
             }
         }
+        let mut given_way = HashSet::new();
         loop {
-            let (specs, from_layer) = compose(file, layer, &skipped);
+            let Composed { specs, from_layer, built_in } = compose(file, layer, &skipped, &given_way);
             let err = match Dictionary::from_specs(specs) {
                 Ok(dictionary) => {
                     let dictionary = dictionary.with_never_rules(layer.never.iter().cloned());
@@ -55,14 +56,16 @@ impl Dictionary {
                 Err(err) => err,
             };
             let Error::SpellingConflict { first, second, .. } = &err else { return Err(err) };
+            let ids = [term_id(first), term_id(second)];
+            if let Some(id) = ids.iter().find(|id| built_in.contains(*id)) {
+                given_way.insert(id.clone());
+                continue;
+            }
             // The file is valid alone and hiding only removes terms, so at least one side is the
             // database's, and it gives way: the file always wins. Saves are checked, so this
             // happens only when the file changed under the database.
-            let loser = [term_id(first), term_id(second)]
-                .into_iter()
-                .filter_map(|id| from_layer.get(&id).map(|&saved| (saved, id)))
-                .max()
-                .map(|(_, id)| id);
+            let loser =
+                ids.into_iter().filter_map(|id| from_layer.get(&id).map(|&saved| (saved, id))).max().map(|(_, id)| id);
             match loser {
                 Some(id) => skipped.insert(id, err.to_string()),
                 None => return Err(err),
@@ -71,36 +74,58 @@ impl Dictionary {
     }
 }
 
-/// Deterministic: the file's terms in its order, then the database-only terms by identity.
+struct Composed<'a> {
+    specs: Vec<&'a TermSpec>,
+    /// The identities whose version is the database's, with when it was saved.
+    from_layer: HashMap<TermId, u64>,
+    built_in: HashSet<TermId>,
+}
+
+/// Deterministic: the file's terms in its order, then the built-in terms the file lacks, then the
+/// database-only terms by identity.
 fn compose<'a>(
     file: &'a DictionaryFile,
     layer: &'a Layer,
     skipped: &BTreeMap<TermId, String>,
-) -> (Vec<&'a TermSpec>, HashMap<TermId, u64>) {
+    given_way: &HashSet<TermId>,
+) -> Composed<'a> {
     let entry = |id: &TermId| layer.terms.get(id).filter(|_| !skipped.contains_key(id));
-    let mut specs = Vec::with_capacity(file.terms.len() + layer.terms.len());
-    let mut from_layer = HashMap::new();
-    let mut in_file = HashSet::with_capacity(file.terms.len());
-    for spec in &file.terms {
-        let id = term_id(&spec.text);
+    let built_ins = built_in_terms();
+    let mut composed = Composed {
+        specs: Vec::with_capacity(file.terms.len() + built_ins.len() + layer.terms.len()),
+        from_layer: HashMap::new(),
+        built_in: HashSet::new(),
+    };
+    let mut in_base = HashSet::with_capacity(file.terms.len() + built_ins.len());
+    let file_terms = file.terms.iter().map(|spec| (term_id(&spec.text), spec, false));
+    let built_in_terms = built_ins.iter().map(|spec| (term_id(&spec.text), spec, true));
+    for (id, spec, built_in) in file_terms.chain(built_in_terms) {
+        if !in_base.insert(id.clone()) {
+            continue;
+        }
         match entry(&id) {
             Some(LayerTerm { entry: LayerEntry::Hide, .. }) => {}
             Some(LayerTerm { entry: LayerEntry::Set(replacement), saved }) => {
-                specs.push(replacement);
-                from_layer.insert(id.clone(), *saved);
+                composed.specs.push(replacement);
+                composed.from_layer.insert(id, *saved);
             }
-            None => specs.push(spec),
+            None if built_in && given_way.contains(&id) => {}
+            None => {
+                composed.specs.push(spec);
+                if built_in {
+                    composed.built_in.insert(id);
+                }
+            }
         }
-        in_file.insert(id);
     }
     for (id, term) in &layer.terms {
         if let LayerEntry::Set(spec) = &term.entry
-            && !in_file.contains(id)
+            && !in_base.contains(id)
             && !skipped.contains_key(id)
         {
-            specs.push(spec);
-            from_layer.insert(id.clone(), term.saved);
+            composed.specs.push(spec);
+            composed.from_layer.insert(id.clone(), term.saved);
         }
     }
-    (specs, from_layer)
+    composed
 }

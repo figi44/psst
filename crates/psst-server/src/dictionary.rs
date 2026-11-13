@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use anyhow::{Context, anyhow};
 use psst_config::{ConfigFile, DictionaryFile, TermSpec};
-use psst_dict::{Dictionary, Layer, LayerEntry, LayerTerm, NeverRule, Resolved, fuzzy_key, term_id};
+use psst_dict::{Dictionary, Layer, LayerEntry, LayerTerm, NeverRule, Resolved, built_in_terms, fuzzy_key, term_id};
 use psst_proto::{
     TermId,
     api::{
@@ -17,6 +17,13 @@ use crate::{
     db::{Db, StoredNever},
     state::LiveConfig,
 };
+
+/// The version a database entry replaces or hides: the file's, or else psst's built-in one.
+#[derive(Debug, Clone, Copy)]
+struct Base<'a> {
+    spec: &'a TermSpec,
+    built_in: bool,
+}
 
 #[derive(Debug)]
 pub struct Layered {
@@ -86,13 +93,18 @@ impl Layered {
         }
     }
 
-    fn file_term(&self, id: &str) -> Option<&TermSpec> {
-        self.file.terms.iter().find(|spec| term_id(&spec.text) == id)
+    fn base_term(&self, id: &str) -> Option<Base<'_>> {
+        let file =
+            self.file.terms.iter().find(|spec| term_id(&spec.text) == id).map(|spec| Base { spec, built_in: false });
+        file.or_else(|| {
+            built_in_terms().iter().find(|spec| term_id(&spec.text) == id).map(|spec| Base { spec, built_in: true })
+        })
     }
 
-    fn entry(&self, id: &str, file_term: Option<&TermSpec>) -> Option<DictionaryTerm> {
+    fn entry(&self, id: &str, base: Option<Base<'_>>, dictionary: &Dictionary) -> Option<DictionaryTerm> {
         let problem = self.skipped.get(id).cloned();
-        let (layer, term, file) = match (file_term, self.terms.get(id).map(|t| &t.entry)) {
+        let built_in = base.is_some_and(|base| base.built_in);
+        let (layer, term, file) = match (base.map(|base| base.spec), self.terms.get(id).map(|t| &t.entry)) {
             (None, None) => return None,
             (Some(file), None) => (TermLayer::File, Some(file), None),
             (file, Some(LayerEntry::Hide)) => (TermLayer::Hidden, file, None),
@@ -100,11 +112,11 @@ impl Layered {
             (Some(file), Some(LayerEntry::Set(spec))) => (TermLayer::Replaced, Some(spec), Some(Term::from(file))),
         };
         let active = match layer {
-            TermLayer::File => true,
+            TermLayer::File => !built_in || dictionary.terms().iter().any(|t| t.id == id),
             TermLayer::Hidden => false,
             TermLayer::Added | TermLayer::Replaced => problem.is_none(),
         };
-        Some(DictionaryTerm { id: id.to_owned(), layer, active, term: term.map(Term::from), file, problem })
+        Some(DictionaryTerm { id: id.to_owned(), layer, built_in, active, term: term.map(Term::from), file, problem })
     }
 
     fn never_rule(&self, rule: &StoredNever, dictionary: &Dictionary) -> ApiNeverRule {
@@ -119,11 +131,12 @@ impl Layered {
     }
 
     pub fn view(&self, dictionary: &Dictionary) -> DictionaryView {
-        let file_terms: HashMap<TermId, &TermSpec> =
-            self.file.terms.iter().map(|spec| (term_id(&spec.text), spec)).collect();
-        let ids: BTreeSet<&TermId> = file_terms.keys().chain(self.terms.keys()).collect();
+        let mut bases: HashMap<TermId, Base<'_>> =
+            built_in_terms().iter().map(|spec| (term_id(&spec.text), Base { spec, built_in: true })).collect();
+        bases.extend(self.file.terms.iter().map(|spec| (term_id(&spec.text), Base { spec, built_in: false })));
+        let ids: BTreeSet<&TermId> = bases.keys().chain(self.terms.keys()).collect();
         DictionaryView {
-            terms: ids.into_iter().filter_map(|id| self.entry(id, file_terms.get(id).copied())).collect(),
+            terms: ids.into_iter().filter_map(|id| self.entry(id, bases.get(id).copied(), dictionary)).collect(),
             never: self.never.iter().map(|rule| self.never_rule(rule, dictionary)).collect(),
             warnings: dictionary.warnings().into_iter().map(|w| w.message).collect(),
         }
@@ -136,18 +149,29 @@ impl Layered {
              # of the file's versions of replaced terms; then `psst dict reset <term>` drops each entry.\n",
             env!("CARGO_PKG_VERSION")
         );
-        let mut hidden = Vec::new();
+        let (mut hidden, mut hidden_built_in) = (Vec::new(), Vec::new());
         for (id, term) in &self.terms {
+            let base = self.base_term(id);
             let spec = match &term.entry {
                 LayerEntry::Set(spec) => spec,
                 LayerEntry::Hide => {
-                    hidden.extend(self.file_term(id).map(|file| file.text.clone()));
+                    match base {
+                        Some(Base { spec, built_in: false }) => hidden.push(spec.text.clone()),
+                        Some(Base { spec, built_in: true }) => hidden_built_in.push(spec.text.clone()),
+                        None => {}
+                    }
                     continue;
                 }
             };
             out.push('\n');
-            if let Some(file) = self.file_term(id) {
-                out.push_str(&format!("# Replaces dictionary.toml's {:?}.\n", file.text));
+            match base {
+                Some(Base { spec, built_in: false }) => {
+                    out.push_str(&format!("# Replaces dictionary.toml's {:?}.\n", spec.text))
+                }
+                Some(Base { spec, built_in: true }) => {
+                    out.push_str(&format!("# Replaces psst's built-in {:?}.\n", spec.text))
+                }
+                None => {}
             }
             if let Some(reason) = self.skipped.get(id) {
                 out.push_str(&format!("# Left out of the dictionary: {}\n", comment(reason)));
@@ -157,6 +181,12 @@ impl Layered {
         if !hidden.is_empty() {
             out.push_str("\n# Hidden: remove these from dictionary.toml.\n");
             for text in hidden {
+                out.push_str(&format!("# - {text:?}\n"));
+            }
+        }
+        if !hidden_built_in.is_empty() {
+            out.push_str("\n# Hidden built-in terms, which dictionary.toml can't hide; they stay in the database.\n");
+            for text in hidden_built_in {
                 out.push_str(&format!("# - {text:?}\n"));
             }
         }
@@ -221,7 +251,7 @@ pub fn change_terms(live: &LiveConfig, db: &Db, changes: Vec<Change>) -> Result<
                 let known = match proposed.terms.get(&id).map(|t| &t.entry) {
                     Some(LayerEntry::Set(_)) => true,
                     Some(LayerEntry::Hide) => false,
-                    None => layered.file_term(&id).is_some(),
+                    None => layered.base_term(&id).is_some(),
                 };
                 if known {
                     return Err(bad_request(format!(
@@ -241,13 +271,13 @@ pub fn change_terms(live: &LiveConfig, db: &Db, changes: Vec<Change>) -> Result<
                         spec.text
                     )));
                 }
-                if !proposed.terms.contains_key(&id) && layered.file_term(&id).is_none() {
+                if !proposed.terms.contains_key(&id) && layered.base_term(&id).is_none() {
                     return Err(not_found(format!("no term `{id}`; add it with POST /api/dictionary/terms")));
                 }
                 (id, Some(LayerEntry::Set(spec)))
             }
             Change::Remove(id) => {
-                let entry = match (layered.file_term(&id).is_some(), proposed.terms.get(&id).map(|t| &t.entry)) {
+                let entry = match (layered.base_term(&id).is_some(), proposed.terms.get(&id).map(|t| &t.entry)) {
                     (true, Some(LayerEntry::Hide)) => {
                         return Err(not_found(format!("`{id}` is already hidden; reset it to bring it back")));
                     }
@@ -290,15 +320,15 @@ pub fn change_terms(live: &LiveConfig, db: &Db, changes: Vec<Change>) -> Result<
         resolved.dictionary.warnings().into_iter().map(|w| w.message).filter(|w| !before.contains(w)).collect();
     layered.terms = proposed.terms;
     let dictionary = layered.install(resolved);
-    live.set_dictionary(dictionary);
     let mut term = None;
     for (id, _) in &planned {
-        term = layered.entry(id, layered.file_term(id));
+        term = layered.entry(id, layered.base_term(id), &dictionary);
         match &term {
             Some(term) => tracing::info!("dictionary: `{id}` is now {:?}", term.layer),
             None => tracing::info!("dictionary: `{id}` removed"),
         }
     }
+    live.set_dictionary(dictionary);
     Ok(TermChange { term, warnings })
 }
 

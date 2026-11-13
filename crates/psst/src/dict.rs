@@ -50,9 +50,9 @@ enum DictCommand {
         #[arg(long)]
         replace: bool,
     },
-    /// Hide a term that dictionary.toml has, or remove an added one.
+    /// Hide a term that dictionary.toml has or psst has built in, or remove an added one.
     Rm { term: String },
-    /// Drop the database's entry for a term, bringing back dictionary.toml's version (if any).
+    /// Drop the database's entry for a term, bringing back dictionary.toml's or psst's built-in version (if any).
     Reset { term: String },
     /// Never let TERM replace SPAN, exactly or fuzzily; or remove the rule with --remove ID.
     Never {
@@ -155,8 +155,9 @@ fn name(term: &DictionaryTerm) -> &str {
     term.term.as_ref().map_or(&term.id, |t| t.text.as_str())
 }
 
-fn layer_name(layer: TermLayer) -> &'static str {
-    match layer {
+fn layer_name(term: &DictionaryTerm) -> &'static str {
+    match term.layer {
+        TermLayer::File if term.built_in => "built-in",
         TermLayer::File => "file",
         TermLayer::Added => "added",
         TermLayer::Replaced => "replaced",
@@ -198,7 +199,7 @@ fn list(view: &DictionaryView) -> String {
             }
             [
                 name(entry).to_owned(),
-                layer_name(entry.layer).to_owned(),
+                layer_name(entry).to_owned(),
                 term.map(|t| t.sounds_like.join(", ")).unwrap_or_default(),
                 term.map(|t| t.languages.clone()).unwrap_or_default(),
                 extra,
@@ -245,12 +246,13 @@ fn changed(change: &TermChange, asked: &str) -> String {
     let mut out = match &change.term {
         None => format!("removed `{asked}`\n"),
         Some(term) => {
+            let base = if term.built_in { "psst's built-in" } else { "dictionary.toml's" };
             let what = match (term.layer, term.active) {
-                (TermLayer::Added, true) => "added",
-                (TermLayer::Replaced, true) => "replaces dictionary.toml's version",
-                (TermLayer::File, _) => "is dictionary.toml's version again",
-                (TermLayer::Hidden, _) => "is hidden; `psst dict reset` brings it back",
-                (TermLayer::Added | TermLayer::Replaced, false) => "is saved, but left out",
+                (TermLayer::Added, true) => "added".to_owned(),
+                (TermLayer::Replaced, true) => format!("replaces {base} version"),
+                (TermLayer::File, _) => format!("is {base} version again"),
+                (TermLayer::Hidden, _) => "is hidden; `psst dict reset` brings it back".to_owned(),
+                (TermLayer::Added | TermLayer::Replaced, false) => "is saved, but left out".to_owned(),
             };
             format!("`{}` {what}\n", name(term))
         }

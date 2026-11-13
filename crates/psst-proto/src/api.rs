@@ -254,7 +254,12 @@ pub struct DictionaryView {
 pub struct DictionaryTerm {
     pub id: TermId,
     pub layer: TermLayer,
-    /// False for a hidden term, and for a database entry left out for [`DictionaryTerm::problem`].
+    /// The version under the database's is psst's built-in one, which `dictionary.toml` doesn't
+    /// have: [`TermLayer::File`] and [`DictionaryTerm::file`] then mean psst's version.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub built_in: bool,
+    /// False for a hidden term, for a database entry left out for [`DictionaryTerm::problem`], and
+    /// for a built-in term that gives way to another term claiming its spelling.
     pub active: bool,
     /// The database's version for `added` and `replaced`, the file's for `file` and `hidden`.
     /// Absent for a hidden term that `dictionary.toml` no longer has.

@@ -105,7 +105,8 @@ async fn the_dictionary_shows_each_term_with_the_layer_its_version_comes_from() 
         [
             ("go".into(), TermLayer::File, true),
             ("hyprland".into(), TermLayer::File, true),
-            ("kubernetes".into(), TermLayer::File, true)
+            ("kubernetes".into(), TermLayer::File, true),
+            ("psst".into(), TermLayer::File, true),
         ]
     );
     assert!(initial.warnings.iter().any(|w| w.starts_with("term `Go` is a common en word")), "{:?}", initial.warnings);
@@ -129,10 +130,38 @@ async fn the_dictionary_shows_each_term_with_the_layer_its_version_comes_from() 
             ("go".into(), TermLayer::Hidden, false),
             ("hyprland".into(), TermLayer::Replaced, true),
             ("kubernetes".into(), TermLayer::File, true),
+            ("psst".into(), TermLayer::File, true),
             ("t3code".into(), TermLayer::Added, true),
         ]
     );
     assert!(view(&api).await.warnings.is_empty(), "hiding `Go` takes its warning with it");
+}
+
+#[tokio::test]
+async fn psst_spells_its_own_name_until_the_dictionary_changes_hides_or_outranks_it() {
+    let server = server(script((0..3).map(|_| result("ask PSST", 0)).collect()), |_| {});
+    let api = api(&server);
+    let psst = || async { view(&api).await.terms.into_iter().find(|t| t.id == "psst").expect("the built-in term") };
+    let built_in = psst().await;
+    assert_eq!((built_in.layer, built_in.built_in, built_in.active), (TermLayer::File, true, true));
+    assert_eq!(dictate(&server).await, ("Ask psst ".into(), json!(["psst"])));
+
+    let replaced = replace(&api, "psst", json!({"text": "psst", "sounds_like": ["pssst"]})).await.unwrap();
+    let replaced = replaced.term.expect("the replaced term");
+    assert_eq!((replaced.layer, replaced.built_in), (TermLayer::Replaced, true));
+    assert!(replaced.file.expect("the built-in version").pin);
+
+    let hidden = remove(&api, "psst").await.unwrap().term.expect("the hidden term");
+    assert_eq!((hidden.layer, hidden.built_in, hidden.active), (TermLayer::Hidden, true, false));
+    assert_eq!(dictate(&server).await, ("Ask PSST ".into(), json!([])));
+    let export: DictionaryExport = api.call(Method::Get, routes::DICTIONARY_EXPORT, None::<&()>).await.unwrap();
+    assert!(export.toml.contains("# Hidden built-in terms, which dictionary.toml can't hide"), "{}", export.toml);
+
+    assert_eq!(reset(&api, "psst").await.unwrap().term.map(|t| (t.layer, t.active)), Some((TermLayer::File, true)));
+    add(&api, json!({"text": "Pst Corp", "sounds_like": ["psst"]})).await.expect("the built-in term gives way");
+    let outranked = psst().await;
+    assert_eq!((outranked.layer, outranked.active), (TermLayer::File, false));
+    assert_eq!(dictate(&server).await, ("Ask Pst Corp ".into(), json!(["Pst Corp"])));
 }
 
 #[tokio::test]
@@ -142,12 +171,12 @@ async fn new_dictations_use_a_change_at_once() {
     add(&api, json!({"text": "t3code", "sounds_like": ["t3 code"], "pin": true})).await.unwrap();
     let (text, bias) = dictate(&server).await;
     assert_eq!(text, "Push t3code to Hyprland ");
-    assert_eq!(bias, json!(["t3code", "Go", "Hyprland", "Kubernetes"]));
+    assert_eq!(bias, json!(["psst", "t3code", "Go", "Hyprland", "Kubernetes"]));
 
     remove(&api, "Hyprland").await.unwrap();
     let (text, bias) = dictate(&server).await;
     assert_eq!(text, "Push t3code to hyper land ");
-    assert_eq!(bias, json!(["t3code", "Go", "Kubernetes"]));
+    assert_eq!(bias, json!(["psst", "t3code", "Go", "Kubernetes"]));
     assert_eq!(requests_of(&server, "load").len(), 1, "a change doesn't touch the engine");
 }
 
@@ -164,10 +193,10 @@ async fn a_session_keeps_the_dictionary_it_started_with() {
     add(&api, json!({"text": "t3code", "sounds_like": ["t3 code"]})).await.unwrap();
     client.stop(id, SECOND as u64 / 4).await;
     assert_eq!(client.final_msg().await.r#final.text, "Push t3 code ", "the session started before the change");
-    assert_eq!(transcribes(&server)[0].header["bias"]["terms"], json!([]));
+    assert_eq!(transcribes(&server)[0].header["bias"]["terms"], json!(["psst"]));
 
     let (text, bias) = dictate(&server).await;
-    assert_eq!((text.as_str(), bias), ("Push t3code ", json!(["t3code"])));
+    assert_eq!((text.as_str(), bias), ("Push t3code ", json!(["psst", "t3code"])));
 }
 
 #[tokio::test]
@@ -393,7 +422,7 @@ async fn paired_devices_reach_the_dictionary_with_their_token() {
     let endpoint = server.tcp_endpoint().unwrap();
     let api = ApiClient::new(endpoint.clone(), Some(paired.token));
     add(&api, json!({"text": "t3code"})).await.unwrap();
-    assert_eq!(view(&api).await.terms.len(), 1);
+    assert!(view(&api).await.terms.iter().any(|t| t.id == "t3code"));
     let (status, code, _) = refused(view_result(&ApiClient::new(endpoint, None)).await);
     assert_eq!((status, code), (401, ApiErrorCode::Unauthorized));
 }
@@ -417,5 +446,5 @@ async fn any_spelling_of_an_identity_reaches_its_term_through_the_route() {
     for spelling in ["c/c++", "c#", decomposed, "T3 CODE?"] {
         assert_eq!(remove(&api, spelling).await.unwrap().term, None, "{spelling}");
     }
-    assert_eq!(layers(&api).await.len(), 3, "only the file's terms are left");
+    assert_eq!(layers(&api).await.len(), 4, "only the file's and the built-in terms are left");
 }

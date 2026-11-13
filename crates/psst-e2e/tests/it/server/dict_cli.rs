@@ -45,6 +45,7 @@ TERM        FROM      SOUNDS LIKE            LANG
 Go          hidden                           en
 Hyprland    replaced  hyper land, hyperland  any
 Kubernetes  file                             any
+psst        built-in                         any   pin
 t3code      added     t3 code                any   pin
 Wayland     added                            en    no fuzzy
 
@@ -70,6 +71,11 @@ Never rules:
         "`Go` is dictionary.toml's version again\n\
          warning: term `Go` is a common en word: in en sessions it never changes the case of `go`, and doesn't protect it\n"
     );
+    assert_eq!(
+        home.ok(&["dict", "add", "psst", "--sounds-like", "pssst", "--replace"]),
+        "`psst` replaces psst's built-in version\n"
+    );
+    assert_eq!(home.ok(&["dict", "reset", "psst"]), "`psst` is psst's built-in version again\n");
     assert_eq!(home.ok(&["dict", "rm", "T3CODE"]), "removed `T3CODE`\n");
     assert_eq!(home.ok(&["dict", "never", "--remove", "1"]), "removed never rule 1\n");
     assert_eq!(home.fails(&["dict", "never", "--remove", "1"]), "psst: no never rule 1\n");
@@ -79,7 +85,7 @@ Never rules:
 
     let view: DictionaryView = serde_json::from_str(&home.ok(&["dict", "list", "--json"])).expect("JSON");
     let ids: Vec<&str> = view.terms.iter().map(|t| t.id.as_str()).collect();
-    assert_eq!(ids, ["go", "hyprland", "kubernetes", "nix", "wayland"]);
+    assert_eq!(ids, ["go", "hyprland", "kubernetes", "nix", "psst", "wayland"]);
     assert!(view.warnings.iter().any(|w| w.starts_with("term `Go` is a common en word")));
 }
 

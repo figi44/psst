@@ -1,3 +1,4 @@
+mod built_in;
 mod common;
 mod exact;
 mod fold;
@@ -11,6 +12,7 @@ use std::{collections::HashMap, fmt, ops::Range};
 use psst_config::{ConfigFile, DictionaryFile, TermLanguages, TermSpec, Warning};
 use psst_proto::TermId;
 
+pub use built_in::built_in_terms;
 pub use common::{COMMON_WORD_LANGUAGES, common_words, is_common_word};
 pub use exact::{ExactMatch, Outcome};
 pub use fold::term_id;

@@ -139,12 +139,13 @@ async fn every_dictionary_action_works_through_the_pages() {
     see_other(&browser.post(&format!("/dictionary/never/{}/remove", rule.id), &[]).await, "/dictionary");
     assert!(view(&server).await.never.is_empty());
 
-    browser.post("/dictionary/terms", &[("text", "psst"), ("fuzzy", "on")]).await;
+    browser.post("/dictionary/terms", &[("text", "Alacritty"), ("fuzzy", "on")]).await;
     let export = browser.get("/dictionary.toml").await;
     assert_eq!(export.status, 200);
     assert_eq!(export.header("content-disposition"), Some("attachment; filename=\"dictionary.toml\""));
     assert!(export.body.starts_with("# The psst dictionary's database layer"), "{}", export.body);
-    assert!(export.body.contains("[[terms]]\ntext = \"psst\""), "{}", export.body);
+    assert!(export.body.contains("[[terms]]\ntext = \"Alacritty\""), "{}", export.body);
+    assert!(browser.get("/dictionary?word=psst").await.body.contains("Built into psst."));
 }
 
 #[tokio::test]

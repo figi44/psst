@@ -137,7 +137,7 @@ fn of_two_conflicting_database_entries_the_one_saved_later_is_left_out() {
     for (zsh_saved, bash_saved, kept, skipped) in [(1, 2, "Zsh", "bash"), (2, 1, "Bash", "zsh")] {
         let layer = layer([set(term("Zsh", &["shell"]), zsh_saved), set(term("Bash", &["shell"]), bash_saved)]);
         let resolved = resolve(&empty, &layer);
-        assert_eq!(texts(&resolved.dictionary), [kept]);
+        assert_eq!(texts(&resolved.dictionary), ["psst", kept]);
         assert_eq!(resolved.skipped.keys().collect::<Vec<_>>(), [skipped]);
     }
 }
@@ -149,7 +149,22 @@ fn spellings_conflict_only_in_a_shared_language() {
     let file = DictionaryFile { terms: vec![english] };
     let resolved = resolve(&file, &layer([set(czech, 1)]));
     assert!(resolved.skipped.is_empty());
-    assert_eq!(texts(&resolved.dictionary), ["Kubernetes", "Kubernetes CZ"]);
+    assert_eq!(texts(&resolved.dictionary), ["Kubernetes", "psst", "Kubernetes CZ"]);
+}
+
+#[test]
+fn a_built_in_term_gives_way_to_a_file_or_database_term_that_claims_its_spelling() {
+    let empty = DictionaryFile::default();
+    assert_eq!(texts(&resolve(&empty, &Layer::default()).dictionary), ["psst"]);
+
+    let file = DictionaryFile { terms: vec![term("Pst Corp", &["psst"])] };
+    let resolved = resolve(&file, &Layer::default());
+    assert_eq!(texts(&resolved.dictionary), ["Pst Corp"]);
+    assert_eq!(replaced(&resolved.dictionary, "psst"), Some("Pst Corp".into()));
+
+    let resolved = resolve(&empty, &layer([set(term("Pst Corp", &["PSST"]), 1)]));
+    assert_eq!(texts(&resolved.dictionary), ["Pst Corp"]);
+    assert!(resolved.skipped.is_empty(), "{:?}", resolved.skipped);
 }
 
 #[test]

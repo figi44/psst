@@ -7,7 +7,7 @@ let
       transcribe = [
         {
           kind = "result";
-          text = "hello from PSST in the VM";
+          text = "hello from PSST on nix os";
         }
       ];
     }
@@ -81,7 +81,12 @@ pkgs.testers.runNixOSTest {
         };
       };
       settings.profiles.profiles.default.prompt_style = "Testing psst in a VM.";
-      settings.dictionary.terms = [ { text = "psst"; } ];
+      settings.dictionary.terms = [
+        {
+          text = "NixOS";
+          sounds_like = [ "nix os" ];
+        }
+      ];
     };
     systemd.services.psst-server.preStart = "install -m 0644 ${script} /var/lib/psst/fake-engine.json";
   };
@@ -117,7 +122,7 @@ pkgs.testers.runNixOSTest {
         machine.succeed("grep -Fx 'local_users = [\"alice\"]' /etc/psst/server.toml")
         machine.succeed("grep -Fx 'command = [\"psst-engine-fake\"]' /etc/psst/server.toml")
         machine.succeed("grep -Fx 'prompt_style = \"Testing psst in a VM.\"' /etc/psst/profiles.toml")
-        machine.succeed("grep -Fx 'text = \"psst\"' /etc/psst/dictionary.toml")
+        machine.succeed("grep -Fx 'text = \"NixOS\"' /etc/psst/dictionary.toml")
         machine.succeed("psst-server check-config /etc/psst")
 
     with subtest("TCP is opened on tailscale0 only"):
@@ -158,14 +163,14 @@ pkgs.testers.runNixOSTest {
             [refusal] = dictate(user)
             assert (refusal["type"], refusal["code"]) == ("error", "unauthorized"), refusal
 
-    with subtest("a dictation over the socket uses /etc/psst's profile and dictionary"):
+    with subtest("a dictation over the socket uses /etc/psst's profile and dictionary, over the built-in terms"):
         welcome, final = dictate("alice")
         assert welcome["type"] == "welcome" and welcome["device"] == "local:alice", welcome
         assert final["type"] == "final", final
-        assert final["final"]["raw_text"] == "hello from PSST in the VM", final
-        assert final["final"]["text"] == "Hello from psst in the VM ", final
+        assert final["final"]["raw_text"] == "hello from PSST on nix os", final
+        assert final["final"]["text"] == "Hello from psst on NixOS ", final
         [transcribe] = [r for r in engine_requests() if r["type"] == "transcribe"]
-        assert transcribe["bias"] == {"style": "Testing psst in a VM.", "terms": ["psst"]}, transcribe
+        assert transcribe["bias"] == {"style": "Testing psst in a VM.", "terms": ["psst", "NixOS"]}, transcribe
         [row] = json.loads(machine.succeed(as_user("alice", "psst-server history --json")))
         assert (row["id"], row["device"]) == (final["history_id"], "local:alice"), row
 

@@ -217,6 +217,12 @@ fn page(state: &AppState, viewer: &Viewer, query: &PageQuery, outcome: Outcome) 
     };
 
     let has_panel = panel.is_some();
+    // A hidden built-in term can't go into dictionary.toml, so it would ask for a download forever.
+    let changes = view
+        .terms
+        .iter()
+        .filter(|t| t.layer != TermLayer::File && !(t.built_in && t.layer == TermLayer::Hidden))
+        .count();
     let ctx = context! {
         q,
         total => view.terms.iter().filter(|t| t.term.is_some() && t.layer != TermLayer::Hidden).count(),
@@ -225,7 +231,7 @@ fn page(state: &AppState, viewer: &Viewer, query: &PageQuery, outcome: Outcome) 
         attention => attention.first().map(|t| t.id.clone()),
         attention_count => attention.len(),
         offer_add => !q.trim().is_empty() && !exact,
-        changes => view.terms.iter().filter(|t| t.layer != TermLayer::File).count(),
+        changes,
         warnings => view.warnings.clone(),
         languages => languages.into_iter().collect::<Vec<_>>(),
         panel,
@@ -269,11 +275,14 @@ fn panel(state: &AppState, view: &psst_proto::api::DictionaryView, t: &Dictionar
         .filter(|rule| rule.term == t.id)
         .map(|rule| context! { id => rule.id, span => rule.span.clone(), active => rule.active })
         .collect();
-    let source = match t.layer {
-        TermLayer::File => "From your Nix config (dictionary.toml), unchanged.",
-        TermLayer::Added => "Added here, so it lives only on this server until you move it to your Nix config.",
-        TermLayer::Replaced => "Changed here. Your Nix config has this version:",
-        TermLayer::Hidden => "Hidden here. Your Nix config still has it.",
+    let source = match (t.layer, t.built_in) {
+        (TermLayer::File, false) => "From your Nix config (dictionary.toml), unchanged.",
+        (TermLayer::File, true) => "Built into psst.",
+        (TermLayer::Added, _) => "Added here, so it lives only on this server until you move it to your Nix config.",
+        (TermLayer::Replaced, false) => "Changed here. Your Nix config has this version:",
+        (TermLayer::Replaced, true) => "Changed here. psst has this version built in:",
+        (TermLayer::Hidden, false) => "Hidden here. Your Nix config still has it.",
+        (TermLayer::Hidden, true) => "Hidden here. psst has it built in.",
     };
     let common: Vec<String> = term
         .sounds_like
@@ -287,6 +296,7 @@ fn panel(state: &AppState, view: &psst_proto::api::DictionaryView, t: &Dictionar
         title => term.text.clone(),
         sub,
         layer => Value::from(Serde(t.layer)),
+        built_in => t.built_in,
         fields => Value::from(Serde(fields)),
         error => mine.then(|| outcome.error.clone()).flatten(),
         never,
