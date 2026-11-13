@@ -82,7 +82,8 @@ enum JobKind {
 /// A paste or copy accepted from the daemon and not finished yet.
 struct Job {
     kind: JobKind,
-    watchdog: RegistrationToken,
+    /// Armed when the operation starts, not while it waits its turn.
+    watchdog: Option<RegistrationToken>,
 }
 
 /// An in-flight pipe transfer: the fd source and its timeout.
@@ -351,7 +352,9 @@ impl State {
         let mut jobs: Vec<_> = self.jobs.drain().collect();
         jobs.sort_by_key(|(generation, _)| *generation);
         for (generation, job) in jobs {
-            self.lh.remove(job.watchdog);
+            if let Some(watchdog) = job.watchdog {
+                self.lh.remove(watchdog);
+            }
             self.emit(WaylandEvent::Failed { generation, reason: "the Wayland connection was lost".into() });
         }
         self.emit(WaylandEvent::Disconnected);
@@ -370,17 +373,14 @@ impl State {
             WaylandCmd::Paste { generation, text, chord, delay_ms } => match self.accept_job(generation, true) {
                 Err(reason) => self.emit(WaylandEvent::Failed { generation, reason }),
                 Ok(()) => {
-                    let timeout = JOB_TIMEOUT + Duration::from_millis(delay_ms.into());
-                    let watchdog = self.watchdog(generation, timeout);
-                    self.jobs.insert(generation, Job { kind: JobKind::Paste { chord, delay_ms }, watchdog });
+                    self.jobs.insert(generation, Job { kind: JobKind::Paste { chord, delay_ms }, watchdog: None });
                     self.feed(Input::PasteRequested { generation, text });
                 }
             },
             WaylandCmd::Copy { generation, text } => match self.accept_job(generation, false) {
                 Err(reason) => self.emit(WaylandEvent::Failed { generation, reason }),
                 Ok(()) => {
-                    let watchdog = self.watchdog(generation, JOB_TIMEOUT);
-                    self.jobs.insert(generation, Job { kind: JobKind::Copy, watchdog });
+                    self.jobs.insert(generation, Job { kind: JobKind::Copy, watchdog: None });
                     self.feed(Input::CopyRequested { generation, text });
                 }
             },
@@ -408,14 +408,23 @@ impl State {
         Ok(())
     }
 
-    fn watchdog(&self, generation: Gen, timeout: Duration) -> RegistrationToken {
-        self.after(timeout, move |st| {
+    /// Fails the job if the compositor doesn't confirm it in time.
+    fn arm_watchdog(&mut self, generation: Gen) {
+        let Some(job) = self.jobs.get(&generation) else { return };
+        let timeout = match job.kind {
+            JobKind::Paste { delay_ms, .. } => JOB_TIMEOUT + Duration::from_millis(delay_ms.into()),
+            JobKind::Copy => JOB_TIMEOUT,
+        };
+        let token = self.after(timeout, move |st| {
             if st.jobs.remove(&generation).is_some() {
                 let reason = format!("the compositor didn't confirm within {} s", timeout.as_secs());
                 st.emit(WaylandEvent::Failed { generation, reason });
                 st.feed(Input::Failed { generation });
             }
-        })
+        });
+        if let Some(job) = self.jobs.get_mut(&generation) {
+            job.watchdog = Some(token);
+        }
     }
 
     // ------------------------------------------------------------------ clipboard
@@ -442,10 +451,12 @@ impl State {
                 self.after(max, move |st| st.feed(Input::PasteWaitExpired { generation }));
             }
             Action::StartPaste { generation, content } => {
+                self.arm_watchdog(generation);
                 self.set_own_selection(content, OwnKind::Dictation(generation));
                 self.sync(SyncTag::PasteSet(generation));
             }
             Action::StartCopy { generation, content } => {
+                self.arm_watchdog(generation);
                 self.set_own_selection(content, OwnKind::Copy(generation));
                 self.sync(SyncTag::CopySet(generation));
             }
@@ -490,14 +501,18 @@ impl State {
             }
             SyncTag::PasteChord(generation) => {
                 if let Some(job) = self.jobs.remove(&generation) {
-                    self.lh.remove(job.watchdog);
+                    if let Some(watchdog) = job.watchdog {
+                        self.lh.remove(watchdog);
+                    }
                     self.emit(WaylandEvent::Pasted { generation });
                     self.feed(Input::Pasted { generation });
                 }
             }
             SyncTag::CopySet(generation) => {
                 if let Some(job) = self.jobs.remove(&generation) {
-                    self.lh.remove(job.watchdog);
+                    if let Some(watchdog) = job.watchdog {
+                        self.lh.remove(watchdog);
+                    }
                     self.emit(WaylandEvent::Copied { generation });
                     self.feed(Input::Copied { generation });
                 }
