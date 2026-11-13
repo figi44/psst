@@ -5,12 +5,22 @@
 //!
 //! `dictation_timings` prints the client's timings:
 //! `cargo nextest run -p psst-e2e --test desktop -E 'test(timings)' --no-capture`.
+//!
+//! `on_the_gpu` repeats the dictation with the real faster-whisper engine and large-v3-turbo on
+//! a Phase 0 clip. It's ignored by default (CI has no GPU) and refuses to run outside
+//! `scripts/gpu-session.sh`:
+//!
+//! ```sh
+//! scripts/gpu-session.sh nix develop .#gpu --command \
+//!     cargo nextest run -p psst-e2e --test desktop --run-ignored only --no-capture
+//! ```
 
 mod support;
 
 use std::{
-    fs,
-    path::Path,
+    env, fs,
+    path::{Path, PathBuf},
+    process::Command,
     sync::Arc,
     thread,
     time::{Duration, Instant},
@@ -20,8 +30,8 @@ use psst_config::{AppRule, ClientConfig, PasteAction};
 use psst_engine_proto::fake::{LoggedRequest, Script, TranscribeStep};
 use psst_proto::Endpoint;
 use psst_testkit::{
-    Sandbox, TestClientConfig, TestDaemon, TestServer, TestServerConfig, nested_niri, spawn_daemon, spawn_server,
-    test_audio, wayland::ClipboardOwner, write_wav,
+    RealEngine, Sandbox, TestClientConfig, TestDaemon, TestServer, TestServerConfig, nested_niri, spawn_daemon,
+    spawn_server, test_audio, wayland::ClipboardOwner, write_wav,
 };
 use serde_json::Value;
 use support::{App, Proxy, Seen, Watcher, in_order};
@@ -338,4 +348,92 @@ fn dictation_timings() {
     assert!(p95("toggle_to_overlay_ms") < 500, "{summary:?}");
     assert!(p95("toggle_to_first_frame_ms") < 500, "{summary:?}");
     assert!(p95("stop_to_dispatch_ms") < 1_000, "{summary:?}");
+}
+
+// ---------------------------------------------------------------------- the GPU
+
+/// The Phase 0 clip the GPU run dictates.
+const GPU_CLIP: (&str, &str) =
+    ("syn-en-007-lj", "Thanks for the quick review, I'll merge it as soon as the build goes green.");
+
+/// The same dictation with the real engine on the GPU, from `nix develop .#gpu` inside
+/// `scripts/gpu-session.sh` (see the top of this file).
+#[test]
+#[ignore = "GPU: runs inside scripts/gpu-session.sh with nix develop .#gpu"]
+fn on_the_gpu() {
+    assert!(
+        env::var_os("PSST_GPU_SESSION").is_some(),
+        "the GPU run uses the GPU, so it runs only inside scripts/gpu-session.sh"
+    );
+    let engine = which("psst-engine-dev").expect("psst-engine-dev isn't on PATH: run in `nix develop .#gpu`");
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let audio = read_flac(&repo.join("evals/clips").join(format!("{}.flac", GPU_CLIP.0)));
+    let clip = Duration::from_millis(audio.len() as u64 / 16);
+
+    let server = spawn_server(
+        Path::new(SERVER),
+        TestServerConfig {
+            real_engine: Some(RealEngine { command: vec![engine.display().to_string()], model_cache: model_cache() }),
+            ..Default::default()
+        },
+    );
+    let loading = Instant::now();
+    let out = Command::new(SERVER).args(["model", "load", "--socket"]).arg(server.socket()).output().unwrap();
+    assert!(out.status.success(), "model load: {}\n{}", String::from_utf8_lossy(&out.stderr), server.log());
+    eprintln!("GPU: the model loaded in {:?}", loading.elapsed());
+
+    let desk = Desktop::start(server.endpoint(), &audio);
+    for run in 1..=3 {
+        desk.ok(&["toggle"]);
+        thread::sleep(clip + Duration::from_millis(400));
+        desk.ok(&["toggle"]);
+        let got = desk.pasted(Duration::from_secs(60));
+        let status = desk.wait_idle();
+        let text = got["text"].as_str().unwrap_or_default().to_owned();
+        let t = timings(&status);
+        eprintln!("GPU run {run}: {text:?}\n  timings (ms): {t}");
+        let (want, have) = (words(GPU_CLIP.1), words(&text));
+        let found = want.iter().filter(|w| have.contains(w)).count();
+        assert!(found * 10 >= want.len() * 8, "{text:?} is far from {:?}", GPU_CLIP.1);
+        assert!(t["stop_to_dispatch_ms"].is_u64(), "{t}");
+        thread::sleep(Duration::from_millis(1_200));
+    }
+    assert_eq!(desk.recordings(), 0);
+}
+
+fn which(program: &str) -> Option<PathBuf> {
+    env::split_paths(&env::var_os("PATH")?).map(|dir| dir.join(program)).find(|path| path.is_file())
+}
+
+/// The shared model cache, as `psst-eval audio` uses it.
+fn model_cache() -> PathBuf {
+    let cache = env::var_os("PSST_CACHE_DIR").map(PathBuf::from).unwrap_or_else(|| {
+        env::var_os("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env::var_os("HOME").expect("HOME")).join(".cache"))
+            .join("psst")
+    });
+    cache.join("hf")
+}
+
+fn words(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'').to_lowercase())
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// A 16 kHz mono clip from `evals/clips`.
+fn read_flac(path: &Path) -> Vec<i16> {
+    let mut reader = claxon::FlacReader::open(path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+    let info = reader.streaminfo();
+    assert_eq!((info.sample_rate, info.channels), (16_000, 1), "{}", path.display());
+    let bits = info.bits_per_sample;
+    reader
+        .samples()
+        .map(|s| {
+            let s = s.expect("decode the clip");
+            if bits >= 16 { (s >> (bits - 16)) as i16 } else { (s << (16 - bits)) as i16 }
+        })
+        .collect()
 }
