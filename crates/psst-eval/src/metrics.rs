@@ -7,8 +7,8 @@
 //! - **False corrections:** dictionary and rule edits that turn words matching the reference
 //!   into ones that don't, per 1,000 output words. The edits are replayed in pipeline order, and
 //!   before each one the text so far is aligned with the reference: an edit is a false correction
-//!   when it doesn't keep a word it touches that was aligned to an equal reference word (the
-//!   touched words are lined up with what replaced them). With `every_dictionary_edit_counts` (clips without terms, and the stress test) every
+//!   when the words it touches that were aligned to equal reference words aren't all, in order,
+//!   among the words that replace them. With `every_dictionary_edit_counts` (clips without terms, and the stress test) every
 //!   dictionary edit counts.
 
 use std::ops::{AddAssign, Range};
@@ -119,9 +119,10 @@ pub fn score(scoring: &Scoring, output: &Final) -> anyhow::Result<Counts> {
 
 /// Whether an edit changed a word that was aligned to an equal reference word.
 ///
-/// Only the alignment before the edit decides which words were correct; the words the edit
-/// touches are then lined up with what replaced them, and a correct word that isn't kept as it
-/// was counts. `region` is the edited part of `before`; `after` is the whole text after the edit.
+/// Only the alignment before the edit decides which words were correct. The edit counts when the
+/// correct words it touches, in order, aren't all among the words that replace them, so a word
+/// that repeats can't be mistaken for one that was lost. `region` is the edited part of
+/// `before`; `after` is the whole text after the edit.
 fn breaks_words(reference: &[String], fillers: &[String], before: &str, region: Range<usize>, after: &str) -> bool {
     let tokens = text::tokens(before);
     // Tokens the edit touches, including ones that merely border it, so joining or splitting
@@ -134,19 +135,18 @@ fn breaks_words(reference: &[String], fillers: &[String], before: &str, region: 
     let words = text::normalise_tokens(before, fillers);
     let hypothesis: Vec<&String> = words.iter().map(|(_, word)| word).collect();
     let matched = align(&reference.iter().collect::<Vec<_>>(), &hypothesis).matched;
-    let (old, correct): (Vec<&String>, Vec<bool>) = words
+    let correct = words
         .iter()
         .zip(matched)
-        .filter(|((token, _), _)| touched.contains(token))
-        .map(|((_, word), matched)| (word, matched.is_some()))
-        .unzip();
+        .filter(|((token, _), matched)| touched.contains(token) && matched.is_some())
+        .map(|((_, word), _)| word);
 
     // The same tokens after the edit: only the edited region changed length.
     let start = tokens[first].start.min(region.start);
     let end = tokens[last].end.max(region.end) + after.len() - before.len();
     let new = text::normalise(&after[start..end], fillers);
-    let kept = align(&old, &new.iter().collect::<Vec<_>>()).matched;
-    (0..old.len()).any(|i| correct[i] && !kept.contains(&Some(i)))
+    let mut rest = new.iter();
+    !correct.into_iter().all(|word| rest.any(|n| n == word))
 }
 
 /// Applies `edits` to `raw` in order, calling `visit` with each edit, the text before it, the
