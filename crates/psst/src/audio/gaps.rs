@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use cpal::StreamInstant;
+use cpal::{InputStreamTimestamp, StreamInstant};
 
 use super::Feed;
 
@@ -17,7 +17,9 @@ pub enum Discontinuity {
 }
 
 /// cpal can lose audio without reporting an xrun (seen in testing), so gaps are also found from the
-/// capture timestamps.
+/// callback timestamps: PipeWire's graph clock, which runs one buffer per cycle. The capture
+/// timestamp is that less the capture latency, and the latency drops by half a quantum whenever
+/// another stream (a chime) halves the quantum, which looked like lost audio.
 ///
 /// Each buffer is measured against the end of the previous one, never the recording's start: the
 /// device and system clocks differ by a few hundredths of a percent, which would add up to false
@@ -34,8 +36,8 @@ impl GapDetector {
         GapDetector { rate: rate.max(1), previous: None }
     }
 
-    pub fn push(&mut self, feed: &mut Feed, capture: StreamInstant, samples: &[f32]) {
-        match self.buffer(capture, samples.len()) {
+    pub fn push(&mut self, feed: &mut Feed, timestamp: &InputStreamTimestamp, samples: &[f32]) {
+        match self.buffer(timestamp, samples.len()) {
             Some(Discontinuity::Missing(n)) => feed.push_silence(n),
             Some(Discontinuity::Jump(_)) => feed.glitch(),
             None => {}
@@ -45,10 +47,11 @@ impl GapDetector {
 
     /// Jitter is up to half the longer of this buffer and the previous one, so a shrinking quantum
     /// or a short first buffer doesn't turn jitter into a gap.
-    pub fn buffer(&mut self, capture: StreamInstant, frames: usize) -> Option<Discontinuity> {
+    pub fn buffer(&mut self, timestamp: &InputStreamTimestamp, frames: usize) -> Option<Discontinuity> {
+        let at = timestamp.callback;
         let length = Duration::from_nanos((frames as u128 * NANOS_PER_SEC / u128::from(self.rate)) as u64);
         let found = self.previous.and_then(|(end, previous_length)| {
-            let gap = capture.checked_duration_since(end)?;
+            let gap = at.checked_duration_since(end)?;
             if gap > MAX_FILL {
                 Some(Discontinuity::Jump(gap))
             } else if gap > previous_length.max(length) / 2 {
@@ -58,7 +61,7 @@ impl GapDetector {
                 None
             }
         });
-        self.previous = capture.checked_add(length).map(|end| (end, length));
+        self.previous = at.checked_add(length).map(|end| (end, length));
         found
     }
 }
@@ -72,13 +75,21 @@ mod tests {
     const QUANTUM: usize = 341;
     const RATE: u32 = 16_000;
 
-    fn at_micros(micros: u64) -> StreamInstant {
-        StreamInstant::from_micros(1_000_000 + micros)
+    /// PipeWire's capture latency at its default quantum.
+    const LATENCY: u64 = 32_000;
+
+    fn at_micros(micros: u64) -> InputStreamTimestamp {
+        at(micros, LATENCY)
+    }
+
+    fn at(callback_micros: u64, latency_micros: u64) -> InputStreamTimestamp {
+        let callback = StreamInstant::from_micros(1_000_000 + callback_micros);
+        InputStreamTimestamp { callback, capture: callback.checked_sub(Duration::from_micros(latency_micros)).unwrap() }
     }
 
     fn run(buffers: &[(u64, usize)]) -> Vec<Option<Discontinuity>> {
         let mut gaps = GapDetector::new(RATE);
-        buffers.iter().map(|&(micros, frames)| gaps.buffer(at_micros(micros), frames)).collect()
+        buffers.iter().map(|&(micros, frames)| gaps.buffer(&at_micros(micros), frames)).collect()
     }
 
     fn start(i: u64, frames: usize) -> u64 {
@@ -137,6 +148,35 @@ mod tests {
     }
 
     #[test]
+    fn the_capture_latency_changing_with_the_quantum_is_not_a_gap() {
+        // Measured: a chime's stream halved PipeWire's quantum, cutting the capture latency from
+        // 32 to 21.3 ms, and closing it doubled both back. No samples were lost either way.
+        let opening = [
+            (0, 32_000, 341),
+            (21_332, 32_000, 342),
+            (42_664, 32_000, 341),
+            (63_997, 21_333, 171),
+            (74_663, 21_333, 170),
+            (85_329, 21_333, 171),
+        ];
+        let closing = [
+            (277_298, 21_333, 171),
+            (287_962, 21_333, 171),
+            (298_625, 21_333, 170),
+            (309_288, 31_996, 342),
+            (319_951, 32_000, 341),
+            (341_277, 32_000, 341),
+            (362_936, 32_000, 342),
+        ];
+        for buffers in [&opening[..], &closing] {
+            let mut gaps = GapDetector::new(RATE);
+            let found: Vec<_> =
+                buffers.iter().map(|&(micros, latency, frames)| gaps.buffer(&at(micros, latency), frames)).collect();
+            assert!(found.iter().all(Option::is_none), "{found:?}");
+        }
+    }
+
+    #[test]
     fn a_jump_of_the_clock_is_a_glitch_and_not_silence() {
         let found = run(&[(0, 320), (20_000 + 5_000_000, 320), (20_000 + 5_020_000, 320)]);
         assert_eq!(found, [None, Some(Discontinuity::Jump(Duration::from_secs(5))), None]);
@@ -150,10 +190,10 @@ mod tests {
         let shared = std::sync::Arc::new(FeedShared::default());
         let mut feed = Feed::new(producer, shared.clone());
         let mut gaps = GapDetector::new(RATE);
-        gaps.push(&mut feed, at_micros(0), &[0.5; 320]);
+        gaps.push(&mut feed, &at_micros(0), &[0.5; 320]);
         assert!(!shared.take_glitched());
-        gaps.push(&mut feed, at_micros(20_000 + 2_000), &[0.25; 320]); // jitter
-        gaps.push(&mut feed, at_micros(42_000 + 64_000), &[0.75; 320]); // 64 ms lost
+        gaps.push(&mut feed, &at_micros(20_000 + 2_000), &[0.25; 320]); // jitter
+        gaps.push(&mut feed, &at_micros(42_000 + 64_000), &[0.75; 320]); // 64 ms lost
         let mut out = vec![0.0; ring.slots()];
         let (popped, _) = ring.pop_partial_slice(&mut out);
         let expected: Vec<f32> = [vec![0.5; 320], vec![0.25; 320], vec![0.0; 1_024], vec![0.75; 320]].concat();

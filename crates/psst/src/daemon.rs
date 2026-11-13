@@ -44,6 +44,7 @@ pub struct Timing {
     pub notice_shown: Duration,
     pub niri_lookup: Duration,
     pub follow_interval: Duration,
+    pub stop_chime_wait: Duration,
 }
 
 impl Default for Timing {
@@ -61,6 +62,7 @@ impl Default for Timing {
             notice_shown: Duration::from_secs(4),
             niri_lookup: niri::TIMEOUT,
             follow_interval: Duration::from_millis(100),
+            stop_chime_wait: Duration::from_millis(100),
         }
     }
 }
@@ -73,7 +75,7 @@ const MAX_CHECK: Duration = Duration::from_secs(3);
 pub enum Sound {
     /// The microphone is live.
     Start,
-    /// The microphone is off.
+    /// The microphone is off. Never with [`Sound::Error`]: a failure right after plays only that.
     Stop,
     /// Something went wrong, or nothing was heard.
     Error,
@@ -435,6 +437,9 @@ struct Core {
     overlay: Option<Option<OverlayState>>,
     overlay_at: Instant,
     notice: Option<(OverlayState, Instant)>,
+    /// Held briefly after a stop, so an error that follows at once (nothing heard) plays alone. The
+    /// text going in plays it, or the wait running out.
+    stop_chime: Option<(SessionId, Instant)>,
     awaiting_shown: Option<SessionId>,
     last_timings: Option<ClientTimings>,
     stopping: Option<(oneshot::Sender<()>, Instant)>,
@@ -482,6 +487,7 @@ impl Core {
             overlay: None,
             overlay_at: Instant::now(),
             notice: None,
+            stop_chime: None,
             awaiting_shown: None,
             last_timings: None,
             stopping: None,
@@ -644,23 +650,14 @@ impl Core {
         let (id, generation) = (d.id, d.generation);
         self.pipeline.push_back(d);
         self.wayland(WaylandCmd::SnapshotClipboard { generation });
-        self.sound(Sound::Stop);
+        self.stop_chime = Some((id, Instant::now() + self.t.stop_chime_wait));
         info!("stopped {id}");
         Response::ok(format!("stopped {id}"))
     }
 
     fn cancel(&mut self) -> Response {
-        let d = match self.recording.take() {
-            Some(d) => {
-                if d.phase == Phase::Recording {
-                    self.sound(Sound::Stop);
-                }
-                d
-            }
-            None => match self.pipeline.pop_back() {
-                Some(d) => d,
-                None => return Response::err("nothing to cancel"),
-            },
+        let Some(d) = self.recording.take().or_else(|| self.pipeline.pop_back()) else {
+            return Response::err("nothing to cancel");
         };
         let id = d.id;
         self.drop_dictation(d);
@@ -669,6 +666,7 @@ impl Core {
     }
 
     fn drop_dictation(&mut self, d: Dictation) {
+        self.stop_chime.take_if(|(id, _)| *id == d.id);
         if let Some(recorder) = &d.recorder {
             recorder.abort();
         }
@@ -1499,6 +1497,9 @@ impl Core {
         let delete = match &inserting.what {
             Delivering::Dictation(d) => {
                 self.report(d, Some(Instant::now()));
+                if self.stop_chime.take_if(|(id, _)| *id == d.id).is_some() {
+                    self.sound(Sound::Stop);
+                }
                 Some(d.id)
             }
             Delivering::Redelivery(r) => r.delete,
@@ -1583,7 +1584,10 @@ impl Core {
         self.sound(Sound::Error);
     }
 
-    fn sound(&self, sound: Sound) {
+    fn sound(&mut self, sound: Sound) {
+        if sound == Sound::Error {
+            self.stop_chime = None;
+        }
         if self.cfg.sounds != Sounds::Off {
             (self.deps.sound)(sound);
         }
@@ -1684,6 +1688,7 @@ impl Core {
             }
         }
         deadlines.extend(self.notice.as_ref().map(|(_, until)| *until));
+        deadlines.extend(self.stop_chime.map(|(_, due)| due));
         deadlines.extend(self.stopping.as_ref().map(|(_, until)| *until));
         deadlines.into_iter().min()
     }
@@ -1710,6 +1715,9 @@ impl Core {
         }
         if self.notice.as_ref().is_some_and(|(_, until)| *until <= now) {
             self.notice = None;
+        }
+        if self.stop_chime.take_if(|(_, due)| *due <= now).is_some() {
+            self.sound(Sound::Stop);
         }
     }
 

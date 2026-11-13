@@ -111,7 +111,7 @@ fn build<T: ToF32>(
             for frame in data.chunks_exact(channels) {
                 mono.push(frame.iter().map(|s| s.to_f32()).sum::<f32>() / channels as f32);
             }
-            gaps.push(feed, info.timestamp().capture, &mono);
+            gaps.push(feed, &info.timestamp(), &mono);
             feed.tick();
         },
         move |err: cpal::Error| on_stream_error(&error_shared, &err),

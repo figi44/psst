@@ -165,7 +165,8 @@ async fn daemon_in(root: &Path, server: &FakeServer, tweak: impl FnOnce(&mut Cli
         wayland: Box::new(wayland.clone()),
         sound: Arc::new(move |sound| played.lock().unwrap().push(sound)),
         niri_socket: None,
-        timing: Timing::default(),
+        // The outcome decides each chime the tests expect, never the wait running out on a slow machine.
+        timing: Timing { stop_chime_wait: WAIT, ..Timing::default() },
     };
     tweak(&mut cfg, &mut deps);
     let paths = Paths { state_dir: root.join("state"), socket: root.join("runtime/daemon.sock") };
@@ -480,7 +481,20 @@ async fn cancel_discards_the_dictation_and_its_files() {
     assert!(d.store.list().is_empty());
     assert!(!d.store.wav_path(id).exists());
     assert!(!d.run(Request::Cancel).await.ok, "nothing left to cancel");
-    assert_eq!(d.sounds(), [Sound::Start, Sound::Stop], "cancelling turns the microphone off");
+    assert_eq!(d.sounds(), [Sound::Start], "a cancelled dictation has no text to chime for");
+    d.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_stop_chime_does_not_wait_long_for_a_slow_server() {
+    let server = FakeServer::start(FakeServerConfig { final_delay: Duration::from_secs(1), ..Default::default() });
+    server.push_outcome(Outcome::Final("slow ".into()));
+    let d = daemon(&server, |_, deps| deps.timing.stop_chime_wait = Duration::from_millis(50)).await;
+    d.dictate(200).await;
+    wait_until(|| d.sounds() == [Sound::Start, Sound::Stop]).await;
+    assert!(d.wayland.inserted().is_empty(), "chimed before the text came");
+    d.idle().await;
+    assert_eq!(d.sounds(), [Sound::Start, Sound::Stop]);
     d.stop().await;
 }
 
@@ -489,21 +503,22 @@ async fn an_empty_final_pastes_nothing_and_leaves_last_json_alone() {
     let server = FakeServer::start(FakeServerConfig::default());
     server.push_outcome(Outcome::Final("kept ".into()));
     server.push_outcome(Outcome::Final(String::new()));
-    let d = daemon(&server, |_, _| {}).await;
+    let wait = Duration::from_millis(500);
+    let d = daemon(&server, |_, deps| deps.timing.stop_chime_wait = wait).await;
     d.dictate(200).await;
     d.idle().await;
     let before = d.store.read_last().unwrap();
     d.dictate(200).await;
     d.idle().await;
+    tokio::time::sleep(wait).await;
     assert_eq!(d.wayland.inserted(), vec![paste("kept ")]);
     assert_eq!(d.store.read_last().unwrap(), before);
     assert!(d.store.list().is_empty());
     assert!(d.wayland.showed(|s| matches!(s, OverlayState::NothingHeard)));
-    let dictation = [Sound::Start, Sound::Stop];
     assert_eq!(
         d.sounds(),
-        [&dictation[..], &dictation, &[Sound::Error]].concat(),
-        "nothing heard sounds like an error"
+        [Sound::Start, Sound::Stop, Sound::Start, Sound::Error],
+        "nothing heard sounds like an error, without the stop chime"
     );
     d.stop().await;
 }
@@ -521,7 +536,7 @@ async fn a_failed_paste_keeps_the_text_for_paste_last() {
     assert_eq!(status.retained[0].state, "transcribed");
     assert_eq!(status.retained[0].text.as_deref(), Some("again "));
     assert_eq!(status.retained[0].hint, format!("psst paste-last --session {id}"));
-    assert!(d.sounds().contains(&Sound::Error));
+    assert_eq!(d.sounds(), [Sound::Start, Sound::Error], "a failed paste plays only the error chime");
 
     d.wayland.fail_inserts.store(false, Ordering::SeqCst);
     assert!(d.run(Request::PasteLast { session: Some(id) }).await.ok);

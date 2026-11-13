@@ -436,14 +436,15 @@ mod tests {
         assert_eq!(psst_client::read_wav_info(&wav).unwrap().samples, total);
     }
 
-    /// 16 kHz buffers with their capture times in µs.
+    /// 16 kHz buffers with their callback times in µs.
     struct Timestamped(Vec<(u64, Vec<f32>)>);
 
     impl AudioSource for Timestamped {
         fn open(&self, mut feed: Feed) -> Result<OpenCapture, String> {
             let mut gaps = GapDetector::new(16_000);
             for (micros, samples) in &self.0 {
-                gaps.push(&mut feed, cpal::StreamInstant::from_micros(*micros), samples);
+                let at = cpal::StreamInstant::from_micros(*micros);
+                gaps.push(&mut feed, &cpal::InputStreamTimestamp { callback: at, capture: at }, samples);
                 feed.tick();
             }
             Ok(OpenCapture { sample_rate: 16_000, drain_on_stop: false, guard: Box::new(Mutex::new(feed)) })
@@ -451,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn a_gap_in_the_capture_timestamps_becomes_silence_and_the_recording_is_gapped() {
+    fn a_gap_in_the_callback_timestamps_becomes_silence_and_the_recording_is_gapped() {
         // The third buffer starts 64 ms after the second ended.
         let source = Timestamped(vec![(0, vec![0.25; 320]), (20_000, vec![0.25; 320]), (104_000, vec![0.5; 320])]);
         let (events, wav, _dir) = record(source, Duration::from_millis(50));
