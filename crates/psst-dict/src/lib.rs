@@ -1,21 +1,25 @@
-//! The dictionary (plan 7): loading, checks, bias terms, the common-word lists, never rules and
-//! exact matching. Pure; no I/O.
+//! The dictionary (plan 7): loading, checks, bias terms, the common-word lists, never rules, and
+//! exact and fuzzy matching. Pure; no I/O.
 //!
 //! - [`Dictionary::from_file`] builds the dictionary from `dictionary.toml` and rejects the
 //!   conflicts of plan 7.1; [`Dictionary::warnings`] lists what is allowed but probably unintended.
 //!   `psst-server check-config` reports both.
 //! - [`NeverRule`]s veto a term replacing a span ([`Dictionary::vetoes`]), compared by
-//!   [`fuzzy_key`]. [`Dictionary::with_never_rules`] sets them.
+//!   [`fuzzy_key`], both in exact and in fuzzy matching. [`Dictionary::with_never_rules`] sets
+//!   them.
 //! - [`Dictionary::bias_terms`] orders a language's terms for the engine (7.2 step 1).
 //! - [`Dictionary::exact_matches`] finds exact spellings in a text (7.2 step 2).
+//! - [`Dictionary::fuzzy_matches`] finds spans that are close to a term, in English (7.2 steps
+//!   3–7).
 //! - [`is_common_word`] and [`common_words`] answer from the 5,000 most frequent word forms of
 //!   English and Czech.
 //!
-//! Fuzzy matching and the database layer arrive in Phase 2.
+//! The database layer arrives with the Phase 2 API.
 
 mod common;
 mod exact;
 mod fold;
+mod fuzzy;
 mod key;
 mod never;
 
@@ -27,6 +31,7 @@ use psst_proto::TermId;
 pub use common::{COMMON_WORD_LANGUAGES, common_words, is_common_word};
 pub use exact::{ExactMatch, Outcome};
 pub use fold::term_id;
+pub use fuzzy::{FUZZY_LANGUAGE, FuzzyMatch, FuzzyToken};
 pub use key::fuzzy_key;
 pub use never::NeverRule;
 
@@ -73,6 +78,7 @@ pub struct Term {
 pub struct Dictionary {
     terms: Vec<Term>,
     exact: exact::Matcher,
+    fuzzy: fuzzy::Index,
     /// Active never rules, sorted.
     never: Vec<NeverRule>,
 }
@@ -118,7 +124,8 @@ impl Dictionary {
             });
         }
         let exact = exact::Matcher::new(&terms)?;
-        Ok(Dictionary { terms, exact, never: Vec::new() })
+        let fuzzy = fuzzy::Index::new(&terms);
+        Ok(Dictionary { terms, exact, fuzzy, never: Vec::new() })
     }
 
     pub fn terms(&self) -> &[Term] {
@@ -147,9 +154,43 @@ impl Dictionary {
         lang: &str,
         mut allow: impl FnMut(Range<usize>) -> bool,
     ) -> Vec<ExactMatch<'_>> {
-        self.exact.find(&self.terms, text, lang, |range, term| {
-            !self.vetoes(&term.id, &text[range.clone()]) && allow(range)
-        })
+        self.exact
+            .find(&self.terms, text, lang, |range, term| !self.vetoes(&term.id, &text[range.clone()]) && allow(range))
+    }
+
+    /// Spans of `tokens` close to one of the `fuzzy` terms (plan 7.2 steps 3–7), in text order and
+    /// never overlapping. Only English sessions ([`FUZZY_LANGUAGE`]) have any.
+    ///
+    /// - **Candidates** are 1–4 consecutive available tokens holding only letters, digits, spaces,
+    ///   hyphens and apostrophes, apart from leading and trailing punctuation, so "cube. Nettie"
+    ///   is never one. Their match key must have at least 4 characters, and differ in length from
+    ///   the term's by at most the larger of 2 characters and a quarter of the term key's length.
+    ///   A span of several tokens never starts or ends with one of the 100 most common English
+    ///   words, and one with a possessive (`'s`) before its last token only matches a term with
+    ///   as many.
+    /// - **Suffix forms:** a span is also scored with `'s`, `s'`, `es` or `s` taken off its last
+    ///   token. The best form wins, and the suffix stays in the text: "kubernetes's" becomes
+    ///   "Kubernetes's".
+    /// - **Score:** `levenshtein(span key, term key) / max length`, times 0.3 when their Double
+    ///   Metaphone codes match (primary or alternate) and the distance is at most a third of the
+    ///   longer key. Keys with digits never sound alike.
+    /// - **Confidence:** the lowest `prob` of the span's tokens picks the threshold the score must
+    ///   stay under: 0.08 from 0.85 up, 0.18 from 0.50 (or without a `prob`), 0.25 below 0.50. A
+    ///   single token that is one of the 5,000 most common English words, as written or by its
+    ///   key, is matched only below 0.50, and never to a term that only recases it (a term `Home`
+    ///   leaves "home" alone, as the exact spellings do).
+    /// - **Ambiguity:** when the two best terms for a span score within 0.02 of each other, the
+    ///   span is left alone.
+    /// - **Overlaps:** candidates are taken by score, then the longer span, then the earlier one,
+    ///   skipping any that overlap a match already taken or that a never rule vetoes.
+    ///
+    /// The match replaces [`FuzzyMatch::range`]: the span without its leading and trailing
+    /// punctuation and without a suffix that was put back.
+    pub fn fuzzy_matches(&self, text: &str, tokens: &[FuzzyToken], lang: &str) -> Vec<FuzzyMatch<'_>> {
+        if lang != FUZZY_LANGUAGE {
+            return Vec::new();
+        }
+        self.fuzzy.find(&self.terms, text, tokens, |term, span| self.vetoes(&term.id, span))
     }
 
     /// Things the file allows but probably doesn't intend (plan 7.1): a spelling that's a common
