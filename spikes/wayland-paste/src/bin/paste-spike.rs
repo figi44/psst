@@ -696,24 +696,30 @@ fn check_layouts(c: &mut Ctx) -> Res<String> {
             return Err(format!("{name}: physical KEY_2 after paste gave {} (want {two})", k["utf8"]));
         }
         let back = evs.iter().find(|e| e["ev"] == "keymap").map(|e| e["name"].clone()).unwrap_or(Value::Null);
-        // Super held (physically) while pasting.
-        let mut hold = host_keys_spawn("press:125 sleep:600 release:125")?;
-        std::thread::sleep(Duration::from_millis(250));
+        // Super held (physically) while pasting: paste only once the app has
+        // seen Super go down; it is released 1.5 s later.
+        c.t.drain();
+        let mut hold = host_keys_spawn("press:125 sleep:1500 release:125")?;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let m = c.t.wait("mods", deadline.saturating_duration_since(Instant::now()))?;
+            if m["logo"] == true {
+                break;
+            }
+        }
         let g = c.next_gen();
         c.snapshot(g);
         let (_, got, _) = c.paste(g, &format!("super held {name}"), Chord::CtrlV)?;
         let _ = hold.wait();
-        let super_ok = text_of(&got) == Some(&format!("super held {name}"));
-        let k = &got;
+        expect_text(&got, &format!("super held {name}"), "paste with Super held")?;
+        if got["mods"]["ctrl"] != true || got["mods"]["logo"] != false {
+            return Err(format!("{name}: with Super held the app saw mods {}", got["mods"]));
+        }
         report.push(format!(
             "{name}: KEY_2→{two} before and after, vk keymap sent={vk_keymap}, real keymap back on next key ({back}), \
-             Super held: paste {} with mods {}",
-            if super_ok { "received" } else { "NOT received" },
+             Super held: paste received with mods {}",
             got["mods"],
         ));
-        if !super_ok {
-            return Err(format!("{name}: paste with Super held not received: {k}"));
-        }
     }
     run_cmd("niri", &["msg", "action", "switch-layout", "0"])?;
     Ok(report.join("; "))
