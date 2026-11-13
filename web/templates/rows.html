@@ -6,9 +6,8 @@
 {%- if f.readonly %}
 <div class="srow ro" id="{{ f.id }}">
   <div class="s-text">
-    <span class="s-label">{{ f.label }}</span>
+    <span class="s-label">{{ f.label }}<span class="s-lock" role="img" title="This setting is configured via your Nix config or the config file." aria-label="Read-only: configured via your Nix config or the config file.">{{ icon("lock") }}</span></span>
     <p class="s-help">{{ f.help }}</p>
-    <p class="s-note locked">{{ icon("lock") }}<span>{{ f.readonly }}</span></p>
   </div>
   <div class="s-value">{% if f.shown %}<code>{{ f.shown }}</code>{% else %}<span class="s-none">None</span>{% endif %}</div>
 </div>
@@ -34,7 +33,10 @@
     {%- elif f.kind == "int" %}
     <span class="s-num"><input class="input" type="number" inputmode="numeric" id="i-{{ f.id }}" name="value" value="{{ f.value }}" min="{{ f.min }}" max="{{ f.max }}"{% if f.error %} aria-invalid="true"{% endif %}><span class="unit">{{ f.unit }}</span></span>
     {%- elif f.kind == "choice" %}
-    <select class="input" id="i-{{ f.id }}" name="value">{% for o in f.options %}<option value="{{ o.value }}"{% if o.selected %} selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
+    <select class="input" id="i-{{ f.id }}" name="value"{% if f.other %} data-other{% endif %}>{% for o in f.options %}<option value="{{ o.value }}"{% if o.selected %} selected{% endif %}>{{ o.label }}</option>{% endfor %}{% if f.other %}<option value="">{{ f.other }}…</option>{% endif %}</select>
+    {%- if f.other %}
+    <input class="input s-other" name="other" placeholder="owner/name" aria-label="{{ f.other }}" autocomplete="off" spellcheck="false">
+    {%- endif %}
     {%- elif f.kind == "color" %}
     <span class="s-color"><svg class="swatch" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="9" fill="{{ f.value }}"/></svg><input class="input" id="i-{{ f.id }}" name="value" value="{{ f.value }}" autocomplete="off" spellcheck="false"{% if f.error %} aria-invalid="true"{% endif %}></span>
     {%- elif f.kind == "list" %}
@@ -49,11 +51,20 @@
 {%- endif %}
 {%- endmacro %}
 
-{%- macro groups(gs) -%}
-{%- for g in gs %}
+{%- macro group(g) -%}
 <section class="sgroup" aria-labelledby="g-{{ g.id }}">
   <h2 class="group-h" id="g-{{ g.id }}">{{ g.title }}</h2>
   <div class="srows">{% for f in g.fields %}{{ row(f) }}{% endfor %}</div>
 </section>
-{%- endfor %}
+{%- endmacro %}
+
+{%- macro groups(gs) -%}
+{%- for g in gs if not g.advanced %}{{ group(g) }}{% endfor %}
+{%- set advanced = gs|selectattr("advanced")|list %}
+{%- if advanced %}
+<details class="adv s-adv"{% if advanced|selectattr("open")|list %} open{% endif %}>
+  <summary>{{ icon("chevron") }}Advanced</summary>
+  <div class="s-adv-body">{% for g in advanced %}{{ group(g) }}{% endfor %}</div>
+</details>
+{%- endif %}
 {%- endmacro %}

@@ -3,6 +3,7 @@ use psst_proto::api::Applies;
 pub struct Group {
     pub id: &'static str,
     pub title: &'static str,
+    pub advanced: bool,
     pub fields: &'static [Spec],
 }
 
@@ -25,6 +26,11 @@ pub enum Kind {
         unit: &'static str,
     },
     Choice(&'static [(&'static str, &'static str)]),
+    /// A choice that also takes a value of the user's own, which `other` names.
+    OpenChoice {
+        options: &'static [(&'static str, &'static str)],
+        other: &'static str,
+    },
     /// The server's profiles.
     Profiles,
     /// `none` and the server's post-processing styles.
@@ -56,6 +62,7 @@ pub const SERVER: &[Group] = &[
     Group {
         id: "dictation",
         title: "Dictation",
+        advanced: false,
         fields: &[
             editable(
                 "limits.max_recording_s",
@@ -83,43 +90,28 @@ pub const SERVER: &[Group] = &[
     Group {
         id: "model",
         title: "Speech model",
+        advanced: false,
         fields: &[
             editable(
                 "model.model",
                 "Model",
-                "The Whisper model to load, by name or Hugging Face repository.",
-                Kind::Text { optional: false },
-                Applies::ModelReload,
-            ),
-            editable(
-                "model.revision",
-                "Revision",
-                "A commit of the model's repository; empty for the latest.",
-                Kind::Text { optional: true },
-                Applies::ModelReload,
-            ),
-            editable(
-                "model.device",
-                "Runs on",
-                "Where the model runs.",
-                Kind::Choice(&[("cuda", "GPU (CUDA)"), ("cpu", "CPU"), ("auto", "Automatic")]),
-                Applies::ModelReload,
-            ),
-            editable(
-                "model.compute_type",
-                "Precision",
-                "Lower precision uses less memory and runs faster, for a little accuracy.",
-                Kind::Choice(&[
-                    ("int8_float16", "int8_float16"),
-                    ("int8_bfloat16", "int8_bfloat16"),
-                    ("int8_float32", "int8_float32"),
-                    ("int8", "int8"),
-                    ("float16", "float16"),
-                    ("bfloat16", "bfloat16"),
-                    ("float32", "float32"),
-                    ("default", "default"),
-                    ("auto", "auto"),
-                ]),
+                "Bigger models are more accurate and need more memory and time. Small and below run well on a CPU.",
+                Kind::OpenChoice {
+                    options: &[
+                        ("large-v3-turbo", "Large v3 Turbo"),
+                        ("large-v3", "Large v3 (slower)"),
+                        ("distil-large-v3.5", "Distil Large v3.5 (English)"),
+                        ("medium", "Medium"),
+                        ("medium.en", "Medium (English)"),
+                        ("small", "Small"),
+                        ("small.en", "Small (English)"),
+                        ("base", "Base"),
+                        ("base.en", "Base (English)"),
+                        ("tiny", "Tiny"),
+                        ("tiny.en", "Tiny (English)"),
+                    ],
+                    other: "Hugging Face repo",
+                },
                 Applies::ModelReload,
             ),
             editable(
@@ -129,73 +121,12 @@ pub const SERVER: &[Group] = &[
                 Kind::Bool,
                 Applies::NextStart,
             ),
-            read_only(
-                "model.engine",
-                "Engine",
-                "The program that runs the model.",
-                Kind::Text { optional: false },
-                "Set in your Nix config, with the engine program it names.",
-            ),
-            read_only(
-                "model.command",
-                "Engine command",
-                "How the server starts the engine.",
-                Kind::List,
-                "Set in your Nix config: from here, a browser session could run any program on this machine.",
-            ),
-        ],
-    },
-    Group {
-        id: "decoding",
-        title: "Decoding",
-        fields: &[
-            editable(
-                "model.options.beam_size",
-                "Beam size",
-                "How many guesses the model weighs at each step; more is slower and a little more accurate.",
-                Kind::Int { min: 1, max: 20, unit: "" },
-                Applies::NextDictation,
-            ),
-            editable(
-                "model.options.batch_size",
-                "Batch size",
-                "How many pieces of a long recording are transcribed at once.",
-                Kind::Int { min: 1, max: 64, unit: "" },
-                Applies::NextDictation,
-            ),
-            editable(
-                "model.options.word_timestamps",
-                "Word timings",
-                "Times each word, which the dictionary uses to judge replacements.",
-                Kind::Bool,
-                Applies::NextDictation,
-            ),
-            editable(
-                "model.options.vad_filter",
-                "Skip silence",
-                "Leaves out silence before transcribing. The batched path needs it.",
-                Kind::Bool,
-                Applies::NextDictation,
-            ),
-            editable(
-                "model.options.terms_as",
-                "Dictionary terms",
-                "How dictionary terms reach the model.",
-                Kind::Choice(&[("prompt", "In the prompt"), ("hotwords", "As hotwords")]),
-                Applies::NextDictation,
-            ),
-            editable(
-                "model.options.path",
-                "Decoding path",
-                "How the engine transcribes.",
-                Kind::Choice(&[("batched", "Batched")]),
-                Applies::NextDictation,
-            ),
         ],
     },
     Group {
         id: "web",
         title: "Web UI and history",
+        advanced: false,
         fields: &[
             editable(
                 "web_url",
@@ -216,6 +147,7 @@ pub const SERVER: &[Group] = &[
     Group {
         id: "access",
         title: "Access",
+        advanced: false,
         fields: &[
             read_only(
                 "listen",
@@ -262,12 +194,110 @@ pub const SERVER: &[Group] = &[
             ),
         ],
     },
+    Group {
+        id: "engine",
+        title: "Engine",
+        advanced: true,
+        fields: &[
+            editable(
+                "model.device",
+                "Runs on",
+                "Where the model runs.",
+                Kind::Choice(&[("cuda", "GPU (CUDA)"), ("cpu", "CPU"), ("auto", "Automatic")]),
+                Applies::ModelReload,
+            ),
+            editable(
+                "model.compute_type",
+                "Precision",
+                "Lower precision uses less memory and runs faster, for a little accuracy. Pick one for where the model runs.",
+                Kind::Choice(&[
+                    ("int8_float16", "Balanced (GPU)"),
+                    ("float16", "Full (GPU)"),
+                    ("int8", "Light (CPU)"),
+                    ("float32", "Full (CPU)"),
+                    ("auto", "Automatic"),
+                ]),
+                Applies::ModelReload,
+            ),
+            editable(
+                "model.revision",
+                "Revision",
+                "A commit of the model's repository; empty for the latest.",
+                Kind::Text { optional: true },
+                Applies::ModelReload,
+            ),
+            read_only(
+                "model.engine",
+                "Engine",
+                "The program that runs the model.",
+                Kind::Text { optional: false },
+                "Set in your Nix config, with the engine program it names.",
+            ),
+            read_only(
+                "model.command",
+                "Engine command",
+                "How the server starts the engine.",
+                Kind::List,
+                "Set in your Nix config: from here, a browser session could run any program on this machine.",
+            ),
+        ],
+    },
+    Group {
+        id: "decoding",
+        title: "Decoding",
+        advanced: true,
+        fields: &[
+            editable(
+                "model.options.beam_size",
+                "Beam size",
+                "How many guesses the model weighs at each step; more is slower and a little more accurate.",
+                Kind::Int { min: 1, max: 20, unit: "" },
+                Applies::NextDictation,
+            ),
+            editable(
+                "model.options.batch_size",
+                "Batch size",
+                "How many pieces of a long recording are transcribed at once.",
+                Kind::Int { min: 1, max: 64, unit: "" },
+                Applies::NextDictation,
+            ),
+            editable(
+                "model.options.word_timestamps",
+                "Word timings",
+                "Times each word, which the dictionary uses to judge replacements.",
+                Kind::Bool,
+                Applies::NextDictation,
+            ),
+            editable(
+                "model.options.vad_filter",
+                "Skip silence",
+                "Leaves out silence before transcribing. The batched path needs it.",
+                Kind::Bool,
+                Applies::NextDictation,
+            ),
+            editable(
+                "model.options.terms_as",
+                "Dictionary terms",
+                "How dictionary terms reach the model.",
+                Kind::Choice(&[("prompt", "In the prompt"), ("hotwords", "As hotwords")]),
+                Applies::NextDictation,
+            ),
+            editable(
+                "model.options.path",
+                "Decoding path",
+                "How the engine transcribes.",
+                Kind::Choice(&[("batched", "Batched")]),
+                Applies::NextDictation,
+            ),
+        ],
+    },
 ];
 
 pub const CLIENT: &[Group] = &[
     Group {
         id: "dictation",
         title: "Dictation",
+        advanced: false,
         fields: &[
             editable(
                 "profile",
@@ -303,6 +333,7 @@ pub const CLIENT: &[Group] = &[
     Group {
         id: "audio",
         title: "Sound and microphone",
+        advanced: false,
         fields: &[
             editable(
                 "sounds",
@@ -330,6 +361,7 @@ pub const CLIENT: &[Group] = &[
     Group {
         id: "overlay",
         title: "Overlay",
+        advanced: false,
         fields: &[
             editable(
                 "overlay.anchor",
@@ -385,6 +417,7 @@ pub const CLIENT: &[Group] = &[
     Group {
         id: "connection",
         title: "Connection",
+        advanced: false,
         fields: &[read_only(
             "server",
             "Server",

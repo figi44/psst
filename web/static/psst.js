@@ -231,6 +231,19 @@
     if (form && ev.target.name === "written" && form.dataset.prefill) setTimeout(function () { ev.target.select(); }, 0);
   });
 
+  // Picking a choice's "other" entry opens its text box instead of saving; captured, so the row's
+  // htmx never sees the change.
+  document.addEventListener("change", function (ev) {
+    var pick = ev.target;
+    if (!pick.matches || !pick.matches("select[data-other]")) return;
+    var box = $(".s-other", pick.parentNode);
+    box.classList.toggle("on", pick.value === "");
+    if (pick.value === "") {
+      ev.stopPropagation();
+      box.focus();
+    } else box.value = "";
+  }, true);
+
   document.addEventListener("toggle", function (ev) {
     var box = ev.target;
     if (!box.classList || !box.classList.contains("fixbox")) return;

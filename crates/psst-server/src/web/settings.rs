@@ -39,6 +39,15 @@ pub struct ValueForm {
     /// Absent for an unticked switch, which is off.
     #[serde(default)]
     value: String,
+    /// The text box beside an open choice; when filled, it wins over the list.
+    #[serde(default)]
+    other: String,
+}
+
+impl ValueForm {
+    fn value(&self) -> &str {
+        if self.other.trim().is_empty() { &self.value } else { &self.other }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -101,7 +110,7 @@ fn applies(applies: Applies) -> Option<&'static str> {
 fn field(setting: &Setting, action: &str, source: &str, query: &PageQuery, refusal: Option<&Refusal>) -> Value {
     let mine = refusal.filter(|r| r.key == setting.key);
     let label_of = |value: &Json| match &setting.kind {
-        SettingKind::Choice { options } => options
+        SettingKind::Choice { options, .. } => options
             .iter()
             .find(|option| value.as_str() == Some(option.value.as_str()))
             .map(|option| option.label.clone())
@@ -119,17 +128,13 @@ fn field(setting: &Setting, action: &str, source: &str, query: &PageQuery, refus
         SettingKind::List => ("list", 0, 0, "", false),
     };
     let options = match &setting.kind {
-        SettingKind::Choice { options } => options
+        SettingKind::Choice { options, .. } => options
             .iter()
             .map(|option| {
                 context! { value => option.value.clone(), label => option.label.clone(), selected => option.value == value }
             })
             .collect(),
         _ => Vec::new(),
-    };
-    let readonly = match &setting.access {
-        SettingAccess::Editable => None,
-        SettingAccess::ReadOnly { reason } => Some(reason.clone()),
     };
     context! {
         key => setting.key.clone(),
@@ -150,7 +155,11 @@ fn field(setting: &Setting, action: &str, source: &str, query: &PageQuery, refus
         file => setting.file.as_ref().map(label_of),
         default => label_of(&setting.default),
         source,
-        readonly,
+        readonly => matches!(setting.access, SettingAccess::ReadOnly { .. }),
+        other => match &setting.kind {
+            SettingKind::Choice { other, .. } => other.clone(),
+            _ => None,
+        },
         applies => applies(setting.applies),
         problem => setting.problem.clone(),
         error => mine.map(|r| r.message.clone()),
@@ -162,10 +171,18 @@ fn groups(view: &SettingsView, action: &str, source: &str, query: &PageQuery, re
     view.groups
         .iter()
         .map(|group| {
+            let fields: Vec<Value> = group.fields.iter().map(|f| field(f, action, source, query, refusal)).collect();
+            // Closed, the fold would hide the row a save or refusal just came back to.
+            let open = group
+                .fields
+                .iter()
+                .any(|f| query.saved.as_deref() == Some(f.key.as_str()) || refusal.is_some_and(|r| r.key == f.key));
             context! {
                 id => group.id.clone(),
                 title => group.title.clone(),
-                fields => group.fields.iter().map(|f| field(f, action, source, query, refusal)).collect::<Vec<_>>(),
+                advanced => group.advanced,
+                open,
+                fields,
             }
         })
         .collect()
@@ -209,11 +226,14 @@ pub async fn set(
         Ok(form) => form,
         Err(err) => return bad_form(err),
     };
-    match settings::server(&state).set(&key, &form.value) {
+    match settings::server(&state).set(&key, form.value()) {
         Ok(_) => saved("/settings", &key),
-        Err(err) => {
-            server_page(&state, &viewer, &PageQuery::default(), Some(Refusal::of(&key, &err, Some(form.value))))
-        }
+        Err(err) => server_page(
+            &state,
+            &viewer,
+            &PageQuery::default(),
+            Some(Refusal::of(&key, &err, Some(form.value().to_owned()))),
+        ),
     }
 }
 
@@ -363,10 +383,10 @@ pub async fn set_device(
         Ok(form) => form,
         Err(err) => return bad_form(err),
     };
-    match settings::device(&state, &id).and_then(|settings| settings.set(&key, &form.value)) {
+    match settings::device(&state, &id).and_then(|settings| settings.set(&key, form.value())) {
         Ok(_) => saved(&format!("/devices/{}", encode_segment(&id)), &key),
         Err(err) => {
-            let refusal = Refusal::of(&key, &err, Some(form.value));
+            let refusal = Refusal::of(&key, &err, Some(form.value().to_owned()));
             device_page(&state, &viewer, &id, &PageQuery::default(), Some(refusal))
         }
     }

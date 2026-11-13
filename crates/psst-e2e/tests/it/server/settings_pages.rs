@@ -26,7 +26,7 @@ async fn server_settings_change_and_reset_through_the_page() {
 
     let page = browser.get("/settings").await;
     assert_eq!(page.status, 200);
-    for text in ["Longest recording", "action=\"/settings/limits.max_recording_s\"", "Set in your Nix config"] {
+    for text in ["Longest recording", "action=\"/settings/limits.max_recording_s\"", "configured via your Nix config"] {
         assert!(page.body.contains(text), "{text} on the page: {}", page.body);
     }
     assert!(!page.body.contains("action=\"/settings/listen\""), "a read-only setting has no form: {}", page.body);
@@ -60,6 +60,43 @@ async fn server_settings_change_and_reset_through_the_page() {
     let export = browser.get("/settings.toml").await;
     assert_eq!(export.header("content-disposition"), Some("attachment; filename=\"server.toml\""));
     assert!(export.body.contains("word_timestamps = false"), "{}", export.body);
+}
+
+#[tokio::test]
+async fn a_model_is_picked_from_the_list_or_named_by_its_repository() {
+    let server = web_server();
+    let browser = logged_in(&server).await;
+    let api = api(&server);
+
+    let page = browser.get("/settings").await;
+    assert!(page.body.contains(">Large v3 Turbo</option>"), "{}", page.body);
+
+    // Without JavaScript the repository box shows beside the list, and what's typed in it wins.
+    let saved =
+        browser.post("/settings/model.model", &[("value", "large-v3-turbo"), ("other", "acme/whisper-ct2")]).await;
+    see_other(&saved, "/settings?saved=model.model#s-model-model");
+    assert_eq!(view(&api).await.field("model.model").unwrap().value, json!("acme/whisper-ct2"));
+    let page = browser.get("/settings").await;
+    assert!(page.body.contains("whisper-ct2\" selected>"), "{}", page.body);
+
+    browser.post("/settings/model.model", &[("value", "small.en"), ("other", "")]).await;
+    assert_eq!(view(&api).await.field("model.model").unwrap().value, json!("small.en"));
+    refused_with(&browser.post("/settings/model.model", &[("value", "")]).await, "Model");
+}
+
+#[tokio::test]
+async fn advanced_settings_stay_folded_until_one_of_them_is_saved() {
+    let server = web_server();
+    let browser = logged_in(&server).await;
+
+    let page = browser.get("/settings").await;
+    assert!(page.body.contains("<details class=\"adv s-adv\">"), "{}", page.body);
+    assert!(page.body.contains("Precision"), "{}", page.body);
+
+    let saved = browser.post("/settings/model.compute_type", &[("value", "float16")]).await;
+    see_other(&saved, "/settings?saved=model.compute_type#s-model-compute_type");
+    let page = browser.get("/settings?saved=model.compute_type").await;
+    assert!(page.body.contains("<details class=\"adv s-adv\" open>"), "{}", page.body);
 }
 
 #[tokio::test]

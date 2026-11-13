@@ -167,7 +167,9 @@ impl Options<'_> {
             Kind::Text { optional } => return SettingKind::Text { optional: *optional },
             Kind::Color => return SettingKind::Color,
             Kind::List => return SettingKind::List,
-            Kind::Choice(options) => options.iter().map(|(value, label)| option(value, label)).collect(),
+            Kind::Choice(options) | Kind::OpenChoice { options, .. } => {
+                options.iter().map(|(value, label)| option(value, label)).collect()
+            }
             Kind::Profiles => {
                 let profiles = self.state.live.profile_layers().effective();
                 profiles.profiles.keys().map(|name| option(name, name)).collect()
@@ -182,7 +184,11 @@ impl Options<'_> {
                 options.push(option(value, value));
             }
         }
-        SettingKind::Choice { options }
+        let other = match &spec.kind {
+            Kind::OpenChoice { other, .. } => Some((*other).into()),
+            _ => None,
+        };
+        SettingKind::Choice { options, other }
     }
 }
 
@@ -207,8 +213,10 @@ fn parse(spec: &Spec, kind: &SettingKind, form: &str) -> Result<Value, ApiErr> {
             Ok(n) if (*min..=*max).contains(&n) => Ok(json!(n)),
             _ => refuse(format!("enter a whole number from {min} to {max}{}", unit_suffix(unit))),
         },
-        SettingKind::Choice { options } => match options.iter().find(|o| o.value == text) {
+        SettingKind::Choice { options, other } => match options.iter().find(|o| o.value == text) {
             Some(option) => Ok(json!(option.value)),
+            None if other.is_some() && !text.is_empty() => Ok(json!(text)),
+            None if other.is_some() => refuse("it can't be empty".into()),
             None => {
                 let names: Vec<&str> = options.iter().map(|o| o.value.as_str()).collect();
                 refuse(format!("choose one of {}", names.join(", ")))
@@ -266,6 +274,7 @@ fn view<T: Layerable>(layers: &Layers<T>, groups: &[Group], options: &Options<'_
         .map(|group| SettingsGroup {
             id: group.id.into(),
             title: group.title.into(),
+            advanced: group.advanced,
             fields: group.fields.iter().map(field).collect(),
         })
         .collect();

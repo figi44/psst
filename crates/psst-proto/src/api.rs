@@ -472,6 +472,9 @@ impl SettingsView {
 pub struct SettingsGroup {
     pub id: String,
     pub title: String,
+    /// Tucked away: few need it, and a wrong value costs speed or accuracy.
+    #[serde(default)]
+    pub advanced: bool,
     pub fields: Vec<Setting>,
 }
 
@@ -510,6 +513,9 @@ pub enum SettingKind {
     },
     Choice {
         options: Vec<SettingOption>,
+        /// What a value outside `options` stands for, when one is allowed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        other: Option<String>,
     },
     /// An optional one is unset when empty.
     Text {

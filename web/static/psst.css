@@ -424,6 +424,9 @@ body:has(.panel) { overflow: hidden; }
 .sgroup { display: grid; gap: 10px; }
 .sgroup > .group-h { padding-left: 4px; }
 .sgroup > .hint { margin: -4px 0 2px; padding-left: 4px; }
+details.s-adv { border-top: 0; }
+details.s-adv > summary { padding: 0 4px; }
+.s-adv-body { display: grid; gap: 32px; padding-top: 24px; }
 .srows { border-radius: 20px; background: var(--well); box-shadow: inset 0 0 0 1px var(--line); }
 .srow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(11rem, 17rem); gap: 10px 28px; align-items: center; padding: 16px 20px; margin: 0; scroll-margin-top: 24px; }
 .srow + .srow { border-top: 1px solid var(--line); }
@@ -434,12 +437,13 @@ body:has(.panel) { overflow: hidden; }
 .s-help { font-size: 13px; color: var(--muted); }
 .s-when { color: var(--faint); }
 .s-note { font-size: 13px; color: var(--faint); display: flex; flex-wrap: wrap; gap: 2px 10px; align-items: center; margin-top: 3px; }
-.s-note.locked { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px; align-items: start; }
 .s-note .icon { width: 14px; height: 14px; margin-top: 2px; }
 .s-note .linkbtn { color: var(--fg-2); }
 .s-text .err { padding: 0; margin-top: 3px; }
 .s-control { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; position: relative; }
 .s-control > .input, .s-color, .s-control > select.input { width: 100%; }
+.s-control:has(.s-other) { flex-wrap: wrap; }
+.js .s-other:not(.on) { display: none; }
 .s-control .input { min-height: 40px; padding: 8px 14px; }
 .s-control select.input { padding-right: 38px; }
 .s-control textarea.input { min-height: 72px; font-family: var(--mono); font-size: 13px; }
@@ -454,6 +458,8 @@ body:has(.panel) { overflow: hidden; }
 .s-value code { white-space: pre-line; overflow-wrap: anywhere; background: none; padding: 0; font-size: 13px; }
 .s-none { color: var(--faint); }
 .srow.ro .s-label { color: var(--fg-2); }
+.s-lock { display: inline-flex; margin-left: 8px; color: var(--faint); vertical-align: -2px; cursor: help; }
+.s-lock .icon { width: 14px; height: 14px; }
 .js .s-save { display: none; }
 .s-saved { position: absolute; right: 0; top: calc(100% + 2px); display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--ok); white-space: nowrap; animation: settle 2.6s ease-in forwards; }
 .s-saved .icon { width: 14px; height: 14px; }
