@@ -1,0 +1,17 @@
+# Fixed profiles snapshot for the eval set (plan 7.3), as in plan 6.5. The engine benchmarks in scripts/bench/ take
+# the bias style (prompt_style) from here. psst-config is the implementation of this format; if it ends up different,
+# this file follows psst-config.
+
+[profiles.default]
+language = "en"
+prompt_style = "I'm updating the NixOS config. Claude Code and t3code run fine."
+rules = ["fillers", "whitespace", "capitalize", "trailing_space"]
+
+[profiles.czech]
+language = "cs"
+prompt_style = "Upravuji konfiguraci NixOS a spouštím t3code."
+rules = ["fillers", "whitespace", "capitalize", "trailing_space"]
+
+[fillers]
+en = ["um", "uh", "erm"]
+cs = ["ehm", "eee"]
