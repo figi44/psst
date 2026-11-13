@@ -1,0 +1,14 @@
+[package]
+name = "mic-spike"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cpal = { version = "0.18", features = ["pipewire"] }
+rtrb = "0.4.1"
+
+[workspace]
+
+[features]
+# Real-time promotion of the PipeWire callback thread through RTKit.
+realtime = ["cpal/realtime-dbus"]
