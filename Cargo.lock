@@ -2019,6 +2019,7 @@ dependencies = [
  "psst-config",
  "psst-dict",
  "psst-proto",
+ "rustix",
  "serde_json",
 ]
 
