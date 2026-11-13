@@ -15,7 +15,7 @@ def main() -> int:
     # Before importing anything that might print.
     out = claim_stdout()
 
-    from .engine import Engine
+    from .engine import Engine, Fatal
     from .model import FasterWhisperModel
 
     try:
@@ -23,6 +23,10 @@ def main() -> int:
     except CorruptStream as err:
         print(f"psst-engine-faster-whisper: corrupt input: {err}", file=sys.stderr)
         return 3
+    except Fatal as err:
+        print(f"psst-engine-faster-whisper: exiting: {err}", file=sys.stderr, flush=True)
+        # Skip interpreter shutdown: destructors may hang on a broken CUDA context.
+        os._exit(4)
     return 0
 
 

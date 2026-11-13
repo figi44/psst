@@ -29,12 +29,15 @@ class FakeClock:
 
 
 class StubModel:
-    """Loads in 2.4 s with download progress, transcribes in 180 ms, and runs out of GPU memory
-    for the request ids in ``oom_ids``."""
+    """Loads in 2.4 s with download progress, transcribes in 180 ms, runs out of GPU memory for the
+    request ids in ``oom_ids``, and raises ``errors[id]`` for the ids in ``errors``."""
 
-    def __init__(self, clock: FakeClock, oom_ids: frozenset[int] = frozenset()) -> None:
+    def __init__(
+        self, clock: FakeClock, oom_ids: frozenset[int] = frozenset(), errors: dict[int, Exception] | None = None
+    ) -> None:
         self.clock = clock
         self.oom_ids = oom_ids
+        self.errors = errors or {}
 
     def load(self, request: LoadRequest, progress: ProgressFn) -> str:
         progress("download", 524_288, 1_048_576)
@@ -45,6 +48,8 @@ class StubModel:
     def transcribe(self, request: TranscribeRequest, samples: array) -> Transcription:
         if request.id in self.oom_ids:
             raise OutOfMemory("CUDA out of memory (stub)")
+        if request.id in self.errors:
+            raise self.errors[request.id]
         self.clock.advance(0.18)
         terms = ", ".join(request.bias.terms)
         prompt = " ".join(part for part in (request.bias.style, terms and terms + ".") if part)
