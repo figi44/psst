@@ -1,51 +1,67 @@
-//! The `psst` daemon and CLI as built, end to end: `psst-e2e-daemon` runs in a headless sandbox
-//! with audio replayed from a WAV and the `[insert] record` seam in place of Wayland.
-//!
-//! **The server is the scripted fake for now** (`psst_testkit::fake_server`), because
-//! `psst-server serve` isn't implemented on main yet. [`Server`] is the one place to switch:
-//! once it is, `Server::start` becomes `psst_testkit::spawn_server(SERVER, …)` with the fake
-//! engine scripted to return the same texts, and `set_listening` becomes killing and restarting
-//! that server on the same socket.
+//! The `psst` daemon and CLI as built, end to end, against the real server: `psst-e2e-daemon`
+//! runs in a headless sandbox with audio replayed from a WAV and the `[insert] record` seam in
+//! place of Wayland; `psst-server-e2e` runs with the scripted fake engine.
 
 use std::{
     fs,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    process::Output,
+    process::{Command, Output},
     thread,
     time::{Duration, Instant},
 };
 
+use psst_engine_proto::fake::{Script, TranscribeStep};
 use psst_proto::Endpoint;
 use psst_testkit::{
-    Sandbox, TestClientConfig, TestDaemon,
-    fake_server::{FakeServer, FakeServerConfig, Outcome},
-    spawn_daemon, test_audio, write_wav,
+    Sandbox, TestClientConfig, TestDaemon, TestServer, TestServerConfig, spawn_daemon, spawn_server, test_audio,
+    write_wav,
 };
 use serde_json::Value;
 
 const DAEMON: &str = env!("CARGO_BIN_EXE_psst-e2e-daemon");
+const SERVER: &str = env!("CARGO_BIN_EXE_psst-server-e2e");
 const WAIT: Duration = Duration::from_secs(15);
 
-/// The server under test; see the module docs.
-struct Server(FakeServer);
+/// `psst-server serve` with the fake engine.
+struct Server(TestServer);
 
 impl Server {
-    /// A server whose next dictations come back as `texts`, in order.
+    /// A server whose engine transcribes the next dictations as `texts`, in order. The pipeline
+    /// then appends a space (the `trailing_space` rule).
     fn start(texts: &[&str], tcp: bool) -> Server {
-        let server = FakeServer::start(FakeServerConfig { tcp, ..Default::default() });
-        for text in texts {
-            server.push_outcome(Outcome::Final(text.to_string()));
-        }
-        Server(server)
+        let transcribe = texts
+            .iter()
+            .map(|text| TranscribeStep::Result {
+                text: text.to_string(),
+                delay_ms: 0,
+                no_speech_prob: None,
+                speech_ms: None,
+            })
+            .collect();
+        let cfg = TestServerConfig { script: Script { transcribe, ..Script::default() }, tcp, ..Default::default() };
+        Server(spawn_server(Path::new(SERVER), cfg))
     }
 
     fn endpoint(&self) -> Endpoint {
         self.0.endpoint()
     }
 
-    fn set_listening(&self, listening: bool) {
-        self.0.set_listening(listening);
+    /// Stops the server: connections close and new ones are refused.
+    fn stop(&mut self) {
+        self.0.kill();
+    }
+
+    /// Starts it again with the same state.
+    fn start_again(&mut self) {
+        self.0.restart();
+    }
+
+    /// Runs an admin command (`psst-server <args> --json`) and returns its output.
+    fn admin(&self, args: &[&str]) -> Value {
+        let out = Command::new(SERVER).args(args).arg("--json").arg("--socket").arg(self.0.socket()).output().unwrap();
+        assert!(out.status.success(), "psst-server {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        serde_json::from_slice(&out.stdout).unwrap()
     }
 }
 
@@ -129,7 +145,7 @@ impl Client {
 
 #[test]
 fn toggle_twice_pastes_the_transcript_and_cleans_up() {
-    let server = Server::start(&["Push the fix to psst. "], false);
+    let server = Server::start(&["Push the fix to psst."], false);
     let client = Client::start(server.endpoint());
     assert!(client.ok(&["toggle"]).starts_with("recording"));
     thread::sleep(Duration::from_millis(500));
@@ -146,19 +162,29 @@ fn toggle_twice_pastes_the_transcript_and_cleans_up() {
     assert_eq!(fs::metadata(state.join("last.json")).unwrap().permissions().mode() & 0o777, 0o600);
     let status = client.status();
     assert!(status["last_timings"]["stop_to_dispatch_ms"].is_u64(), "{status}");
+    // The client's timings reach the server's history.
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let history = server.admin(&["history"]);
+        if history[0]["client_timings"]["stop_to_dispatch_ms"].is_u64() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "no client timings in {history}");
+        thread::sleep(Duration::from_millis(50));
+    }
 }
 
 #[test]
 fn a_recording_made_offline_is_uploaded_once_the_server_is_back() {
-    let server = Server::start(&["Recorded offline. "], false);
+    let mut server = Server::start(&["Recorded offline."], false);
     let client = Client::start(server.endpoint());
-    server.set_listening(false);
+    server.stop();
     client.ok(&["toggle"]);
     client.wait_for("the offline overlay", |c| {
         c.commands().iter().any(|cmd| cmd["cmd"] == "overlay" && cmd["state"]["kind"] == "offline")
     });
     thread::sleep(Duration::from_millis(300));
-    server.set_listening(true);
+    server.start_again();
     client.ok(&["toggle"]);
     client.wait_idle();
     assert_eq!(client.inserted_texts("paste"), vec!["Recorded offline. "]);
@@ -166,9 +192,9 @@ fn a_recording_made_offline_is_uploaded_once_the_server_is_back() {
 
 #[test]
 fn a_recording_interrupted_by_a_crash_survives_for_retry() {
-    let server = Server::start(&["Rescued. "], false);
+    let mut server = Server::start(&["Rescued."], false);
     let mut client = Client::start(server.endpoint());
-    server.set_listening(false);
+    server.stop();
     client.ok(&["toggle"]);
     thread::sleep(Duration::from_millis(400));
     client.restart(); // SIGKILL, then a fresh daemon
@@ -181,7 +207,7 @@ fn a_recording_interrupted_by_a_crash_survives_for_retry() {
     let text = client.ok(&["status"]);
     assert!(text.contains("psst retry --session"), "{text}");
 
-    server.set_listening(true);
+    server.start_again();
     client.ok(&["retry"]);
     client.wait_idle();
     assert_eq!(client.inserted_texts("copy"), vec!["Rescued. "], "an incomplete recording is copied, not pasted");
@@ -190,17 +216,18 @@ fn a_recording_interrupted_by_a_crash_survives_for_retry() {
 
 #[test]
 fn pairing_stores_a_private_token_that_the_daemon_uses_over_tcp() {
-    let server = Server::start(&["Over TCP. "], true);
+    let server = Server::start(&["Over TCP."], true);
     let tcp = server.0.tcp_endpoint().unwrap();
     // A daemon first, so the pairing goes into its sandbox; it can't connect yet.
     let mut client = Client::start(tcp.clone());
-    let out = client.psst(&["pair", &tcp.to_string(), "WRONGCODE"]);
+    let out = client.psst(&["pair", &tcp.to_string(), "WRONG234"]);
     assert!(!out.status.success());
-    client.ok(&["pair", &tcp.to_string(), "PAIRCODE"]);
+    let code = server.admin(&["pair", "--name", "thinkpad"])["code"].as_str().unwrap().to_owned();
+    client.ok(&["pair", &tcp.to_string(), &code]);
     let creds = client.daemon().state_dir().join("credentials");
     assert_eq!(fs::metadata(&creds).unwrap().permissions().mode() & 0o777, 0o600);
     let stored: Value = serde_json::from_slice(&fs::read(&creds).unwrap()).unwrap();
-    assert_eq!(stored["token"], "fake-token");
+    assert!(stored["token"].as_str().unwrap().starts_with("psst_"), "{stored}");
 
     client.restart();
     client.ok(&["toggle"]);
