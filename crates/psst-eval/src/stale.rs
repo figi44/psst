@@ -16,7 +16,9 @@
 //!   have been under 223 bytes is stale too: the trace was recorded with a different term list.
 //!
 //! The prompt check can't see a change to the terms past the ones the engine kept, when the
-//! prompt with the next term really is over the budget; that needs the tokenizer.
+//! prompt with the next term really is over the budget; that needs the tokenizer. Nor can the
+//! options check see an option removed from the config (only `batch_size` can be unset): the
+//! engine may report the default it used under the same key.
 
 use psst_config::{ModelConfig, Profile};
 use psst_dict::Dictionary;
