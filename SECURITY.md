@@ -20,4 +20,4 @@ vulnerability"), rather than in a public issue.
 Every APK is signed by one key, whose certificate's SHA-256 is
 `E6:E4:2B:0C:40:34:1B:7D:A5:98:13:D8:33:B9:9A:5D:F4:DD:9D:C7:5A:E7:6F:27:95:4C:72:AB:71:91:DF:0E`
 (`apksigner verify --print-certs` shows it). GitHub attests that this repository's workflow built
-and signed it: `gh attestation verify psst-*.apk --repo figi44/psst`.
+and signed it: `gh attestation verify <apk> --repo figi44/psst`.
