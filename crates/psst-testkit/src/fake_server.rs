@@ -1,5 +1,7 @@
 //! A scripted stand-in for `psst-server` that speaks `/v1/client` (and `/api/pair/redeem`), for
-//! client and daemon tests until they run against the real server binary.
+//! client and daemon tests that need what the real server doesn't do on demand: stop reading
+//! mid-session, hold `ready` back, refuse connections while keeping its registry, or reject the
+//! next `start`. End-to-end tests use the real server (`spawn_server`).
 //!
 //! It keeps a session registry like the real one: `start` gets `ready` at once, `progress`
 //! follows every [`FakeServerConfig::progress_interval`], `stop` is checked against the audio

@@ -4,8 +4,8 @@
 //! Tests pass freshly built binaries: `psst-e2e` gives `env!("CARGO_BIN_EXE_psst-server-e2e")`
 //! and `env!("CARGO_BIN_EXE_psst-e2e-daemon")`.
 //!
-//! [`fake_server`] is a scripted stand-in for the server that client and daemon tests use until
-//! they run against the real one.
+//! [`fake_server`] is a scripted stand-in for the server, for client and daemon tests that need
+//! to stall it, delay `ready` or refuse connections on demand.
 
 pub mod fake_server;
 
