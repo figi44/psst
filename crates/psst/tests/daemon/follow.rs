@@ -289,3 +289,34 @@ async fn the_cli_shows_the_daemon_stopped_and_follows_it_again_after_a_restart()
     cli.close().unwrap();
     d.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_bar_shows_a_recording_started_while_the_last_dictation_is_being_pasted() {
+    // A niri that never answers holds the paste on its window lookup for a while.
+    let dir = tempfile::tempdir().unwrap();
+    let niri = dir.path().join("niri.sock");
+    let _niri = std::os::unix::net::UnixListener::bind(&niri).unwrap();
+    let server = FakeServer::start(FakeServerConfig::default());
+    server.push_outcome(Outcome::Final("first ".into()));
+    let d = daemon(&server, |_, deps| {
+        deps.niri_socket = Some(niri.clone());
+        deps.timing.niri_lookup = Duration::from_secs(5);
+    })
+    .await;
+    let bar = Cli::start(&d.socket, Format::Waybar);
+    d.dictate(200).await;
+    wait_until_async(|| async { d.status().await.state == "inserting" }).await;
+
+    assert!(d.toggle().await.ok);
+    bar.lines.wait("the new recording", |l| l.bar().last().is_some_and(|b| b["alt"] == "recording")).await;
+    assert_eq!(d.status().await.state, "inserting", "shown while the paste is still pending");
+    d.stop().await;
+}
+
+async fn wait_until_async<F: std::future::Future<Output = bool>>(check: impl Fn() -> F) {
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while !check().await {
+        assert!(tokio::time::Instant::now() < deadline, "timed out");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}

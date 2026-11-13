@@ -66,8 +66,9 @@ impl WaybarLine {
         let state = status.state.as_str();
         let (alt, headline) = if state == "stopped" {
             ("stopped", "the daemon isn't running".to_string())
-        } else if matches!(state, "starting" | "recording") {
-            match status.recording.as_ref().and_then(|r| r.offline.as_deref()) {
+        } else if let Some(recording) = &status.recording {
+            // Also while the previous dictation is still being inserted.
+            match recording.offline.as_deref() {
                 Some(reason) => ("offline", format!("recording offline, sent at stop ({reason})")),
                 None => ("recording", "recording".to_string()),
             }
