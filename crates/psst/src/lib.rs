@@ -9,6 +9,10 @@
 
 pub mod store;
 pub mod audio;
+pub mod niri;
+pub mod ui;
+pub mod ipc;
+pub mod pair;
 
 use std::process::ExitCode;
 
