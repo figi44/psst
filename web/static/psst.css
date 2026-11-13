@@ -384,6 +384,14 @@ body:has(.panel) { overflow: hidden; }
   .panel { inset: auto 0 0 0; width: 100%; max-height: calc(100% - 24px); border-radius: 24px 24px 0 0; }
   .p-head, .p-body { padding-left: var(--gutter); padding-right: var(--gutter-r); }
 }
+.pair-new { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
+.pair-new .input { width: auto; flex: 1 1 10rem; max-width: 16rem; min-width: 0; min-height: 40px; padding: 8px 16px; }
+.pairing { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
+.pairing .qr { width: 15rem; max-width: 100%; height: auto; border-radius: 14px; flex: none; }
+.pairing-how { flex: 1 1 18rem; min-width: 0; display: grid; gap: 10px; align-content: start; }
+.pairing-how p { color: var(--muted); }
+.pair-link, .pairing-how .cmd code { overflow-wrap: anywhere; }
+.pair-code { font-size: 20px; letter-spacing: 0.08em; }
 .callout { border-radius: 14px; padding: 14px 16px; background: var(--warn-soft); font-size: 15px; display: grid; gap: 10px; }
 .chips-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { display: inline-flex; align-items: center; gap: 2px; min-height: 34px; padding: 0 4px 0 14px; border-radius: 999px; background: var(--sel); font-size: 15px; }

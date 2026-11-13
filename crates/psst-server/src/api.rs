@@ -484,7 +484,8 @@ async fn model_unload(_: Admin, State(state): State<AppRef>) -> Result<Json<Mode
 }
 
 /// Only on the socket: a code pairs a device that can do everything, so a device or a browser
-/// session that could ask for one could give itself a token that outlives its own.
+/// session that could ask for one could give itself a token that outlives its own. The web UI's
+/// own form makes an exception for this machine's users only (`web::pair::create`).
 async fn pairing(
     Admin(caller): Admin,
     State(state): State<AppRef>,
@@ -502,21 +503,25 @@ async fn pairing(
     }
     let pairing = state.pairings.create(name.to_owned());
     tracing::info!("pairing code for {name} created; valid until {}", pairing.expires_at);
-    Ok(Json(Pairing { server: own_address(&state).await, ..pairing }))
+    Ok(Json(Pairing { server: own_address(&state, None).await, ..pairing }))
 }
 
-/// A name, not an IP address: a phone keeps it while DHCP or Tailscale moves the server.
-async fn own_address(state: &AppState) -> Option<Endpoint> {
+/// A name, not an IP address: a phone keeps it while DHCP or Tailscale moves the server. Short of
+/// a tailnet name, an address a browser on another machine just `reached` the server by is likelier
+/// to work for a phone than the host name.
+pub(crate) async fn own_address(state: &AppState, reached: Option<Endpoint>) -> Option<Endpoint> {
     let port = state.tcp_addrs.first()?.port();
-    let host = match tailscale::own_name(&state.server.tailscale_socket).await {
-        Ok(Some(name)) => name,
-        Ok(None) => host_name()?,
+    let tailnet = match tailscale::own_name(&state.server.tailscale_socket).await {
+        Ok(name) => name,
         Err(err) => {
             tracing::debug!("no tailnet name from tailscaled: {err:#}");
-            host_name()?
+            None
         }
     };
-    Some(Endpoint::Tcp { host, port })
+    match tailnet {
+        Some(host) => Some(Endpoint::Tcp { host, port }),
+        None => reached.or_else(|| Some(Endpoint::Tcp { host: host_name()?, port })),
+    }
 }
 
 fn host_name() -> Option<String> {

@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{%- from "icons.html" import icon %}
+{% block title %}Pair {{ name }} · psst{% endblock %}
+
+{% block main %}
+<div class="page">
+  <div class="head">
+    <a class="back" href="/devices">{{ icon("back") }}Devices</a>
+    <h1>Pair {{ name }}</h1>
+    <p class="sub">The code pairs one device, within {{ minutes }} minutes.</p>
+  </div>
+  {%- if link %}
+  <div class="pairing">
+    {{ qr }}
+    <div class="pairing-how">
+      <p>On a phone, scan this with the camera, or open the link:</p>
+      <p><a class="pair-link" href="{{ link }}" hx-boost="false">{{ link }}</a></p>
+      <p>On a computer, run:</p>
+      <div class="cmd"><code>psst pair {{ server }} {{ code }}</code></div>
+    </div>
+  </div>
+  {%- else %}
+  <p>Pairing code: <b class="pair-code">{{ code }}</b></p>
+  <p class="hint">In psst's setup on the phone, enter this server's address and the code. On a computer, run <code>psst pair http://&lt;this machine&gt; {{ code }}</code>.</p>
+  {%- endif %}
+  <div class="actions"><a class="btn" href="/devices">Done</a></div>
+</div>
+{% endblock %}
