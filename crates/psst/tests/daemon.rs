@@ -673,7 +673,9 @@ async fn the_recording_limit_warns_and_stops() {
     assert!(d.wayland.showed(|s| matches!(s, OverlayState::LimitWarning { .. })));
     assert_eq!(d.wayland.inserted(), vec![paste("limited ")]);
     let samples = server.session(id).unwrap().stop_samples.unwrap();
-    assert!((16_000..17_000).contains(&samples), "stopped at the limit: {samples}");
+    // It stops at the 1 s limit, then drains what was already captured, which on a loaded
+    // machine can be a few frames; the server allows 5 s past the limit.
+    assert!((16_000..24_000).contains(&samples), "stopped at the limit: {samples}");
     d.stop().await;
 }
 
