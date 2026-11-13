@@ -348,6 +348,18 @@ async fn test_runs_the_pipeline_on_text_with_the_current_dictionary() {
 }
 
 #[tokio::test]
+async fn a_never_rule_from_the_database_stops_the_correction() {
+    let server = dictionary_server(&[]);
+    let api = api(&server);
+    let text = json!({"text": "push the fix to hyper land", "language": "en"});
+    assert_eq!(test(&api, text.clone()).await.unwrap().text, "Push the fix to Hyprland ");
+    never(&api, "Hyprland", "hyper land").await.unwrap();
+    let fin = test(&api, text).await.unwrap();
+    assert_eq!(fin.text, "Push the fix to hyper land ");
+    assert!(fin.edits.iter().all(|e| e.rule != "exact" && e.rule != "fuzzy"), "{:?}", fin.edits);
+}
+
+#[tokio::test]
 async fn the_database_layer_survives_restarts_and_follows_dictionary_toml() {
     let mut server = dictionary_server(&[]);
     add(&api(&server), json!({"text": "t3code", "sounds_like": ["tee three code"]})).await.unwrap();
