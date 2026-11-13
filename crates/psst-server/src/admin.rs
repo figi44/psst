@@ -160,7 +160,8 @@ async fn execute(socket: &Path, json: bool, action: Action) -> Result<ExitCode> 
     }
 }
 
-fn describe_model(status: &ModelStatus) -> String {
+/// The model's state in one line, as `model status` prints it and the web UI's header shows it.
+pub(crate) fn describe_model(status: &ModelStatus) -> String {
     let state = match status.state {
         ModelState::Missing => "missing".to_owned(),
         ModelState::Downloading => match status.progress {

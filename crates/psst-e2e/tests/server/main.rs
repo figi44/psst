@@ -8,6 +8,7 @@ mod dictionary;
 mod engine;
 mod harness;
 mod login;
+mod pages;
 mod profiles;
 mod reload;
 mod sessions;

@@ -7,6 +7,7 @@
 //! redirect back with `303`; a change the checks refuse renders the page again with status 422,
 //! the reason and the values entered.
 
+mod dictionary;
 mod login;
 
 use std::sync::{Arc, OnceLock};
@@ -44,12 +45,14 @@ const TEMPLATES: &[(&str, &str)] = &[
     ("base.html", include_str!("../../../../web/templates/base.html")),
     ("message.html", include_str!("../../../../web/templates/message.html")),
     ("login.html", include_str!("../../../../web/templates/login.html")),
+    ("dictionary.html", include_str!("../../../../web/templates/dictionary.html")),
 ];
 
 /// Static files: name, content type, contents.
 const ASSETS: &[(&str, &str, &[u8])] = &[
     ("psst.css", "text/css; charset=utf-8", include_bytes!("../../../../web/static/psst.css")),
     ("login.js", "text/javascript; charset=utf-8", include_bytes!("../../../../web/static/login.js")),
+    ("htmx.min.js", "text/javascript; charset=utf-8", include_bytes!("../../../../web/vendor/htmx/htmx.min.js")),
 ];
 
 /// The web UI's routes; the API's are in [`crate::api`].
@@ -59,6 +62,14 @@ pub fn router() -> Router<AppRef> {
         .route("/login", get(login::page))
         .route(routes::LOGIN_REDEEM, post(login::redeem))
         .route("/logout", post(login::logout))
+        .route("/dictionary", get(dictionary::show))
+        .route("/dictionary.toml", get(dictionary::export))
+        .route("/dictionary/terms", post(dictionary::add))
+        .route("/dictionary/terms/{id}", post(dictionary::save))
+        .route("/dictionary/terms/{id}/hide", post(dictionary::hide))
+        .route("/dictionary/terms/{id}/reset", post(dictionary::reset))
+        .route("/dictionary/never", post(dictionary::add_never))
+        .route("/dictionary/never/{id}/remove", post(dictionary::remove_never))
         .route("/static/{file}", get(asset))
 }
 
@@ -66,6 +77,9 @@ fn templates() -> &'static Environment<'static> {
     static TEMPLATES_ENV: OnceLock<Environment<'static>> = OnceLock::new();
     TEMPLATES_ENV.get_or_init(|| {
         let mut env = Environment::new();
+        // A value as one path segment (or query value): everything but unreserved characters
+        // percent-encoded, `/` included.
+        env.add_filter("segment", |value: String| psst_proto::api::encode_segment(&value));
         for (name, source) in TEMPLATES {
             env.add_template(name, source).expect("the web UI's templates parse");
         }
@@ -121,6 +135,20 @@ fn render(status: StatusCode, template: &str, ctx: Value) -> Response {
             tracing::error!("cannot render {template}: {err:#}");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error; see the server's log").into_response()
         }
+    }
+}
+
+/// What a signed-in page's header needs: which page it is, the model's state, and whether there's
+/// a browser session to log out of.
+fn chrome(state: &AppState, viewer: &Viewer, page: &str) -> Value {
+    let model = state.engine.status();
+    let model_state = serde_json::to_value(model.state).ok().and_then(|v| v.as_str().map(String::from));
+    context! {
+        page,
+        signed_in => true,
+        browser => viewer.session.is_some(),
+        model => crate::admin::describe_model(&model),
+        model_state,
     }
 }
 

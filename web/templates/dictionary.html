@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block title %}Dictionary · psst{% endblock %}
+
+{%- macro keep_query(q) %}{% if q %}<input type="hidden" name="q" value="{{ q }}">{% endif %}{% endmacro %}
+
+{%- macro term_fields(f, prefix) %}
+<div class="fields">
+  <div>
+    <label for="{{ prefix }}-text">Spelling</label>
+    <input type="text" id="{{ prefix }}-text" name="text" value="{{ f.text }}" required autocomplete="off">
+  </div>
+  <div>
+    <label for="{{ prefix }}-sounds">Sounds like <span class="hint">(spellings, comma-separated)</span></label>
+    <input type="text" id="{{ prefix }}-sounds" name="sounds_like" value="{{ f.sounds_like }}" autocomplete="off">
+  </div>
+  <div>
+    <label for="{{ prefix }}-languages">Languages <span class="hint">(any, or one code)</span></label>
+    <input type="text" id="{{ prefix }}-languages" name="languages" value="{{ f.languages }}" list="languages" autocomplete="off">
+  </div>
+  <div>
+    <label for="{{ prefix }}-notes">Notes</label>
+    <input type="text" id="{{ prefix }}-notes" name="notes" value="{{ f.notes }}" autocomplete="off">
+  </div>
+  <div class="wide">
+    <label class="check"><input type="checkbox" name="fuzzy" value="on"{% if f.fuzzy %} checked{% endif %}> Fuzzy matching (English)</label>
+    <label class="check"><input type="checkbox" name="pin" value="on"{% if f.pin %} checked{% endif %}> Pinned (always offered to the engine first)</label>
+  </div>
+</div>
+{%- endmacro %}
+
+{% block main %}
+<h1>Dictionary</h1>
+{%- if error and not error_for %}
+<div class="notice error" role="alert">{{ error }}</div>
+{%- endif %}
+{%- if warnings %}
+<div class="notice warning"><ul>{% for warning in warnings %}<li>{{ warning }}</li>{% endfor %}</ul></div>
+{%- endif %}
+
+<datalist id="languages">{% for language in languages %}<option value="{{ language }}">{% endfor %}</datalist>
+
+<section class="card">
+  <div class="toolbar">
+    <form method="get" action="/dictionary" role="search">
+      <label for="q">Search</label>
+      <input type="search" id="q" name="q" value="{{ q }}" placeholder="A spelling or a note" autocomplete="off"
+             hx-get="/dictionary" hx-trigger="input changed delay:250ms, search" hx-target="#terms"
+             hx-select="#terms" hx-swap="outerHTML" hx-push-url="true">
+    </form>
+    <a href="/dictionary.toml" download hx-boost="false">Export dictionary.toml</a>
+  </div>
+  <div id="terms">
+    <p class="muted">{% if q %}{{ terms|length }} of {{ total }} term{% if total != 1 %}s{% endif %} match “{{ q }}”{% else %}{{ total }} term{% if total != 1 %}s{% endif %}{% endif %}</p>
+    <ul class="list">
+    {%- for t in terms %}
+      <li class="term{% if not t.active %} inactive{% endif %}">
+      {%- if edit == t.id and t.editable %}
+        <form method="post" action="/dictionary/terms/{{ t.id|segment }}">
+          {%- if error_for == t.id %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
+          {{ term_fields(edit_fields, "edit") }}
+          {{ keep_query(q) }}
+          {%- if t.file_text %}<p class="hint">dictionary.toml's version: {{ t.file_text }}{% if t.file_meta %} ({{ t.file_meta }}){% endif %}</p>{% endif %}
+          <div class="actions">
+            <button type="submit">Save</button>
+            <a href="/dictionary{% if q %}?q={{ q|segment }}{% endif %}">Cancel</a>
+          </div>
+        </form>
+      {%- else %}
+        <div class="term-head">
+          <span class="term-text">{{ t.text }}</span>
+          <span class="badge {{ t.layer }}">{{ t.layer }}</span>
+          {%- if t.problem %}<span class="badge problem">left out</span>{% endif %}
+        </div>
+        {%- if t.meta %}<p class="term-meta">{{ t.meta }}</p>{% endif %}
+        {%- if t.problem %}<p class="problem-text">{{ t.problem }}</p>{% endif %}
+        {%- if t.file_text %}<p class="hint">Replaces dictionary.toml's {{ t.file_text }}{% if t.file_meta %} ({{ t.file_meta }}){% endif %}</p>{% endif %}
+        <div class="actions">
+          {%- if t.editable %}
+          <a href="/dictionary?edit={{ t.id|segment }}{% if q %}&amp;q={{ q|segment }}{% endif %}">Edit</a>
+          {%- endif %}
+          {%- if t.layer == "file" or t.layer == "replaced" %}
+          <form method="post" action="/dictionary/terms/{{ t.id|segment }}/hide">{{ keep_query(q) }}<button type="submit" class="quiet">Hide</button></form>
+          {%- endif %}
+          {%- if t.layer == "added" %}
+          <form method="post" action="/dictionary/terms/{{ t.id|segment }}/hide">{{ keep_query(q) }}<button type="submit" class="danger">Remove</button></form>
+          {%- endif %}
+          {%- if t.layer == "replaced" or t.layer == "hidden" %}
+          <form method="post" action="/dictionary/terms/{{ t.id|segment }}/reset">{{ keep_query(q) }}<button type="submit" class="quiet">{% if t.layer == "hidden" %}Unhide{% else %}Reset to dictionary.toml's{% endif %}</button></form>
+          {%- endif %}
+        </div>
+      {%- endif %}
+      </li>
+    {%- else %}
+      <li class="empty">{% if q %}No terms match “{{ q }}”.{% else %}No terms yet.{% endif %}</li>
+    {%- endfor %}
+    </ul>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Add a term</h2>
+  <form method="post" action="/dictionary/terms">
+    {%- if error_for == "add" %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
+    {{ term_fields(add_fields, "add") }}
+    {{ keep_query(q) }}
+    <div class="actions"><button type="submit">Add</button></div>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Never rules</h2>
+  <p class="hint">A never rule keeps one term from replacing one span, exactly or fuzzily.</p>
+  <ul class="list">
+  {%- for rule in never %}
+    <li class="{% if not rule.active %}inactive{% endif %}">
+      <div class="term-head">
+        <span class="term-text">{{ rule.text }}</span>
+        <span class="term-meta">never replaces “{{ rule.span }}”</span>
+        {%- if not rule.active %}<span class="badge hidden">inactive</span>{% endif %}
+      </div>
+      <div class="actions">
+        <form method="post" action="/dictionary/never/{{ rule.id }}/remove">{{ keep_query(q) }}<button type="submit" class="quiet">Remove</button></form>
+      </div>
+    </li>
+  {%- else %}
+    <li class="empty">No never rules.</li>
+  {%- endfor %}
+  </ul>
+  <form method="post" action="/dictionary/never">
+    {%- if error_for == "never" %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
+    <datalist id="term-texts">{% for text in term_texts %}<option value="{{ text }}">{% endfor %}</datalist>
+    <div class="fields">
+      <div>
+        <label for="never-term">Term</label>
+        <input type="text" id="never-term" name="term" value="{{ never_fields.term }}" list="term-texts" required autocomplete="off">
+      </div>
+      <div>
+        <label for="never-span">Never replaces</label>
+        <input type="text" id="never-span" name="span" value="{{ never_fields.span }}" required autocomplete="off">
+      </div>
+    </div>
+    {{ keep_query(q) }}
+    <div class="actions"><button type="submit">Add a never rule</button></div>
+  </form>
+</section>
+{% endblock %}

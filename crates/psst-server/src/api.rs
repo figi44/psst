@@ -97,6 +97,21 @@ impl ApiErr {
         tracing::error!("{err:#}");
         Self::new(ApiErrorCode::Internal, "internal error; see the server's log")
     }
+
+    pub(crate) fn status(&self) -> StatusCode {
+        match self.0.code {
+            ApiErrorCode::BadRequest => StatusCode::BAD_REQUEST,
+            ApiErrorCode::Unauthorized => StatusCode::UNAUTHORIZED,
+            ApiErrorCode::Forbidden => StatusCode::FORBIDDEN,
+            ApiErrorCode::NotFound => StatusCode::NOT_FOUND,
+            ApiErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            ApiErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+
+    pub(crate) fn message(&self) -> &str {
+        &self.0.message
+    }
 }
 
 impl From<anyhow::Error> for ApiErr {
@@ -107,15 +122,7 @@ impl From<anyhow::Error> for ApiErr {
 
 impl IntoResponse for ApiErr {
     fn into_response(self) -> Response {
-        let status = match self.0.code {
-            ApiErrorCode::BadRequest => StatusCode::BAD_REQUEST,
-            ApiErrorCode::Unauthorized => StatusCode::UNAUTHORIZED,
-            ApiErrorCode::Forbidden => StatusCode::FORBIDDEN,
-            ApiErrorCode::NotFound => StatusCode::NOT_FOUND,
-            ApiErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
-            ApiErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
-        };
-        (status, Json(self.0)).into_response()
+        (self.status(), Json(self.0)).into_response()
     }
 }
 
