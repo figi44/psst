@@ -7,6 +7,8 @@
 //! This is the contract stub: `check-config` and `__fake-engine` work; `serve` and the admin
 //! commands arrive with the server work package.
 
+mod db;
+
 use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
