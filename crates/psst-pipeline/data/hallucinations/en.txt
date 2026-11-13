@@ -1,0 +1,29 @@
+# Phrases Whisper writes over silence and noise in English (plan 6.4). The guard drops a segment
+# that is exactly one of these, ignoring case and punctuation, and only when its speech evidence
+# is weak. One phrase per line.
+you
+bye
+bye bye
+thanks
+thank you
+thank you very much
+thank you so much
+thanks for watching
+thank you for watching
+thank you so much for watching
+thanks for watching and see you next time
+thank you for watching and see you next time
+thanks for listening
+thank you for listening
+please subscribe
+please subscribe to my channel
+subscribe to my channel
+like and subscribe
+please like and subscribe
+don't forget to like and subscribe
+see you next time
+see you in the next video
+i'll see you in the next video
+i'll see you next time
+subtitles by the amara.org community
+transcription by castingwords

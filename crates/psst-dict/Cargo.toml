@@ -8,6 +8,9 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+aho-corasick = "1.1.5"
+caseless = "0.2.2"
 psst-config = { version = "0.1.0", path = "../psst-config" }
 psst-proto = { version = "0.1.0", path = "../psst-proto" }
 thiserror = "2.0.21"
+unicode-normalization = "0.1.26"
