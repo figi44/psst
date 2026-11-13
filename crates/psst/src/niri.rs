@@ -10,19 +10,20 @@ use tokio::{
 };
 use tracing::debug;
 
-/// Longest the lookup may take before the paste goes ahead with the fallback chord.
+/// The default for how long the lookup may take before the paste goes ahead with the fallback
+/// chord (`Timing::niri_lookup`).
 pub const TIMEOUT: Duration = Duration::from_millis(150);
 
 /// The focused window's app id; `None` without niri, without a focused window, or on any error.
-pub async fn focused_app_id(socket: &Path) -> Option<String> {
-    match tokio::time::timeout(TIMEOUT, query(socket)).await {
+pub async fn focused_app_id(socket: &Path, timeout: Duration) -> Option<String> {
+    match tokio::time::timeout(timeout, query(socket)).await {
         Ok(Ok(app_id)) => app_id,
         Ok(Err(err)) => {
             debug!("niri: {err}");
             None
         }
         Err(_) => {
-            debug!("niri didn't answer within {TIMEOUT:?}");
+            debug!("niri didn't answer within {timeout:?}");
             None
         }
     }
@@ -66,13 +67,13 @@ mod tests {
             "{\"Ok\":{\"FocusedWindow\":{\"id\":3,\"title\":\"~\",\"app_id\":\"com.mitchellh.ghostty\",\"pid\":1}}}\n",
         )
         .await;
-        assert_eq!(focused_app_id(&path).await.as_deref(), Some("com.mitchellh.ghostty"));
+        assert_eq!(focused_app_id(&path, TIMEOUT).await.as_deref(), Some("com.mitchellh.ghostty"));
     }
 
     #[tokio::test]
     async fn no_focused_window_or_no_niri_is_none() {
         let (_dir, path) = fake_niri("{\"Ok\":{\"FocusedWindow\":null}}\n").await;
-        assert_eq!(focused_app_id(&path).await, None);
-        assert_eq!(focused_app_id(Path::new("/nonexistent/niri.sock")).await, None);
+        assert_eq!(focused_app_id(&path, TIMEOUT).await, None);
+        assert_eq!(focused_app_id(Path::new("/nonexistent/niri.sock"), TIMEOUT).await, None);
     }
 }

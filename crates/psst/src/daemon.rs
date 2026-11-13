@@ -70,6 +70,9 @@ pub struct Timing {
     pub done_shown: Duration,
     /// How long errors and flashes stay on screen.
     pub notice_shown: Duration,
+    /// Longest the focused-window lookup over niri's IPC may take before the paste falls back to
+    /// Ctrl+V.
+    pub niri_lookup: Duration,
 }
 
 impl Default for Timing {
@@ -85,6 +88,7 @@ impl Default for Timing {
             first_backoff: Duration::from_millis(250),
             done_shown: Duration::from_millis(800),
             notice_shown: Duration::from_secs(4),
+            niri_lookup: niri::TIMEOUT,
         }
     }
 }
@@ -1286,8 +1290,9 @@ impl Core {
         match self.deps.niri_socket.clone() {
             Some(socket) => {
                 let tx = self.tx.clone();
+                let timeout = self.deps.timing.niri_lookup;
                 tokio::spawn(async move {
-                    let app_id = niri::focused_app_id(&socket).await;
+                    let app_id = niri::focused_app_id(&socket, timeout).await;
                     let _ = tx.send(Input::Focus { generation, app_id });
                 });
             }

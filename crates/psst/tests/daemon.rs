@@ -577,6 +577,8 @@ async fn the_chord_follows_the_focused_window_and_app_rules() {
     server.push_outcome(Outcome::Final("secret ".into()));
     let d = daemon(&server, |cfg, deps| {
         deps.niri_socket = Some(niri.clone());
+        // Real niri answers in milliseconds; a loaded CI runner can take longer than the default.
+        deps.timing.niri_lookup = Duration::from_secs(5);
         cfg.apps.insert(
             "org.keepassxc.KeePassXC".into(),
             AppRule { paste: Some(PasteAction::CopyOnly), paste_delay_ms: 0 },
