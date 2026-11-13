@@ -1,7 +1,7 @@
 //! Plan 7.1's performance target: a 200-word dictation against 500 terms in under 5 ms, with exact
 //! spellings, and with fuzzy matching at its most expensive.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use psst_config::{ConfigFile, DictionaryFile, ProfilesFile};
 use psst_dict::{Dictionary, common_words};
@@ -83,16 +83,22 @@ fn a_200_word_dictation_against_500_terms_takes_under_5_ms() {
     assert!(best < Duration::from_millis(5), "took {best:?}");
 }
 
-/// The best of several runs, so a busy machine doesn't fail the test.
+/// The best of several runs, in this thread's CPU time: the target is the matcher's cost, and CI
+/// runs several tests per CPU, so wall-clock time also counts the time other tests had the CPU.
 fn best_time<T>(mut f: impl FnMut() -> T) -> Duration {
     (0..20)
         .map(|_| {
-            let start = Instant::now();
+            let start = cpu_time();
             std::hint::black_box(f());
-            start.elapsed()
+            cpu_time() - start
         })
         .min()
         .unwrap()
+}
+
+fn cpu_time() -> Duration {
+    let t = rustix::time::clock_gettime(rustix::time::ClockId::ThreadCPUTime);
+    Duration::new(t.tv_sec as u64, t.tv_nsec as u32)
 }
 
 /// 500 made-up pronounceable terms of letters only, so they all have Double Metaphone codes: two

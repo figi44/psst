@@ -13,4 +13,5 @@ psst-dict = { version = "0.1.0", path = "../psst-dict" }
 psst-proto = { version = "0.1.0", path = "../psst-proto" }
 
 [dev-dependencies]
+rustix = { version = "1.1.6", features = ["time"] }
 serde_json = "1.0.154"
