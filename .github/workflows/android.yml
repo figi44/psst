@@ -101,8 +101,10 @@ jobs:
           sdk=${sdk%/libexec/android-sdk}
           echo "path=$sdk" >> "$GITHUB_OUTPUT"
           echo "key=v2-${sdk#/nix/store/}" >> "$GITHUB_OUTPUT"
+      # A stable release builds from nothing cached: any job on main can write the caches.
       - name: Restore the Android SDK
         id: sdk-cache
+        if: github.ref_type != 'tag'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/sdk
@@ -119,14 +121,17 @@ jobs:
         uses: nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a # v1.2.1
         with:
           arguments: .#android
-      # Only main saves the caches, as in ci.yml.
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # Only main saves the caches, as in ci.yml. main's prereleases keep them for speed; their key
+      # isn't in reach of this job, and a stable release skips them.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3 # zizmor: ignore[cache-poisoning]
+        if: github.ref_type != 'tag'
         with:
           prefix-key: v1-android
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # Gradle's downloads and transforms: 330 MB, and a build that took 20 s instead of 77.
       - name: Restore Gradle's caches
         id: gradle
+        if: github.ref_type != 'tag'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.gradle/caches
