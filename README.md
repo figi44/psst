@@ -12,7 +12,7 @@ https://github.com/user-attachments/assets/a1673e5a-6b4c-4ca0-87cf-086785a7d08e
 
 ## Features
 
-- **Remote-first**: Whisper runs on your GPU box, and thin clients stream audio to it over slow or lossy links. Dictations survive a dropped connection.
+- **Remote-first**: Whisper runs on your GPU box, and thin clients stream audio to it even over slow or lossy links. Dictations survive a dropped connection.
 - **Desktop (Wayland)**: press a hotkey to dictate into any app, with an overlay waveform and chimes. Double-tap the hotkey for a quick menu.
 - **Android**: a voice keyboard, plus a floating bubble that dictates into any keyboard.
 - **Easy pairing**: machines on your tailnet pair automatically, and a phone pairs by scanning a QR code.
