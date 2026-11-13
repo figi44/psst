@@ -1,8 +1,5 @@
-//! psst's own small virtual-keyboard keymap, uploaded once per connection.
-//!
-//! wtype-style (`include "complete"`), but with the real evdev keycodes (`KEY_V`, `KEY_LEFTCTRL`,
-//! `KEY_LEFTSHIFT`) and keysyms `[v, V]`, so Ctrl+Shift+V reaches an app the way a real
-//! keyboard's would, including apps that look at physical key codes.
+//! wtype-style, but with the real evdev keycodes and keysyms `[v, V]`, so Ctrl+Shift+V reaches an
+//! app the way a real keyboard's would, including apps that look at physical key codes.
 
 use std::io::Write;
 use std::os::fd::AsFd;
@@ -12,10 +9,10 @@ use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::zwp_virtual_keyboar
 
 use crate::Chord;
 
-/// evdev code of V, as sent in `zwp_virtual_keyboard_v1.key` (xkb keycode − 8).
+/// evdev code (xkb keycode − 8).
 const KEY_V: u32 = 47;
 
-/// Core xkb modifier masks (fixed order: Shift, Lock, Control, Mod1..Mod5).
+/// Core xkb order: Shift, Lock, Control, Mod1..Mod5.
 const MOD_SHIFT: u32 = 1 << 0;
 const MOD_CTRL: u32 = 1 << 2;
 
@@ -49,8 +46,7 @@ pub(crate) fn upload(vk: &ZwpVirtualKeyboardV1) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Presses the chord as `wtype -M ctrl -k v -m ctrl` does: modifiers, V down, V up, modifiers
-/// cleared. No modifier key events, so a physically held Super doesn't reach the app.
+/// No modifier key events, so a physically held Super doesn't reach the app.
 pub(crate) fn send_chord(vk: &ZwpVirtualKeyboardV1, chord: Chord, time_ms: u32) {
     let mods = match chord {
         Chord::CtrlV => MOD_CTRL,

@@ -1,7 +1,3 @@
-//! `psst-eval replay` as CI runs it: the pull request's committed baseline.json is checked for
-//! consistency with its own replay, gated against main's, and every trace is checked for
-//! staleness.
-
 use crate::common;
 
 use common::{CS_PROMPT, Evals, case, trace};
@@ -17,7 +13,6 @@ fn main_with(cases: &[Case]) -> (Evals, String) {
     (evals, main)
 }
 
-/// The pull request regenerates its baseline, then CI checks it against main's.
 fn ci(evals: &Evals, main: &str, labels: &[&str]) -> common::Run {
     evals.write_baseline();
     let event = evals.event(labels);
@@ -210,8 +205,7 @@ fn each_language_uses_its_profile() {
     assert!(run.stdout().contains("synthetic/cs/tune"), "{}", run.stdout());
 }
 
-/// A dictionary that overflows the prompt: with the style, four of its 40-byte terms fit in
-/// 223 bytes, five don't.
+/// With the style, four of these 40-byte terms fit in 223 bytes, five don't.
 fn long_terms() -> (Vec<String>, String) {
     let terms: Vec<String> = (0..8).map(|i| format!("Term{i}{}", "x".repeat(35))).collect();
     let toml = terms.iter().map(|t| format!("[[terms]]\ntext = \"{t}\"\n")).collect::<Vec<_>>().join("\n");

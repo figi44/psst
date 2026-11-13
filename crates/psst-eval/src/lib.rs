@@ -1,16 +1,3 @@
-//! `psst-eval`: the replay, stress and audio runners, the metrics and the regression gate. The eval
-//! set is in `evals/`; `evals/SOURCES.md` says where its data comes from.
-//!
-//! - [`replay`]: every case's recorded engine traces through `psst_pipeline::run`, scored with
-//!   [`metrics`] into a [`baseline::Baseline`]; the [`stale`] trace check; and the [`gate`]
-//!   against main's baseline. CI, no GPU.
-//! - [`stress`]: ordinary sentences through the dictionary, where every dictionary edit is a
-//!   false correction. CI.
-//! - [`audio`]: every clip through the worktree's server, started in-process, to record the
-//!   traces. Local, GPU, inside `scripts/gpu-session.sh`.
-//!
-//! [`main`] is the whole program; the binary only calls it.
-
 pub mod align;
 pub mod audio;
 pub mod baseline;
@@ -34,10 +21,8 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::{baseline::Baseline, cases::EvalSet};
 
-/// This worktree's `evals/`.
 const DEFAULT_EVALS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../evals");
 
-/// What to run instead of the failing command.
 const REWRITE: &str = "run `cargo run -p psst-eval -- replay --write` and commit the result";
 
 #[derive(Debug, Parser)]
@@ -127,7 +112,6 @@ struct GateArgs {
     floors: bool,
 }
 
-/// The `psst-eval` program. Exits with 1 when a check fails, and 2 on errors.
 pub fn main() -> ExitCode {
     let result = match Cli::parse().command {
         Command::Replay { evals, write, gate } => replay_command(&evals.evals, write, &gate),
@@ -234,7 +218,6 @@ fn stress_command(evals: &Path, gate: &GateArgs) -> anyhow::Result<Vec<String>> 
     Ok(failures)
 }
 
-/// The client codec the audio eval's options ask for.
 fn codec_for(
     codec: CodecArg,
     bitrate: Option<u32>,
@@ -265,8 +248,7 @@ fn audio_command(
     cache_dir: Option<PathBuf>,
     codec: psst_client::AudioCodec,
 ) -> anyhow::Result<Vec<String>> {
-    // The in-process server logs through `tracing`: its warnings, and the engine's stderr (model
-    // downloads, CUDA errors). `RUST_LOG` overrides this, as for `psst-server`.
+    // `psst_server::engine=info` shows the engine's stderr (model downloads, CUDA errors).
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,psst_server::engine=info"));
     let _ = tracing_subscriber::fmt().with_env_filter(filter).with_writer(std::io::stderr).try_init();
@@ -285,7 +267,6 @@ fn read_main(path: &Path) -> anyhow::Result<Baseline> {
     Baseline::read(path)?.with_context(|| format!("{} doesn't exist", path.display()))
 }
 
-/// The consistency check: the committed baseline is exactly this replay's.
 fn consistency(committed: anyhow::Result<Option<Baseline>>, fresh: &Baseline, path: &Path) -> Vec<String> {
     let mismatch = |what: String| vec![format!("{} {what}; {REWRITE}", path.display())];
     match committed {
@@ -315,7 +296,6 @@ fn consistency(committed: anyhow::Result<Option<Baseline>>, fresh: &Baseline, pa
     }
 }
 
-/// Regressions fail the gate unless the pull request has the `baseline-change` label.
 fn waive(regressions: Vec<String>, gate: &GateArgs, failures: &mut Vec<String>) -> anyhow::Result<()> {
     let labelled = match &gate.event {
         Some(event) => gate::has_baseline_change_label(event)?,

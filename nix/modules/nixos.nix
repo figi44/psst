@@ -1,4 +1,3 @@
-# `nixosModules.psst-server`: the server as a system service.
 overlay:
 {
   config,
@@ -19,7 +18,6 @@ let
     "dictionary.toml" = toml.generate "dictionary.toml" cfg.settings.dictionary;
   };
 
-  # /etc/psst. A configuration psst-server rejects fails the build.
   configDir =
     pkgs.runCommand "psst-server-config"
       {
@@ -207,10 +205,9 @@ in
         CacheDirectory = "psst";
         UMask = "0077";
 
-        # The GPU. NVIDIA's device nodes are mode 0666 on NixOS; other drivers' belong to these
-        # groups. PrivateDevices, DeviceAllow and ProtectClock (which implies a DeviceAllow) stay
-        # unset, since any of them would hide /dev/nvidia*. MemoryDenyWriteExecute stays unset
-        # for CUDA's JIT.
+        # NVIDIA's device nodes are mode 0666 on NixOS; other GPU drivers' belong to these groups.
+        # PrivateDevices, DeviceAllow and ProtectClock (which implies a DeviceAllow) stay unset, since
+        # any of them would hide /dev/nvidia*. MemoryDenyWriteExecute stays unset for CUDA's JIT.
         SupplementaryGroups = [
           "video"
           "render"

@@ -1,24 +1,3 @@
-//! The psst desktop client: the daemon (audio, recordings, delivery, niri IPC) and the CLI that
-//! talks to it over `$XDG_RUNTIME_DIR/psst/daemon.sock`.
-//!
-//! [`main`] is the whole `psst` program, so the thin binary and `psst-e2e`'s `psst-e2e-daemon`
-//! run the same code. [`daemon::spawn`] runs the daemon inside another program with its
-//! dependencies ([`daemon::Deps`]) swapped for tests.
-//!
-//! | Module | What |
-//! |---|---|
-//! | [`daemon`] | the state machine, connection and delivery |
-//! | [`audio`] | capture (cpal, or a WAV file), resampling, the recording file |
-//! | [`store`] | recordings, `last.json`, recovery and retention |
-//! | [`ipc`] | the command socket |
-//! | [`follow`] | `psst status --follow`, for status bars |
-//! | [`ui`] | the seam to the Wayland thread |
-//! | [`niri`] | the focused window, for the paste chord |
-//! | [`pair`] | `psst pair` and the credentials file |
-//! | [`dict`] | `psst dict`, a client of the server's dictionary API |
-//! | [`web_ui`] | `psst ui`, a login link to the server's web UI |
-//! | [`server_api`] | the server's API at the server `client.toml` names, for those two |
-
 pub mod audio;
 pub mod daemon;
 pub mod dict;
@@ -106,7 +85,6 @@ enum Command {
     },
 }
 
-/// The `psst` program.
 pub fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
@@ -134,7 +112,6 @@ pub fn main() -> ExitCode {
     }
 }
 
-/// `$XDG_STATE_HOME/psst`, else `~/.local/state/psst`.
 pub fn state_dir() -> anyhow::Result<PathBuf> {
     let base = env::var_os("XDG_STATE_HOME")
         .filter(|dir| !dir.is_empty())
@@ -144,7 +121,6 @@ pub fn state_dir() -> anyhow::Result<PathBuf> {
     Ok(base.join("psst"))
 }
 
-/// `$XDG_RUNTIME_DIR/psst/daemon.sock`.
 pub fn socket_path() -> anyhow::Result<PathBuf> {
     let runtime = env::var_os("XDG_RUNTIME_DIR")
         .filter(|dir| !dir.is_empty())

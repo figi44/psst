@@ -1,5 +1,3 @@
-//! The scripted fake engine, driven in-process through its stdin/stdout streams.
-
 use std::{io::Cursor, path::Path};
 
 use psst_engine_proto::{
@@ -27,7 +25,6 @@ fn transcribe(id: u64, word_timestamps: bool) -> ToEngine {
     })
 }
 
-/// Two seconds of audio.
 fn audio() -> Vec<u8> {
     samples_to_payload(&[0.0; 32_000])
 }
@@ -127,7 +124,7 @@ fn words_only_with_word_timestamps_and_empty_text_means_nothing_heard() {
     assert_eq!(results.len(), 2);
     assert!(results[0].segments.is_empty());
     assert_eq!(results[0].speech_ms, Some(0));
-    // Steps ran out: the default answer, without words since word_timestamps is off.
+    // Steps ran out, so the default answer.
     assert_eq!(results[1].segments[0].text, " fake transcript");
     assert!(results[1].segments[0].words.is_none());
 }

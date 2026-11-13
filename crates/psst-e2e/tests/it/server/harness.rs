@@ -1,6 +1,3 @@
-//! What the server tests share: a server with the fake engine, a raw client of the `/v1/client`
-//! protocol, the admin CLI, `psst` in a home of its own, and plain HTTP over TCP.
-
 use std::{
     ffi::OsStr,
     fs,
@@ -36,20 +33,16 @@ use tokio_tungstenite::{
 pub const SERVER: &str = env!("CARGO_BIN_EXE_psst-server-e2e");
 pub const PSST: &str = env!("CARGO_BIN_EXE_psst-e2e-daemon");
 
-/// How long any single expected message may take.
 pub const MESSAGE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// One second of audio.
 pub const SECOND: usize = 16_000;
 
-/// A server with the fake engine running `script`, with `cfg` adjusted by the caller.
 pub fn server(script: Script, adjust: impl FnOnce(&mut TestServerConfig)) -> TestServer {
     let mut cfg = TestServerConfig { script, ..TestServerConfig::default() };
     adjust(&mut cfg);
     psst_testkit::spawn_server(Path::new(SERVER), cfg)
 }
 
-/// A server whose engine answers every request with the default result.
 pub fn default_server() -> TestServer {
     server(Script::default(), |_| {})
 }
@@ -62,12 +55,10 @@ pub fn script(steps: Vec<TranscribeStep>) -> Script {
     Script { transcribe: steps, ..Script::default() }
 }
 
-/// Runs `psst-server <args> --socket <server's socket>`.
 pub fn admin(server: &TestServer, args: &[&str]) -> Output {
     Command::new(SERVER).args(args).arg("--socket").arg(server.socket()).output().expect("run psst-server")
 }
 
-/// Runs an admin command with `--json` and parses its output; panics if it fails.
 pub fn admin_json(server: &TestServer, args: &[&str]) -> Value {
     let out = Command::new(SERVER)
         .args(args)
@@ -79,8 +70,6 @@ pub fn admin_json(server: &TestServer, args: &[&str]) -> Value {
     serde_json::from_slice(&out.stdout).expect("JSON output")
 }
 
-/// A home for `psst` with a `client.toml` naming `server`, and nothing from this process's
-/// environment.
 pub struct Home(TempDir);
 
 impl Home {
@@ -101,7 +90,6 @@ impl Home {
         self.psst_with(args, &[])
     }
 
-    /// Runs `psst <args>` with `env` added to its environment.
     pub fn psst_with(&self, args: &[&str], env: &[(&str, &OsStr)]) -> Output {
         let root = self.0.path();
         Command::new(PSST)
@@ -115,7 +103,6 @@ impl Home {
             .expect("run psst")
     }
 
-    /// Runs `psst <args>`; panics unless it succeeds, and returns its stdout.
     #[track_caller]
     pub fn ok(&self, args: &[&str]) -> String {
         let out = self.psst(args);
@@ -123,7 +110,6 @@ impl Home {
         String::from_utf8(out.stdout).unwrap()
     }
 
-    /// Runs `psst <args>`; panics unless it fails, and returns its stderr.
     #[track_caller]
     pub fn fails(&self, args: &[&str]) -> String {
         let out = self.psst(args);
@@ -136,7 +122,6 @@ pub fn model_status(server: &TestServer) -> ModelStatus {
     serde_json::from_value(admin_json(server, &["model", "status"])).expect("a ModelStatus")
 }
 
-/// Waits until the model is in `state`.
 pub async fn wait_model(server: &TestServer, state: ModelState) -> ModelStatus {
     let deadline = tokio::time::Instant::now() + MESSAGE_TIMEOUT;
     loop {
@@ -149,7 +134,6 @@ pub async fn wait_model(server: &TestServer, state: ModelState) -> ModelStatus {
     }
 }
 
-/// The `transcribe` requests the engine received.
 pub fn transcribes(server: &TestServer) -> Vec<LoggedRequest> {
     requests_of(server, "transcribe")
 }
@@ -161,7 +145,6 @@ pub fn requests_of(server: &TestServer, kind: &str) -> Vec<LoggedRequest> {
 trait Io: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
 
-/// A WebSocket on `/v1/client` that hasn't said `hello` yet.
 pub struct Socket {
     ws: WebSocketStream<Box<dyn Io>>,
 }
@@ -186,7 +169,6 @@ impl Socket {
         Socket { ws }
     }
 
-    /// Sends `hello` with `protocol`; the server's answer is `welcome` or an `error`.
     pub async fn hello_with(mut self, protocol: u32) -> Result<Client, ErrorMsg> {
         let hello = ClientMsg::Hello(HelloMsg {
             protocol,
@@ -217,14 +199,12 @@ async fn send_json(ws: &mut WebSocketStream<Box<dyn Io>>, msg: &ClientMsg) {
     ws.send(Message::Text(text.into())).await.expect("send a message");
 }
 
-/// A connection after `welcome`.
 pub struct Client {
     ws: WebSocketStream<Box<dyn Io>>,
     welcome: Option<WelcomeMsg>,
 }
 
 impl Client {
-    /// Connects to the server's socket and says `hello`.
     pub async fn connect(server: &TestServer) -> Client {
         Socket::unix(server.socket()).await.hello().await.expect("welcome")
     }
@@ -273,7 +253,6 @@ impl Client {
         .await;
     }
 
-    /// Sends `samples` samples of a quiet tone in 20 ms frames, the last one padded with zeros.
     pub async fn audio(&mut self, samples: usize) {
         let mut sent = 0;
         while sent < samples {
@@ -296,7 +275,6 @@ impl Client {
         self.send(ClientMsg::Cancel(CancelMsg { session_id })).await;
     }
 
-    /// Starts an upload, sends `samples` and stops.
     pub async fn upload(&mut self, session_id: SessionId, samples: usize) -> ReadyMsg {
         self.start(session_id, Mode::Upload, false).await;
         let ready = self.ready().await;
@@ -305,12 +283,10 @@ impl Client {
         ready
     }
 
-    /// The next message; panics if the connection closes or nothing comes in time.
     pub async fn recv(&mut self) -> ServerMsg {
         self.try_recv(MESSAGE_TIMEOUT).await.expect("a message before the timeout")
     }
 
-    /// The next message within `timeout`, or `None`.
     pub async fn try_recv(&mut self, timeout: Duration) -> Option<ServerMsg> {
         loop {
             let msg = match tokio::time::timeout(timeout, self.ws.next()).await {
@@ -332,7 +308,6 @@ impl Client {
         }
     }
 
-    /// Reads until the session's terminal message; returns it with the `progress` seen before.
     pub async fn outcome(&mut self) -> (ServerMsg, Vec<ProgressMsg>) {
         let mut progress = Vec::new();
         loop {
@@ -358,7 +333,6 @@ impl Client {
         }
     }
 
-    /// Waits for a `progress` whose state passes `pred`.
     pub async fn progress_until(&mut self, pred: impl Fn(&ProgressMsg) -> bool) -> ProgressMsg {
         loop {
             match self.recv().await {
@@ -369,7 +343,6 @@ impl Client {
         }
     }
 
-    /// Whether the server closes the connection within the message timeout.
     pub async fn closed(&mut self) -> bool {
         loop {
             match tokio::time::timeout(MESSAGE_TIMEOUT, self.ws.next()).await {
@@ -381,7 +354,6 @@ impl Client {
     }
 }
 
-/// A minimal HTTP/1.1 exchange over TCP: returns the status and the body.
 pub async fn http(
     addr: SocketAddr,
     method: &str,

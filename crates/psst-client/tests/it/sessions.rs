@@ -1,6 +1,3 @@
-//! `psst-client` against a scripted server: connecting, live and upload sessions, and every way a
-//! session can end.
-
 use std::time::Duration;
 
 use psst_client::{
@@ -42,7 +39,6 @@ fn frames(audio: &[i16]) -> Vec<AudioFrame> {
         .collect()
 }
 
-/// The events up to and including the terminal one.
 async fn until_terminal(session: &mut psst_client::Session) -> Vec<SessionEvent> {
     let mut events = Vec::new();
     loop {
@@ -154,7 +150,6 @@ async fn a_live_session_sends_frames_from_before_ready_first_and_in_order() {
     assert_eq!(&seen.audio[..audio.len()], &audio[..]);
     assert_eq!(seen.audio.len(), 51 * FRAME_SAMPLES);
     assert_eq!(seen.stop_samples, Some(audio.len() as u64));
-    // After the terminal event the session keeps saying how it ended.
     assert_eq!(final_text(&session.next_event().await), "Push the fix.");
 }
 
@@ -312,7 +307,6 @@ async fn progress_silence_loses_the_session_and_ends_the_connection() {
     assert!(started.elapsed() < Duration::from_secs(3), "{:?}", started.elapsed());
     timeout(WAIT, client.closed()).await.unwrap();
     assert!(client.is_closed());
-    // A start on a closed connection is lost at once.
     let mut late = client.start(opts(Mode::Live));
     assert!(matches!(late.next_event().await, SessionEvent::Lost(LostReason::ConnectionClosed { .. })));
 }
@@ -338,13 +332,11 @@ async fn check_alive_pings_only_after_ten_quiet_seconds() {
     server.set_stalled(true);
     client.check_alive(Duration::from_millis(300)).await.unwrap();
 
-    // Quiet for over 10 s: the ping goes unanswered.
     tokio::time::pause();
     tokio::time::advance(Duration::from_secs(11)).await;
     tokio::time::resume();
     assert!(matches!(client.check_alive(Duration::from_millis(300)).await, Err(ClientError::Timeout)));
 
-    // Answered once the server reads again.
     server.set_stalled(false);
     client.check_alive(Duration::from_millis(700)).await.unwrap();
 
@@ -464,7 +456,7 @@ async fn report_reaches_the_server() {
     assert!(tokio::task::spawn_blocking(move || server.wait_until(WAIT, reported)).await.unwrap());
 }
 
-/// An upload whose server stops reading: the socket fills and writes block.
+/// The server stops reading, so the socket fills and writes block.
 async fn stalled_upload(server: &FakeServer, client: &mut Client, dir: &std::path::Path) -> psst_client::Session {
     let wav = dir.join("long.wav");
     write_wav(&wav, &test_audio(60_000)); // 1.9 MB, more than the socket buffers hold

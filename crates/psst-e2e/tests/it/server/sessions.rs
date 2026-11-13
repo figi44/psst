@@ -1,5 +1,3 @@
-//! Sessions on `/v1/client`: the normal flow, resume, cancel, disconnects and limits.
-
 use std::time::{Duration, Instant};
 
 use psst_config::TermSpec;
@@ -55,7 +53,6 @@ async fn a_live_session_streams_audio_and_ends_with_its_final() {
     assert_eq!(requests[0].header["language"], "en");
     assert_eq!(requests[0].header["bias"], json!({"style": "Hello there.", "terms": ["psst", "Hyprland"]}));
 
-    // The client's report lands in history, and stats cover both sides.
     let timings = ClientTimings { stop_to_final_ms: Some(fin.timings.stop_to_final_ms + 7), ..Default::default() };
     client.send(ClientMsg::Report(ReportMsg { session_id: id, history_id: fin.history_id, timings })).await;
     let deadline = Instant::now() + MESSAGE_TIMEOUT;

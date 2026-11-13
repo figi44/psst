@@ -1,10 +1,3 @@
-//! The stress test: ordinary sentences that contain no dictionary terms, as
-//! engine results without probabilities, through the pipeline with the dictionary. Every
-//! dictionary edit is a false correction.
-//!
-//! `evals/stress/<lang>.txt` holds one sentence per line; blank lines and lines starting with `#`
-//! are skipped. Without the directory there's nothing to test.
-
 use std::{fs, io};
 
 use anyhow::Context;
@@ -17,7 +10,6 @@ use crate::{
     metrics::{Counts, Scoring, score},
 };
 
-/// Runs every `stress/<lang>.txt`, in language order.
 pub fn stress(set: &EvalSet) -> anyhow::Result<Vec<StressResult>> {
     let dir = set.dir.join("stress");
     let entries = match fs::read_dir(&dir) {
@@ -71,7 +63,6 @@ pub fn stress(set: &EvalSet) -> anyhow::Result<Vec<StressResult>> {
     Ok(results)
 }
 
-/// A sentence as the engine would return it, without probabilities or word timings.
 fn trace(lang: &str, sentence: &str) -> EngineTrace {
     EngineTrace {
         engine: "stress".into(),

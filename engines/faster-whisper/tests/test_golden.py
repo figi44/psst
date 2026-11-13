@@ -1,11 +1,5 @@
-"""Golden frames, the engine contract checked in both directions without a GPU.
-
-- ``golden/from-engine/``: written here, by the real request loop with a stub model. A Rust test in
-  ``psst-engine-proto`` decodes them into its typed messages.
-- ``golden/to-engine/``: written by a Rust test in ``psst-engine-proto``; decoded here.
-
-Tests regenerate their files. CI fails if the regenerated files differ from the committed ones,
-so a contract change shows up as a diff of these files in the pull request.
+"""``golden/from-engine/`` is written here and decoded by a ``psst-engine-proto`` test;
+``golden/to-engine/`` is written there and decoded here. CI fails if regenerating them changes them.
 """
 
 from __future__ import annotations

@@ -1,6 +1,3 @@
-//! The daemon over a slow TCP link: the connection check at `start` waits as long as
-//! the link's round trip needs.
-
 use psst::pair::Credentials;
 use psst_proto::{Endpoint, Token, ws::Mode};
 use tokio::{
@@ -14,7 +11,6 @@ use tokio::{
 
 use super::*;
 
-/// A TCP proxy to `server` that delays everything by `one_way` in each direction.
 async fn slow_link(server: Endpoint, one_way: Duration) -> Endpoint {
     let Endpoint::Tcp { host, port } = server else { panic!("not TCP: {server}") };
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -31,7 +27,6 @@ async fn slow_link(server: Endpoint, one_way: Duration) -> Endpoint {
     proxy
 }
 
-/// Copies `from` to `to`, writing what it reads `by` later.
 async fn delayed(mut from: OwnedReadHalf, mut to: OwnedWriteHalf, by: Duration) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(async move {
@@ -56,8 +51,8 @@ async fn delayed(mut from: OwnedReadHalf, mut to: OwnedWriteHalf, by: Duration) 
 async fn a_start_after_ten_quiet_seconds_on_a_slow_link_streams_live() {
     let server = FakeServer::start(FakeServerConfig { tcp: true, ..Default::default() });
     server.push_outcome(Outcome::Final("Over the tailnet. ".into()));
-    // A 400 ms round trip: longer than a fast link's 300 ms pong wait, and a reconnect
-    // (the WebSocket upgrade, then `hello`/`welcome`) doesn't fit in the rest of 700 ms.
+    // A 400 ms round trip: over the default 300 ms pong wait, and a reconnect doesn't fit in the
+    // rest of the default 700 ms check.
     let link = slow_link(server.tcp_endpoint().unwrap(), Duration::from_millis(200)).await;
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");

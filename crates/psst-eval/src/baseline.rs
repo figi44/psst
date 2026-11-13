@@ -1,7 +1,3 @@
-//! `evals/baseline.json`: every case's output with its counts, the metrics per group, and the
-//! stress test's results. The gate recomputes metrics from the per-case counts, so it can compare
-//! any subset of cases.
-
 use std::{collections::BTreeMap, fmt, fs, io, path::Path};
 
 use anyhow::Context;
@@ -13,18 +9,15 @@ use crate::{
     metrics::Counts,
 };
 
-/// Version of the file's layout.
 pub const FORMAT: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Baseline {
     pub format: u32,
-    /// Metrics per source, language and split, then per source.
     pub summary: Vec<GroupSummary>,
-    /// Every case with recorded traces, by id.
+    /// Sorted by id: `case` binary-searches it.
     pub cases: Vec<CaseResult>,
-    /// The stress test, per language.
     pub stress: Vec<StressResult>,
 }
 
@@ -35,7 +28,6 @@ impl Baseline {
         Self { format: FORMAT, summary: summarise(&cases), cases, stress }
     }
 
-    /// Reads a baseline; `None` if the file doesn't exist.
     pub fn read(path: &Path) -> anyhow::Result<Option<Self>> {
         let text = match fs::read_to_string(path) {
             Ok(text) => text,
@@ -62,7 +54,6 @@ impl Baseline {
     }
 }
 
-/// A case's two replays.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CaseResult {
@@ -71,9 +62,7 @@ pub struct CaseResult {
     pub lang: String,
     pub split: Split,
     pub must_pass: bool,
-    /// `engine_output` through the pipeline with the dictionary: what the user gets.
     pub output: CaseOutput,
-    /// `engine_output_raw` through the pipeline without the dictionary.
     pub raw: CaseOutput,
 }
 
@@ -89,10 +78,10 @@ pub struct CaseOutput {
     pub text: String,
     pub raw_text: String,
     pub edits: Vec<Edit>,
+    /// Per case, so the gate can recompute metrics over any subset of cases.
     pub counts: Counts,
 }
 
-/// A source, language and split: the unit metrics are reported and gated in.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Group {
     pub source: Source,
@@ -106,13 +95,9 @@ impl fmt::Display for Group {
     }
 }
 
-/// The metrics of a set of outputs, with the counts they come from. Percentages and rates are
-/// rounded to three decimals.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Metrics {
-    /// Percent; `null` without term occurrences.
     pub term_recall: Option<f64>,
-    /// Percent; `null` without reference words.
     pub wer: Option<f64>,
     pub false_corrections_per_1000: f64,
     #[serde(flatten)]
@@ -138,16 +123,13 @@ fn round(value: f64) -> f64 {
 #[serde(deny_unknown_fields)]
 pub struct GroupSummary {
     pub source: Source,
-    /// `*` for the total over a source.
     pub lang: String,
-    /// `*` for the total over a source.
     pub split: String,
     pub cases: usize,
     pub output: Metrics,
     pub raw: Metrics,
 }
 
-/// Sums the counts of `cases` per group.
 pub fn group_counts<'a>(cases: impl IntoIterator<Item = &'a CaseResult>) -> BTreeMap<Group, (usize, Counts, Counts)> {
     let mut groups: BTreeMap<Group, (usize, Counts, Counts)> = BTreeMap::new();
     for case in cases {
@@ -189,21 +171,18 @@ fn summarise(cases: &[CaseResult]) -> Vec<GroupSummary> {
     rows
 }
 
-/// The stress test's results for one language.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StressResult {
     pub lang: String,
     pub sentences: usize,
     pub metrics: Metrics,
-    /// Sentences with a false correction, for review.
     pub flagged: Vec<FlaggedSentence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FlaggedSentence {
-    /// 1-based line in `stress/<lang>.txt`.
     pub line: usize,
     pub sentence: String,
     pub output: String,

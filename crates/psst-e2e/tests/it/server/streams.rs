@@ -1,7 +1,3 @@
-//! Live sessions sent to an engine that takes streams (`psst_engine_proto`, "Streams"): the
-//! audio goes to the engine as it arrives, and the request at `stop` closes the stream, or sends
-//! the whole recording when the stream is gone.
-
 use std::time::Duration;
 
 use psst_engine_proto::{
@@ -24,7 +20,6 @@ fn streaming(transcribe: Vec<TranscribeStep>) -> TestServer {
     server(Script { hello, transcribe, ..Script::default() }, |_| {})
 }
 
-/// Records a live session of 15,900 samples, the last frame padded, and returns its final.
 async fn dictate(client: &mut Client) -> psst_proto::ws::FinalMsg {
     let id = SessionId::new_v4();
     client.start(id, Mode::Live, false).await;
@@ -35,7 +30,6 @@ async fn dictate(client: &mut Client) -> psst_proto::ws::FinalMsg {
     client.final_msg().await
 }
 
-/// The requests of `kind` the engine got, once there are `count` of them.
 async fn eventually(server: &TestServer, kind: &str, count: usize) -> Vec<LoggedRequest> {
     let deadline = tokio::time::Instant::now() + MESSAGE_TIMEOUT;
     loop {

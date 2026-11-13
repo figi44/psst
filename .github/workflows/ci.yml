@@ -1,5 +1,3 @@
-# fmt, clippy, tests and the Rust half of the golden frames, in the flake's dev shell, so CI uses
-# exactly the toolchain agents use locally; and the flake itself.
 name: CI
 
 on:
@@ -33,16 +31,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
-      # The compositor tests' sway, niri and mesa (psst-testkit's tools.rs), the same `nix build`
-      # the first of those tests would run, but while the dev shell and the cache download. A
-      # test that gets there first waits for this download instead of starting another.
+      # The same `nix build` the first compositor test would run (psst-testkit's tools.rs), but
+      # while the dev shell and the cache download. A test that gets there first waits for it.
       - name: Fetch the test compositors in the background
         run: nohup nix build --no-link --inputs-from . nixpkgs#sway nixpkgs#niri nixpkgs#mesa > "$RUNNER_TEMP/compositors.log" 2>&1 &
+      # The flake's dev shell, so CI uses exactly the toolchain used locally.
       - name: Enter the dev shell
         uses: nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a # v1.2.1
       # Only main saves the cache. A pull request's cache is visible only to that pull request,
       # pushes main's out of the 10 GB limit, and its later runs restore it over main's newer one.
-      # v1: v0 had grown to 1 GB with what it kept from every older Cargo.lock (see the sweep).
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         id: cache
         with:
@@ -56,8 +53,8 @@ jobs:
         run: just golden
       # rust-cache keeps every file named like a dependency's crate or target, at any version: a
       # cache restored for an older Cargo.lock is saved again with both builds in it, and the
-      # tests' `it-*` binaries stay too (once_cell has a test target named `it`). Keep only what
-      # this job's builds used. Both are fresh, so this replays them in seconds.
+      # tests' `it-*` binaries stay too (once_cell has a test target named `it`). Both builds are
+      # fresh, so this replays them in seconds.
       - name: Sweep dependency artifacts this build didn't use
         if: github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
         run: |

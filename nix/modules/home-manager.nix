@@ -1,4 +1,3 @@
-# `homeManagerModules.psst`: the desktop daemon as a user service.
 overlay:
 {
   config,

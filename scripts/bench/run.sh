@@ -4,12 +4,6 @@
 #   scripts/bench/run.sh all                       quality, prompt, long-terms, latency and batch
 #   scripts/bench/run.sh <experiment> [options]    one experiment; options go to engine.py
 #   scripts/bench/run.sh report                    tables from the results so far
-#
-# Results go to $PSST_BENCH_OUT (default: ~/.cache/psst/bench/<date>), one <experiment>.jsonl each, and
-# report.md. The model is cached in ~/.cache/psst/hf.
-#
-# The Python environment and CUDA library path come from the flake's CUDA engine package, as for
-# `psst-engine-dev`. Override with PSST_BENCH_PYTHON and PSST_BENCH_CUDA_LIBS.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)

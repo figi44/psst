@@ -1,9 +1,3 @@
-//! The history page: the dictations the server keeps, newest first, each shown as psst pasted it
-//! with the dictionary's changes marked. A form in each dictation fixes a word in it: it adds the
-//! right spelling to the dictionary (or teaches an existing word another way Whisper hears it), or
-//! keeps a word the dictionary changed as Whisper heard it. Every change goes through the same
-//! functions as `/api/dictionary`, and each one can be undone from the page.
-
 use std::{collections::HashMap, sync::Arc};
 
 use axum::{
@@ -33,15 +27,12 @@ use crate::{
 
 type AppRef = Arc<AppState>;
 
-/// Dictations shown before "Show older dictations"; with it, everything the server keeps.
 const SHOWN: u32 = 20;
 const ALL: u32 = 1000;
 
 #[derive(Debug, Default, Deserialize)]
 pub struct PageQuery {
-    /// Any value shows every kept dictation.
     all: Option<String>,
-    /// A fix that was just saved, to confirm in its dictation (see [`Done`]).
     fixed: Option<HistoryId>,
     #[serde(default)]
     kind: String,
@@ -57,57 +48,42 @@ pub struct PageQuery {
     created: String,
 }
 
-/// A fix as entered: the wrong words as Whisper heard them (or as the page shows them), how psst
-/// should write them, and which button was pressed.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct FixForm {
     #[serde(default)]
     heard: String,
     #[serde(default)]
     written: String,
-    /// `add` (the default), `keep`, `move` or `anyway`.
     #[serde(default)]
     action: String,
-    /// Set when the page showed every kept dictation, so the answer does too.
     #[serde(default)]
     all: String,
 }
 
-/// What a saved fix did, carried by the redirect so the page can confirm it and undo it.
+/// The server keeps no record of a fix: this round-trips through the redirect and the undo form.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Done {
-    /// `add` (a new word), `extend` (another way Whisper hears a word), `move` (a heard spelling
-    /// taken from another word), `keep` (a never rule) or `already`.
     #[serde(default)]
     kind: String,
     #[serde(default)]
     heard: String,
     #[serde(default)]
     written: String,
-    /// The word a `move` took the spelling from, or the word a `keep` stopped.
     #[serde(default)]
     term: String,
-    /// For `keep`: the heard spelling was one of the word's listed spellings, and was removed.
     #[serde(default)]
     removed: String,
-    /// The fix created the word it wrote.
     #[serde(default)]
     created: String,
-    /// The page showed every kept dictation, and keeps doing so.
     #[serde(default)]
     all: String,
 }
 
-/// One piece of a dictation as the page shows it.
 #[derive(Debug, Clone, Serialize)]
 struct Piece {
-    /// `w` a word, `g` the spaces and punctuation between words, `fx` a word the dictionary
-    /// changed, `fixed` words just fixed from this page.
     kind: &'static str,
     text: String,
-    /// What Whisper heard: the same as `text`, except for `fx`.
     heard: String,
-    /// For `fx`: the word that changed it, and how it matched (`exact`, `fuzzy` or `case`).
     #[serde(skip_serializing_if = "Option::is_none")]
     term: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -118,7 +94,6 @@ fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || matches!(c, '\'' | '\u{2019}' | '+' | '#' | '-')
 }
 
-/// `text` as words and the gaps between them.
 fn split(text: &str, out: &mut Vec<Piece>) {
     let mut push = |run: &str| {
         let word = run.chars().any(char::is_alphanumeric);
@@ -159,9 +134,8 @@ fn changed(edit: &psst_proto::Edit, terms: &HashMap<String, String>) -> Piece {
     Piece { kind: "fx", text: edit.after.clone(), heard: edit.before.clone(), term: Some(term), how: Some(how) }
 }
 
-/// The final text as pieces, with the dictionary's edits marked. The edits are laid over
-/// `raw_text`; if they don't line up with the final text, each dictionary replacement is found in
-/// the final text instead, which can't go wrong worse than marking nothing.
+/// When the edits laid over `raw_text` don't give the final text, each dictionary replacement is
+/// looked for in the final text instead: at worst, that marks nothing.
 fn pieces(fin: &Final, terms: &HashMap<String, String>) -> Vec<Piece> {
     let mut edits: Vec<&psst_proto::Edit> = fin.edits.iter().collect();
     edits.sort_by_key(|edit| (edit.raw_span.start, edit.raw_span.end));
@@ -208,12 +182,10 @@ fn pieces(fin: &Final, terms: &HashMap<String, String>) -> Vec<Piece> {
     out
 }
 
-/// Spaces collapsed, ends trimmed, lowercase: how two phrases are compared.
 fn norm(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
 }
 
-/// The pieces `phrase` covers, compared as Whisper heard them, then as shown.
 fn find(pieces: &[Piece], phrase: &str) -> Option<(usize, usize)> {
     let want = norm(phrase);
     if want.is_empty() {
@@ -237,7 +209,6 @@ fn find(pieces: &[Piece], phrase: &str) -> Option<(usize, usize)> {
     None
 }
 
-/// Words that a fix just saved, shown in place.
 fn mark_fixed(pieces: &mut Vec<Piece>, done: &Done) {
     let Some((a, b)) = find(pieces, &done.heard) else { return };
     let text = if done.kind == "keep" { done.heard.clone() } else { done.written.clone() };
@@ -245,7 +216,6 @@ fn mark_fixed(pieces: &mut Vec<Piece>, done: &Done) {
     pieces.splice(a..=b, [piece]);
 }
 
-/// "2 min ago", or the local time of day.
 fn ago(at: Timestamp, now: Timestamp, tz: &TimeZone) -> String {
     let minutes = (now.as_second() - at.as_second()) / 60;
     match minutes {
@@ -255,7 +225,6 @@ fn ago(at: Timestamp, now: Timestamp, tz: &TimeZone) -> String {
     }
 }
 
-/// "Today", "Yesterday", or the date.
 fn day(at: Timestamp, now: Timestamp, tz: &TimeZone) -> String {
     let (date, today) = (at.to_zoned(tz.clone()).date(), now.to_zoned(tz.clone()).date());
     if date == today {
@@ -267,16 +236,13 @@ fn day(at: Timestamp, now: Timestamp, tz: &TimeZone) -> String {
     }
 }
 
-/// The form's state after a refused fix: the values entered, why, and what the page offers.
 #[derive(Debug, Clone, Default, Serialize)]
 struct Refusal {
     row: HistoryId,
     heard: String,
     written: String,
     error: String,
-    /// `warn` (a choice to make) or `error`.
     level: &'static str,
-    /// A button that goes ahead anyway: its `action` and label.
     offer: Option<(String, String)>,
 }
 
@@ -356,7 +322,6 @@ fn page(state: &AppState, viewer: &Viewer, query: &PageQuery, refusal: Option<Re
     render(status, "history.html", ctx)
 }
 
-/// What a saved fix does from now on.
 fn confirmation(done: &Done) -> String {
     let (heard, written, term) = (&done.heard, &done.written, &done.term);
     match done.kind.as_str() {
@@ -370,7 +335,6 @@ fn confirmation(done: &Done) -> String {
     }
 }
 
-/// `GET /history`.
 pub async fn show(
     viewer: Viewer,
     State(state): State<AppRef>,
@@ -380,7 +344,6 @@ pub async fn show(
     page(&state, &viewer, &query, None)
 }
 
-/// The page as it was before a form was sent: every kept dictation when `all` is set.
 fn same_view(all: &str) -> PageQuery {
     PageQuery { all: (!all.is_empty()).then(|| all.to_owned()), ..PageQuery::default() }
 }
@@ -406,7 +369,6 @@ fn entry<'a>(view: &'a DictionaryView, id: &str) -> Option<&'a DictionaryTerm> {
     view.terms.iter().find(|t| t.id == id)
 }
 
-/// `term` as `entry`'s new version, or back to the file's version when it's the same.
 fn saving(entry: &DictionaryTerm, term: Term) -> Change {
     if entry.layer == TermLayer::Replaced && entry.file.as_ref() == Some(&term) {
         Change::Reset(entry.id.clone())
@@ -436,7 +398,6 @@ fn with(term: &Term, heard: &str) -> Term {
     term
 }
 
-/// The active word whose own spelling or a listed one is `heard`, other than `except`.
 fn claimant<'a>(view: &'a DictionaryView, heard: &str, except: &str) -> Option<&'a DictionaryTerm> {
     let heard = spelling(heard);
     view.terms.iter().filter(|t| t.active && t.id != except).find(|t| {
@@ -446,7 +407,6 @@ fn claimant<'a>(view: &'a DictionaryView, heard: &str, except: &str) -> Option<&
     })
 }
 
-/// `POST /history/{id}/fix`.
 pub async fn fix(
     viewer: Viewer,
     State(state): State<AppRef>,
@@ -597,7 +557,6 @@ fn apply(state: &AppState, row: &HistoryRow, form: &FixForm) -> Result<Done, Box
     Ok(done)
 }
 
-/// `POST /history/{id}/undo`: takes back one saved fix.
 pub async fn undo(
     viewer: Viewer,
     State(state): State<AppRef>,

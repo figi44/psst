@@ -1,6 +1,3 @@
-//! Exact spellings: one leftmost-longest, case-insensitive matcher over every
-//! term's `text` and `sounds_like`.
-
 use std::{cmp::Reverse, collections::HashMap, ops::Range};
 
 use aho_corasick::AhoCorasick;
@@ -8,31 +5,23 @@ use psst_config::TermLanguages;
 
 use crate::{Error, Result, Term, common::is_common_word, fold::Folded, fold::match_key};
 
-/// What the pipeline does with an exact match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
-    /// Replace the matched characters with the term's `text`, record the edit, and protect the
-    /// token.
     Replace,
-    /// The text already is the term's `text`: protect the token, with nothing to record.
     Keep,
-    /// A common word that would at most change case: leave it alone and unprotected, so a term `Go`
-    /// doesn't change every "go", and "go home" is still capitalised.
+    /// A common word that would at most change case stays unprotected, so a term `Go` doesn't
+    /// change every "go", and "go home" is still capitalised.
     Ignore,
 }
 
-/// One exact match in a text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExactMatch<'d> {
-    /// Byte range of the matched characters. Surrounding punctuation is never part of it.
     pub range: Range<usize>,
     pub term: &'d Term,
     pub outcome: Outcome,
 }
 
-/// Whether `c` can sit right before or after an exact match: whitespace, `. , ; : ! ? ( ) [ ] { }
-/// " '`, and the typographic quotes `‘ ’ “ ” „` and ellipsis `…`. `+`, `#`, `-` and `/` can't, so
-/// the term `C` never matches inside "c++", "c#" or "c/c++".
+/// Not `+`, `#`, `-` or `/`, so the term `C` never matches inside "c++", "c#" or "c/c++".
 fn is_boundary(c: char) -> bool {
     c.is_whitespace()
         || matches!(
@@ -64,7 +53,6 @@ fn at_boundaries(text: &str, range: &Range<usize>) -> bool {
         && text[range.end..].chars().next().is_none_or(is_boundary)
 }
 
-/// The languages two terms share, if any.
 pub(crate) fn shared_languages(a: &TermLanguages, b: &TermLanguages) -> Option<TermLanguages> {
     match (a, b) {
         (TermLanguages::Any, TermLanguages::Any) => Some(TermLanguages::Any),
@@ -78,20 +66,17 @@ pub(crate) fn shared_languages(a: &TermLanguages, b: &TermLanguages) -> Option<T
 #[derive(Debug, Clone, Copy)]
 struct Claim {
     term: usize,
-    /// The spelling is the term's `text`, not one of its `sounds_like`.
     is_text: bool,
 }
 
-/// The automaton over every spelling, built once per dictionary.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Matcher {
     automaton: Option<AhoCorasick>,
-    /// The terms claiming each pattern; at most one per language.
+    /// At most one claim per language and pattern, which `find` relies on.
     claims: Vec<Vec<Claim>>,
 }
 
 impl Matcher {
-    /// Builds the matcher, rejecting a spelling that two terms claim in a shared language.
     pub fn new(terms: &[Term]) -> Result<Self> {
         let mut index: HashMap<String, usize> = HashMap::new();
         let mut patterns: Vec<String> = Vec::new();
@@ -134,8 +119,6 @@ impl Matcher {
         Ok(Self { automaton, claims })
     }
 
-    /// Leftmost-longest exact matches of `language`'s terms in `text`, among the candidates
-    /// `allow` accepts for their term.
     pub fn find<'d>(
         &self,
         terms: &'d [Term],

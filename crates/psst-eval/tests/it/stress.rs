@@ -1,5 +1,3 @@
-//! `psst-eval stress`: ordinary sentences through the dictionary, gated like replay.
-
 use crate::common;
 
 use common::Evals;

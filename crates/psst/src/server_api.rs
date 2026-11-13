@@ -1,7 +1,3 @@
-//! The server's HTTP API for the CLI (`psst dict`, `psst ui`): the server `client.toml` names, its
-//! socket on the server's machine and TCP with the token from `psst pair` elsewhere. The daemon
-//! isn't involved.
-
 use anyhow::{Context, anyhow};
 use psst_client::api::{ApiCallError, ApiClient};
 use psst_config::{ClientConfig, ConfigFile};
@@ -9,7 +5,6 @@ use psst_proto::Endpoint;
 
 use crate::pair::Credentials;
 
-/// The server from `client.toml`, with this device's token over TCP.
 pub fn connect() -> anyhow::Result<ApiClient> {
     let path = ClientConfig::default_path().ok_or_else(|| anyhow!("cannot find client.toml"))?;
     let server = ClientConfig::load_or_default(&path)?.server;
@@ -26,7 +21,6 @@ pub fn connect() -> anyhow::Result<ApiClient> {
     Ok(ApiClient::new(server, token))
 }
 
-/// A failed call, said for people: the server's own reason when it gave one.
 pub fn describe(err: ApiCallError, endpoint: &Endpoint) -> anyhow::Error {
     match err {
         ApiCallError::Api { error, .. } => anyhow!("{}", error.message),

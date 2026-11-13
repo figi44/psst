@@ -1,10 +1,3 @@
-//! Finds the sandbox's programs: sway, niri, and mesa's EGL vendor file.
-//!
-//! In order: `PSST_SWAY`, `PSST_NIRI` and `PSST_MESA_EGL_VENDOR`; then `PATH` (and
-//! `/run/opengl-driver` for mesa); then `nix build` from the flake's pinned nixpkgs (the path CI
-//! takes). Paths from nix are cached in the target directory, keyed by `flake.lock`, so only the
-//! first test process pays for the evaluation.
-
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -25,7 +18,6 @@ pub(crate) fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().expect("the workspace exists")
 }
 
-/// The sandbox's tools, resolved once per process. Panics if one can't be found.
 pub(crate) fn tools() -> &'static Tools {
     static TOOLS: OnceLock<Tools> = OnceLock::new();
     TOOLS.get_or_init(|| {
@@ -61,7 +53,7 @@ fn on_path(program: &str) -> Option<PathBuf> {
     env::split_paths(&env::var_os("PATH")?).map(|dir| dir.join(program)).find(|p| p.is_file())
 }
 
-/// Store paths of nixpkgs packages from the flake's pinned nixpkgs, cached per `flake.lock`.
+/// Cached on disk per `flake.lock`, so only the first test process pays for the evaluation.
 fn nix_paths(names: &[&str]) -> Vec<(String, PathBuf)> {
     let root = workspace_root();
     let lock = fs::read(root.join("flake.lock")).expect("read flake.lock");
@@ -96,7 +88,7 @@ fn nix_paths(names: &[&str]) -> Vec<(String, PathBuf)> {
     resolved
 }
 
-/// `<target>/psst-testkit`: next to the test binaries, so `cargo clean` clears it.
+/// In the target directory, so `cargo clean` clears it.
 fn cache_dir() -> PathBuf {
     let target = env::var_os("CARGO_TARGET_DIR").map(PathBuf::from).or_else(|| {
         // <target>/<profile>/deps/<test binary>

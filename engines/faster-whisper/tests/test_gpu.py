@@ -1,16 +1,7 @@
-"""Smoke test on the GPU: the real engine, started as the server starts it, on CUDA.
-
-Marked ``gpu``, so plain ``pytest`` (and CI) leaves it out. Run it in ``nix develop .#gpu``, with
-the GPU to itself (inside ``scripts/gpu-session.sh``, or under its lock):
+"""Run in ``nix develop .#gpu``, with the GPU to itself (inside ``scripts/gpu-session.sh``, or
+under its lock):
 
     flock ~/.cache/psst/gpu.lock env HF_HOME=~/.cache/psst/hf PSST_ENGINE_COMMAND=psst-engine-dev pytest -m gpu -s
-
-``PSST_ENGINE_COMMAND`` is any command that runs this checkout's engine with faster-whisper on
-CUDA; ``psst-engine-dev`` does.
-
-Models missing from ``HF_HOME`` are downloaded. ``PSST_GPU_MODELS`` picks the models (default
-``tiny,large-v3-turbo``). The measured load and transcribe times are printed, and appended as
-JSON lines to ``PSST_GPU_REPORT`` when it's set.
 """
 
 from __future__ import annotations

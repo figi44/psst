@@ -1,15 +1,3 @@
-//! Snapshot tests: every overlay state, rendered at 1×, 2× and (for a few) 1.25×, must match the
-//! PNG fixtures in `tests/snapshots/`.
-//!
-//! After an intended change to the look, regenerate them and review the images:
-//!
-//! ```sh
-//! PSST_UPDATE_SNAPSHOTS=1 cargo nextest run -p psst-overlay
-//! ```
-//!
-//! A mismatch writes the rendered image and a contact sheet of all states to
-//! `$CARGO_TARGET_TMPDIR/overlay-snapshots/`.
-
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -31,7 +19,6 @@ fn out_dir() -> PathBuf {
     dir
 }
 
-/// A deterministic stand-in for a few seconds of speech: words, pauses, a louder phrase.
 fn speech() -> Levels {
     let mut seed: u32 = 0x5eed;
     (0..64)
@@ -84,12 +71,11 @@ fn file_name(name: &str, scale: f64) -> String {
     format!("{name}@{scale}x.png")
 }
 
-/// PNG round trip, so the comparison sees exactly what a fixture holds.
+/// Through PNG, so the comparison sees exactly what a fixture holds.
 fn normalised(p: &Pixmap) -> Pixmap {
     Pixmap::decode_png(&p.encode_png().unwrap()).unwrap()
 }
 
-/// Largest per-channel difference, or `None` if the sizes differ.
 fn max_diff(a: &Pixmap, b: &Pixmap) -> Option<u8> {
     if (a.width(), a.height()) != (b.width(), b.height()) {
         return None;
@@ -155,7 +141,6 @@ fn every_state_matches_its_snapshot() {
     );
 }
 
-/// Every state at 2×, over a light and a dark backdrop, for reviewing the look at a glance.
 fn write_contact_sheet(frames: &[Pixmap]) {
     let Some(first) = frames.first() else { return };
     let (fw, fh) = (first.width(), first.height());

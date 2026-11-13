@@ -1,7 +1,3 @@
-//! The dictionary's database layer through `/api/dictionary`: adding,
-//! replacing, hiding and resetting terms, never rules, the checks on every change, export, the
-//! test route, and what sessions see.
-
 use std::{fs, time::Duration};
 
 use nix::{
@@ -38,7 +34,6 @@ text = "Go"
 languages = "en"
 "#;
 
-/// A server whose `dictionary.toml` is [`FILE`] and whose engine transcribes `texts` in order.
 fn dictionary_server(texts: &[&str]) -> TestServer {
     server(script(texts.iter().map(|text| result(text, 0)).collect()), |cfg| {
         cfg.dictionary = DictionaryFile::from_toml_str(FILE).unwrap();
@@ -53,7 +48,6 @@ async fn view(api: &ApiClient) -> DictionaryView {
     api.call(Method::Get, routes::DICTIONARY, None::<&()>).await.expect("GET /api/dictionary")
 }
 
-/// Every identity with its layer and whether sessions use it.
 async fn layers(api: &ApiClient) -> Vec<(String, TermLayer, bool)> {
     view(api).await.terms.into_iter().map(|t| (t.id, t.layer, t.active)).collect()
 }
@@ -82,7 +76,6 @@ async fn test(api: &ApiClient, body: Value) -> Result<Final, ApiCallError> {
     api.call(Method::Post, routes::DICTIONARY_TEST, Some(&body)).await
 }
 
-/// The status, code and message of a refused call.
 #[track_caller]
 fn refused<T: std::fmt::Debug>(result: Result<T, ApiCallError>) -> (u16, ApiErrorCode, String) {
     match result {
@@ -91,7 +84,6 @@ fn refused<T: std::fmt::Debug>(result: Result<T, ApiCallError>) -> (u16, ApiErro
     }
 }
 
-/// Dictates once; the final text and the bias terms the engine was sent.
 async fn dictate(server: &TestServer) -> (String, Value) {
     let mut client = Client::connect(server).await;
     client.upload(SessionId::new_v4(), SECOND / 4).await;

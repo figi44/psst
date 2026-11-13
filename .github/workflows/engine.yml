@@ -1,5 +1,3 @@
-# The engine's pytest and the Python half of the golden frames. Runs only when the engine, its
-# golden frames or the pinned Python change.
 name: Engine
 
 on:

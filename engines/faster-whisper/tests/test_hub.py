@@ -1,5 +1,3 @@
-"""Finding models on the Hub and reporting download progress."""
-
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -13,7 +11,6 @@ ALIASES = {"large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo", "ti
 
 
 def Bar(unit: str = "it", total: int = 0) -> SimpleNamespace:
-    """What huggingface_hub's progress bars look like to the engine."""
     return SimpleNamespace(unit=unit, total=total, n=0)
 
 

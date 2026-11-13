@@ -1,10 +1,3 @@
-//! The engine supervisor: one engine process for the one model, a first-in
-//! first-out queue of transcriptions, and every budget, retry and restart decision.
-//!
-//! The supervisor is an actor: [`Supervisor`] is a cheap handle that sends it commands, and the
-//! model's state is published on a watch channel. All engine I/O, timers and state live in the
-//! actor task, so no locks are held across them.
-
 mod process;
 
 use std::{
@@ -35,24 +28,16 @@ use tokio::{
 
 use self::process::{EngineProcess, ProcEvent};
 
-/// A load fails after this long without `progress` or `loaded` (and a start without `hello`).
 pub const LOAD_SILENCE: Duration = Duration::from_secs(60);
-/// Every attempt gets this much plus the recording's length.
 pub const ATTEMPT_BASE: Duration = Duration::from_secs(5);
-/// A cancelled running request gets this long to finish before the engine is killed.
 pub const CANCEL_GRACE: Duration = Duration::from_secs(2);
-/// After `shutdown`, the engine gets this long before `SIGTERM`…
 pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
-/// …and this long after `SIGTERM` before `SIGKILL`.
 pub const TERM_GRACE: Duration = Duration::from_secs(2);
-/// Attempts per request.
 pub const MAX_ATTEMPTS: u32 = 2;
-/// Crashes in a row that mark the model failed.
 pub const CRASH_LIMIT: u32 = 3;
 const BACKOFF_FIRST: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
 
-/// What the supervisor needs from `server.toml` and the command line.
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
     pub engine: String,
@@ -62,7 +47,6 @@ pub struct EngineConfig {
     pub device: String,
     pub compute_type: String,
     pub options: ModelOptions,
-    /// `HF_HOME` for the engine.
     pub cache_dir: PathBuf,
     pub max_recording_s: u32,
     pub load_deadline: Duration,
@@ -88,16 +72,13 @@ impl EngineConfig {
 
 pub type JobId = u64;
 
-/// Where a request is, for `progress`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JobPhase {
     Queued,
     Transcribing,
-    /// Waiting for another attempt after a crash, an `oom` or a timeout.
     Retrying,
 }
 
-/// A request's phase, shared with the session that made it.
 #[derive(Debug, Default)]
 pub struct JobStatus(AtomicU8);
 
@@ -115,22 +96,17 @@ impl JobStatus {
     }
 }
 
-/// One transcription to run.
 #[derive(Debug)]
 pub struct JobRequest {
     pub language: String,
     pub bias: Bias,
-    /// The recording as a frame payload: `f32` little-endian at 16 kHz.
+    /// `f32` little-endian at 16 kHz.
     pub payload: Vec<u8>,
     pub audio_ms: u32,
-    /// The recording's stream, if it was sent to the engine as it came in: the request then
-    /// closes the stream, and `payload` is only for falling back to `transcribe`.
+    /// The request closes this stream; `payload` is still needed to fall back to `transcribe`.
     pub stream: Option<Stream>,
 }
 
-/// A live recording sent to the engine while it comes in (the "Streams" section of
-/// `psst_engine_proto`'s docs), from [`Supervisor::open_stream`]. Dropping it discards the stream;
-/// a [`JobRequest`] closes it.
 #[derive(Debug)]
 pub struct Stream {
     id: JobId,
@@ -139,7 +115,6 @@ pub struct Stream {
 }
 
 impl Stream {
-    /// The recording's next samples, `pcm_s16le`.
     pub fn append(&self, pcm: &[u8]) {
         let _ = self.commands.send(Command::Append(self.id, pcm_to_payload(pcm)));
     }
@@ -158,7 +133,6 @@ impl Drop for Stream {
     }
 }
 
-/// `pcm_s16le` as an engine audio payload: `f32` little-endian.
 pub fn pcm_to_payload(pcm: &[u8]) -> Vec<u8> {
     let mut payload = Vec::with_capacity(pcm.len() * 2);
     for pair in pcm.as_chunks::<2>().0 {
@@ -167,7 +141,6 @@ pub fn pcm_to_payload(pcm: &[u8]) -> Vec<u8> {
     payload
 }
 
-/// A submitted request.
 #[derive(Debug)]
 pub struct JobHandle {
     pub id: JobId,
@@ -191,7 +164,6 @@ pub struct JobDone {
     pub attempts: u32,
 }
 
-/// Handle to the supervisor actor.
 #[derive(Debug, Clone)]
 pub struct Supervisor {
     commands: mpsc::UnboundedSender<Command>,
@@ -213,8 +185,6 @@ enum Command {
 }
 
 impl Supervisor {
-    /// Starts the actor. With `load`, it starts the engine and loads the model at once;
-    /// otherwise the model stays `unloaded` until [`Supervisor::load`].
     pub fn start(cfg: EngineConfig, load: bool) -> Supervisor {
         let (commands, command_rx) = mpsc::unbounded_channel();
         let (events, event_rx) = mpsc::unbounded_channel();
@@ -254,23 +224,18 @@ impl Supervisor {
         self.status.borrow().clone()
     }
 
-    /// Clears an unload or a failure and loads the model; returns the state right after.
     pub async fn load(&self) -> ModelStatus {
         let (reply, answer) = oneshot::channel();
         let _ = self.commands.send(Command::Load(reply));
         answer.await.unwrap_or_else(|_| self.status())
     }
 
-    /// Unloads the model on purpose and returns once the engine has exited.
     pub async fn unload(&self) -> ModelStatus {
         let (reply, answer) = oneshot::channel();
         let _ = self.commands.send(Command::Unload(reply));
         answer.await.unwrap_or_else(|_| self.status())
     }
 
-    /// Starts sending a live recording to the engine as it comes in. Only an engine that takes
-    /// streams gets it, and only while the model is loaded; otherwise the request that closes it
-    /// sends the whole recording as `transcribe`.
     pub fn open_stream(&self, language: String, bias: Bias) -> Stream {
         let id = self.next_job.fetch_add(1, Ordering::Relaxed);
         let _ = self.commands.send(Command::Open { id, language, bias });
@@ -308,18 +273,14 @@ impl Supervisor {
         JobHandle { id, status, outcome }
     }
 
-    /// Cancels a request: a queued one is removed, a running one gets [`CANCEL_GRACE`] before the
-    /// engine is killed and restarted. Its outcome is [`JobOutcome::Cancelled`].
     pub fn cancel(&self, id: JobId) {
         let _ = self.commands.send(Command::Cancel(id));
     }
 
-    /// The machine woke up: restart a loaded engine.
     pub fn resume(&self) {
         let _ = self.commands.send(Command::Resume);
     }
 
-    /// Fails waiting requests and stops the engine.
     pub async fn shutdown(&self) {
         let (reply, answer) = oneshot::channel();
         if self.commands.send(Command::Shutdown(reply)).is_ok() {
@@ -335,7 +296,6 @@ struct Job {
     bias: Bias,
     payload: Arc<Vec<u8>>,
     audio_ms: u32,
-    /// Its id is a stream's, which it closes if the stream is still open in this engine.
     streamed: bool,
     status: Arc<JobStatus>,
     done: Option<oneshot::Sender<JobOutcome>>,
@@ -344,7 +304,6 @@ struct Job {
     attempts: u32,
     oom_retry: bool,
     engine_time: Duration,
-    /// Time spent waiting for the model, for the load deadline.
     waited: Duration,
     waiting_since: Option<Instant>,
 }
@@ -369,43 +328,22 @@ impl Job {
     }
 }
 
-/// What the model should be.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Target {
     Loaded,
-    /// On purpose; nothing reloads it but [`Supervisor::load`].
     Unloaded,
     Failed(String),
 }
 
 #[derive(Debug)]
 enum Phase {
-    /// No process.
     Idle,
-    /// No process; start one at this instant.
     Backoff(Instant),
-    /// Waiting for `hello`.
-    Starting {
-        proc: EngineProcess,
-        silent_until: Instant,
-    },
-    Loading {
-        proc: EngineProcess,
-        silent_until: Instant,
-    },
-    Ready {
-        proc: EngineProcess,
-    },
-    Busy {
-        proc: EngineProcess,
-        run: Box<Run>,
-    },
-    /// Ending the process on purpose; the next process starts `restart_after` its exit.
-    Stopping {
-        proc: EngineProcess,
-        stage: Stop,
-        restart_after: Duration,
-    },
+    Starting { proc: EngineProcess, silent_until: Instant },
+    Loading { proc: EngineProcess, silent_until: Instant },
+    Ready { proc: EngineProcess },
+    Busy { proc: EngineProcess, run: Box<Run> },
+    Stopping { proc: EngineProcess, stage: Stop, restart_after: Duration },
 }
 
 #[derive(Debug)]
@@ -413,17 +351,13 @@ struct Run {
     job: Job,
     sent: Instant,
     deadline: Instant,
-    /// Set when the request was cancelled: the engine is killed at this instant.
     kill_at: Option<Instant>,
-    /// Sent as `close` rather than `transcribe`.
     closes_stream: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
 enum Stop {
-    /// `shutdown` sent; `SIGTERM` at this instant.
     Shutdown(Instant),
-    /// `SIGTERM` sent; `SIGKILL` at this instant.
     Term(Instant),
     Kill,
 }
@@ -457,9 +391,7 @@ struct Actor {
     unload_waiters: Vec<oneshot::Sender<ModelStatus>>,
     shutdown_waiters: Vec<oneshot::Sender<()>>,
     shutting_down: bool,
-    /// Whether the running engine takes streams.
     streams_supported: bool,
-    /// The streams open in an engine, with that engine's generation.
     streams: HashMap<JobId, u64>,
 }
 
@@ -675,7 +607,6 @@ impl Actor {
                 }
                 let attempts_left = job.attempts < MAX_ATTEMPTS;
                 match error.code {
-                    // The engine lost the stream; the next attempt sends the whole recording.
                     code if run.closes_stream && code != EngineErrorCode::Oom && attempts_left => {
                         tracing::warn!("the engine couldn't close the stream ({}); sending it whole", error.message);
                         job.status.set(JobPhase::Retrying);
@@ -701,7 +632,6 @@ impl Actor {
                     }
                 }
             }
-            // An `open` or `append` the engine refused: the stream is gone there.
             (FromEngine::Error(error), phase) if error.id.is_some_and(|id| self.streams.contains_key(&id)) => {
                 self.phase = phase;
                 let id = error.id.expect("checked above");
@@ -715,7 +645,6 @@ impl Actor {
         }
     }
 
-    /// The engine failed on its own: it exited, corrupted the stream, or overran an attempt.
     fn on_crash(&mut self, now: Instant, reason: String, exited: bool, timed_out: bool) {
         let (mut proc, run) = match mem::replace(&mut self.phase, Phase::Idle) {
             Phase::Starting { proc, .. } | Phase::Loading { proc, .. } | Phase::Ready { proc } => (proc, None),
@@ -818,7 +747,6 @@ impl Actor {
         }
     }
 
-    /// Starts the engine when it should run, and the next request when it's idle.
     fn drive(&mut self, now: Instant) {
         if self.target == Target::Loaded && !self.shutting_down {
             let start = match self.phase {
@@ -881,8 +809,6 @@ impl Actor {
         }
     }
 
-    /// Ends the process on purpose. With `kill`, at once; otherwise `shutdown`, then `SIGTERM`,
-    /// then `SIGKILL`. A running request is always killed at once.
     fn stop_engine(&mut self, now: Instant, kill: bool) {
         self.phase = match mem::replace(&mut self.phase, Phase::Idle) {
             Phase::Idle | Phase::Backoff(_) => Phase::Idle,
@@ -903,7 +829,6 @@ impl Actor {
         };
     }
 
-    /// Kills the engine to restart it; not a crash.
     fn kill_on_purpose(&mut self) {
         if let Phase::Busy { run, .. } = &mut self.phase
             && !run.job.cancelled()
@@ -939,7 +864,6 @@ impl Actor {
         }
     }
 
-    /// Forgets a stream, telling the engine if it's still open there.
     fn discard_stream(&mut self, id: JobId) {
         if let Some(generation) = self.streams.remove(&id)
             && let Some(proc) = self.phase.proc()
@@ -957,7 +881,6 @@ impl Actor {
         }
     }
 
-    /// Marks the model failed: waiting requests fail, and the engine is stopped.
     fn fail_model(&mut self, now: Instant, error: String, kill: bool) {
         tracing::error!("model failed: {error}");
         let detail = json!({"reason": "failed", "error": error});
@@ -967,7 +890,6 @@ impl Actor {
         self.stop_engine(now, kill);
     }
 
-    /// Fails every queued request and the running one.
     fn fail_waiting(&mut self, code: ErrorCode, message: &str, detail: Option<Value>) {
         for mut job in self.queue.drain(..) {
             job.fail(code, message, detail.clone());
@@ -985,7 +907,6 @@ impl Actor {
         }
     }
 
-    /// Starts or stops each queued request's load-wait clock: it runs while the model isn't ready.
     fn update_wait_clocks(&mut self, now: Instant) {
         let ready = self.target == Target::Loaded && matches!(self.phase, Phase::Ready { .. } | Phase::Busy { .. });
         for job in &mut self.queue {

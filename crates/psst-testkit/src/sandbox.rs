@@ -1,22 +1,5 @@
-//! The offscreen Wayland sandbox.
-//!
-//! [`nested_niri`] starts headless sway (`WLR_BACKENDS=headless`, pixman) in a private runtime
-//! directory, then niri nested inside it with `nix/test-niri.kdl`, rendering with mesa's
-//! llvmpipe. Nothing opens a window on the desktop and nothing touches the GPU.
-//! [`headless_sway`] stops at the sway. Every sandbox has its own directories, so tests run in
-//! parallel without a lock.
-//!
-//! - The compositors start from an empty environment: nothing from the live session reaches
-//!   them, and the session bus is disabled.
-//! - Clients get `WAYLAND_DISPLAY`, `NIRI_SOCKET`, `XDG_RUNTIME_DIR`, `XDG_STATE_HOME`,
-//!   `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` and `XDG_DATA_HOME` inside the sandbox, with
-//!   `WAYLAND_SOCKET`, `DISPLAY` and the other session variables cleared. The guard
-//!   ([`crate::guard`]) refuses the sandbox if any of them could reach the live session, and
-//!   runs again before every [`Sandbox::command`].
-//! - In-process clients connect to [`Sandbox::wayland_socket`] by path; they never read this
-//!   process's `WAYLAND_DISPLAY`, which may well be the live session's.
-//!
-//! `PSST_SANDBOX_KEEP=1` keeps the sandbox directory (with the compositors' logs) after the test.
+//! niri runs nested in headless sway and renders with llvmpipe, so nothing opens a window on the
+//! desktop and nothing touches the GPU.
 
 use std::{
     ffi::{OsStr, OsString},
@@ -32,39 +15,25 @@ use tempfile::TempDir;
 
 use crate::{guard, tools::tools};
 
-/// The test niri config: spawns nothing, no XWayland, layouts `us,cz(qwerty)`.
 const NIRI_CONFIG: &str = include_str!("../../../nix/test-niri.kdl");
-/// Headless sway: one output, no bar, no binds, no XWayland. No borders or title bar, so the
-/// nested niri's window keeps the size it starts with (1280×800) instead of being resized just
-/// after it appears.
+/// Without borders, the nested niri's window keeps the 1280×800 it starts with instead of being
+/// resized just after it appears.
 const SWAY_CONFIG: &str = "xwayland disable\noutput HEADLESS-1 resolution 1280x800\ndefault_border none\n";
 
 const STARTUP: Duration = Duration::from_secs(15);
 
-/// The compositor clients talk to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Compositor {
-    /// niri nested in headless sway.
     NestedNiri,
     HeadlessSway,
-    /// Directories only, no Wayland.
     None,
 }
 
-/// An isolated session for clients: its own XDG directories and, unless created with
-/// [`Sandbox::headless`], its own compositor. Clients started through
-/// [`Sandbox::command`] never see the live session. Dropping it stops the compositors and removes
-/// the directory.
 #[derive(Debug)]
 pub struct Sandbox {
-    /// Holds the sandbox's directories.
     pub root: TempDir,
-    /// What every client gets: `WAYLAND_DISPLAY`, `NIRI_SOCKET`, `XDG_RUNTIME_DIR`,
-    /// `XDG_STATE_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_DATA_HOME`, a disabled session
-    /// bus, and `PSST_SANDBOX_*` for test programs.
     pub env: Vec<(OsString, OsString)>,
     compositor: Compositor,
-    /// Headless sway; the nested niri's host.
     host: Option<Child>,
     niri: Option<Child>,
     wayland_socket: Option<PathBuf>,
@@ -73,20 +42,15 @@ pub struct Sandbox {
     live: Vec<PathBuf>,
 }
 
-/// Starts nested niri 26.04 with `nix/test-niri.kdl` inside headless sway and returns its sandbox.
-/// Panics if it can't start, or if any client variable would point at the live session.
 pub fn nested_niri() -> Sandbox {
     Sandbox::start(Compositor::NestedNiri).unwrap_or_else(|err| panic!("nested niri sandbox: {err}"))
 }
 
-/// Starts headless sway alone, for tests that need no niri IPC.
 pub fn headless_sway() -> Sandbox {
     Sandbox::start(Compositor::HeadlessSway).unwrap_or_else(|err| panic!("headless sway sandbox: {err}"))
 }
 
 impl Sandbox {
-    /// The sandbox's directories and environment without a compositor: no `WAYLAND_DISPLAY` or
-    /// `NIRI_SOCKET`. For daemon tests that use the `[insert] record` seam instead of Wayland.
     pub fn headless() -> Sandbox {
         Sandbox::start(Compositor::None).unwrap_or_else(|err| panic!("sandbox: {err}"))
     }
@@ -174,8 +138,8 @@ impl Sandbox {
             self.wayland_socket = Some(host_socket);
             return Ok(());
         }
-        // The nested niri's own connection to its host is the guard's one exemption: an absolute
-        // path to the sandbox's sway, never the live display.
+        // The guard's one exemption: niri's own connection to its host, by absolute path to the
+        // sandbox's sway, never the live display.
         let mut niri = compositor_command(&tools.niri, dir, "niri.log")?;
         niri.arg("-c")
             .arg(dir.join("niri.kdl"))
@@ -198,7 +162,6 @@ impl Sandbox {
         Ok(())
     }
 
-    /// Runs the guard on this sandbox's client environment.
     fn check(&self) -> Result<(), String> {
         let root = self.root.path();
         if let Some(host) = &self.host_socket
@@ -211,7 +174,6 @@ impl Sandbox {
         guard::check_isolation(root, &vars, &self.live, &guard::run_user())
     }
 
-    /// Panics unless the client environment is isolated from the live session.
     pub fn assert_isolated(&self) {
         if let Err(err) = self.check() {
             panic!("sandbox guard: REFUSING: {err}");
@@ -230,19 +192,16 @@ impl Sandbox {
         PathBuf::from(self.var(name).unwrap_or_else(|| panic!("sandbox has no {name}")))
     }
 
-    /// The compositor's socket, for in-process clients (absolute; connect to it by path).
+    /// Connect to it by path: this process's `WAYLAND_DISPLAY` may well be the live session's.
     pub fn wayland_socket(&self) -> &Path {
         self.assert_isolated();
         self.wayland_socket.as_deref().expect("this sandbox has no compositor")
     }
 
-    /// The headless sway's socket: niri's host, where "physical" keys come from.
     pub fn host_socket(&self) -> &Path {
         self.host_socket.as_deref().expect("this sandbox has no compositor")
     }
 
-    /// A command with the sandbox's environment, and `WAYLAND_SOCKET`, `DISPLAY` and the other
-    /// session variables cleared. Runs the guard first.
     pub fn command(&self, program: impl AsRef<OsStr>) -> Command {
         self.assert_isolated();
         let mut command = Command::new(program);
@@ -250,8 +209,6 @@ impl Sandbox {
         command
     }
 
-    /// `niri msg <args>` against the nested niri, for example
-    /// `["action", "switch-layout", "1"]`. Panics if it fails.
     pub fn niri_msg(&self, args: &[&str]) -> Output {
         assert_eq!(self.compositor, Compositor::NestedNiri, "niri_msg needs nested niri");
         let out = self.command(&tools().niri).arg("msg").args(args).output().expect("run niri msg");
@@ -259,7 +216,6 @@ impl Sandbox {
         out
     }
 
-    /// The compositors' logs so far.
     pub fn logs(&self) -> String {
         let mut text = String::new();
         for name in ["sway.log", "niri.log"] {
@@ -270,7 +226,6 @@ impl Sandbox {
         text
     }
 
-    /// Whether the compositors are still running.
     pub fn is_alive(&mut self) -> bool {
         [&mut self.host, &mut self.niri].into_iter().flatten().all(|c| matches!(c.try_wait(), Ok(None)))
     }
@@ -289,8 +244,7 @@ impl Drop for Sandbox {
     }
 }
 
-/// A compositor command with an empty environment apart from the sandbox's directories, logging
-/// to `logs/<log>`. It dies with the thread that started it.
+/// It dies with the thread that started it, not just with this process.
 fn compositor_command(program: &Path, dir: &Path, log: &str) -> Result<Command, String> {
     let log = fs::File::create(dir.join("logs").join(log)).map_err(|e| e.to_string())?;
     let mut command = Command::new(program);
@@ -318,7 +272,6 @@ fn compositor_command(program: &Path, dir: &Path, log: &str) -> Result<Command, 
     Ok(command)
 }
 
-/// Waits for a socket named `<prefix>*` (not a `.lock`) in `dir`.
 fn wait_for_socket(dir: &Path, prefix: &str, child: &mut Child, root: &Path, log: &str) -> Result<PathBuf, String> {
     let deadline = Instant::now() + STARTUP;
     loop {
@@ -345,7 +298,6 @@ fn wait_for_socket(dir: &Path, prefix: &str, child: &mut Child, root: &Path, log
     }
 }
 
-/// Refuses a nested niri that loaded the NVIDIA driver or opened a GPU device.
 fn no_gpu(pid: u32) -> Result<(), String> {
     let maps = fs::read_to_string(format!("/proc/{pid}/maps")).unwrap_or_default();
     if maps.contains("libnvidia") {

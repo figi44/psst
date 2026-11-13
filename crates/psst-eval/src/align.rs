@@ -1,16 +1,10 @@
-//! Word alignment: Levenshtein distance over words, with the path that achieves it.
-
-/// How a hypothesis lines up with its reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Alignment {
-    /// Substitutions, deletions and insertions.
     pub errors: usize,
-    /// For each hypothesis word: the index of the equal reference word it's aligned to.
     pub matched: Vec<Option<usize>>,
 }
 
-/// Aligns `hypothesis` against `reference` with the fewest errors. Ties prefer a match or
-/// substitution, then a deletion, so the result is deterministic.
+/// Ties prefer a match or substitution, then a deletion, so the result is deterministic.
 pub fn align<T: PartialEq>(reference: &[T], hypothesis: &[T]) -> Alignment {
     let (n, m) = (reference.len(), hypothesis.len());
     let width = m + 1;

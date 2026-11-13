@@ -22,9 +22,6 @@ rustPlatform.buildRustPackage {
     "psst"
   ];
 
-  # As in the dev shell: PipeWire and ALSA for audio, libopus for audio on the wire, D-Bus for
-  # asking RTKit for real-time priority, Wayland and xkbcommon for the overlay and the virtual
-  # keyboard.
   nativeBuildInputs = [
     pkg-config
     rustPlatform.bindgenHook
@@ -38,8 +35,7 @@ rustPlatform.buildRustPackage {
     libxkbcommon
   ];
 
-  # The workspace's tests run in CI and the dev shell (cargo nextest); here the binary only has
-  # to start.
+  # The workspace's tests run in CI (cargo nextest); here the binary only has to start.
   doCheck = false;
   doInstallCheck = true;
   nativeInstallCheckInputs = [ versionCheckHook ];

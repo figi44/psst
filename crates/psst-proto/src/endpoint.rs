@@ -4,10 +4,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::DEFAULT_PORT;
 
-/// Where a client reaches the server.
-///
-/// Written as an absolute path for the Unix socket (`/run/psst/client.sock`), or as
-/// `http://host[:port]` for TCP (port 7341 when omitted).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub enum Endpoint {
@@ -33,7 +29,6 @@ impl FromStr for Endpoint {
             return Err(err());
         }
         let (host, port) = if let Some(rest) = authority.strip_prefix('[') {
-            // IPv6 literal: [addr] or [addr]:port
             let (host, after) = rest.split_once(']').ok_or_else(err)?;
             match after {
                 "" => (host, None),
@@ -80,7 +75,6 @@ impl From<Endpoint> for String {
     }
 }
 
-/// A device token, sent as `Authorization: Bearer <token>`. Its `Debug` output is redacted.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Token(String);

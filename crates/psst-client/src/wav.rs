@@ -1,6 +1,3 @@
-//! Reading the recordings the daemon writes: 16 kHz mono 16-bit WAV, whose length comes from
-//! the file size rather than from a header that may never have been finalised.
-
 use std::{
     fs::File,
     io::{self, Read, Seek, SeekFrom},
@@ -9,12 +6,9 @@ use std::{
 
 use psst_proto::SAMPLE_RATE;
 
-/// Where a WAV file's samples are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WavInfo {
-    /// Byte offset of the first sample.
     pub data_offset: u64,
-    /// Samples in the file, from its size.
     pub samples: u64,
 }
 
@@ -26,7 +20,6 @@ pub enum WavError {
     Format(String),
 }
 
-/// Reads a WAV header and counts the samples after it from the file size.
 pub fn read_wav_info(path: &Path) -> Result<WavInfo, WavError> {
     let mut file = File::open(path)?;
     let len = file.metadata()?.len();
@@ -34,6 +27,8 @@ pub fn read_wav_info(path: &Path) -> Result<WavInfo, WavError> {
     Ok(info)
 }
 
+/// Counts the samples from the file size, not the header: the daemon's recordings may never have
+/// had their header finalised.
 pub(crate) fn parse_header(file: &mut (impl Read + Seek), len: u64) -> Result<WavInfo, WavError> {
     let format = |msg: &str| WavError::Format(msg.into());
     let mut riff = [0u8; 12];

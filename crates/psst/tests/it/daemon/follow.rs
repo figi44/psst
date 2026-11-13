@@ -1,7 +1,3 @@
-//! `psst status --follow`: the subscription the daemon serves on its command socket, and the
-//! CLI's follower ([`psst::follow::run`]), which reconnects and turns the status into waybar's
-//! lines.
-
 use std::{
     io::{BufRead, BufReader, Read, Write},
     net::Shutdown,
@@ -15,7 +11,6 @@ use serde_json::Value;
 
 use super::*;
 
-/// The lines a follower wrote, collected by a background thread.
 #[derive(Clone, Default)]
 struct Lines(Arc<Mutex<Vec<String>>>);
 
@@ -53,7 +48,6 @@ impl Lines {
     }
 }
 
-/// Subscribes on the command socket, as `psst status --follow` does.
 fn subscribe(socket: &Path) -> (UnixStream, Lines) {
     let mut stream = UnixStream::connect(socket).unwrap();
     stream.write_all(b"{\"cmd\":\"follow\"}\n").unwrap();
@@ -61,7 +55,6 @@ fn subscribe(socket: &Path) -> (UnixStream, Lines) {
     (stream, lines)
 }
 
-/// `psst status --follow` in a thread, writing to one end of a socket pair.
 struct Cli {
     lines: Lines,
     out: UnixStream,
@@ -80,15 +73,12 @@ impl Cli {
         Cli { lines: Lines::read_from(ours.try_clone().unwrap()), out: ours, done }
     }
 
-    /// Closes its output, as a bar that goes away does, and returns what it returned.
     fn close(self) -> std::io::Result<()> {
         self.out.shutdown(Shutdown::Both).unwrap();
         self.done.recv_timeout(WAIT).expect("it returns once its output is closed")
     }
 }
 
-/// The states a follower went through, with repeats collapsed; `starting` counts as recording
-/// and `inserting` as finishing, as the bar shows them.
 fn states(statuses: &[Status]) -> Vec<String> {
     let mut states: Vec<String> = statuses
         .iter()
@@ -253,7 +243,6 @@ async fn a_follower_that_stops_reading_holds_up_neither_the_daemon_nor_other_fol
     lines.wait("idle after the dictation", |l| states(&l.statuses()).len() >= 4).await;
     assert_eq!(states(&lines.statuses()), ["idle", "recording", "finishing", "idle"]);
 
-    // Once it reads, it catches up with the latest status.
     let latest = lines.statuses().last().unwrap().clone();
     let caught_up = tokio::task::spawn_blocking(move || {
         stuck.set_read_timeout(Some(WAIT)).unwrap();

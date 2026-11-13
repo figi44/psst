@@ -1,6 +1,3 @@
-//! The built-in post-processing rules, applied in the profile's order. Rules leave
-//! protected tokens alone.
-
 use psst_config::Rule;
 use psst_proto::{Edit, Stage};
 
@@ -29,8 +26,7 @@ fn edit(rule: &str, raw_span: std::ops::Range<usize>, before: &str, after: &str)
     }
 }
 
-/// `fillers`: removes a token that is a filler word, ignoring case, together with the one comma
-/// attached to it ("I, um, think" → "I,  think"). The spacing stays for `whitespace` to collapse.
+/// Leaves the spacing for `whitespace` to collapse ("I, um, think" → "I,  think").
 fn remove_fillers(draft: &mut Draft, fillers: &[String]) {
     let fillers: Vec<String> = fillers.iter().map(|f| f.trim().to_lowercase()).filter(|f| !f.is_empty()).collect();
     for token in draft.tokens.iter_mut().filter(|t| !t.removed && !t.protected) {
@@ -48,9 +44,7 @@ fn remove_fillers(draft: &mut Draft, fillers: &[String]) {
     }
 }
 
-/// `whitespace`: collapses each run of spaces between two tokens to one, and removes spaces before
-/// the first token and after the last, including one an earlier rule appended. Spacing with any
-/// other whitespace in it, and punctuation, are left alone.
+/// Spacing with any whitespace other than spaces in it is left alone.
 fn collapse_spaces(draft: &mut Draft) {
     let mut edits = Vec::new();
     let mut gap: Vec<usize> = Vec::new();
@@ -68,8 +62,6 @@ fn collapse_spaces(draft: &mut Draft) {
     draft.edits.extend(edits);
 }
 
-/// Shortens the spacing of the tokens in `gap`, and at the end the appended tail, to `keep` spaces,
-/// kept at the start of the last token's spacing.
 fn collapse_gap(draft: &mut Draft, gap: &[usize], keep: usize, at_end: bool, edits: &mut Vec<Edit>) {
     let only_spaces = |s: &str| s.bytes().all(|b| b == b' ');
     let spaced: Vec<usize> = gap.iter().copied().filter(|&i| !draft.tokens[i].space.is_empty()).collect();
@@ -98,8 +90,6 @@ fn collapse_gap(draft: &mut Draft, gap: &[usize], keep: usize, at_end: bool, edi
     }
 }
 
-/// `capitalize`: uppercases the first letter of the text, unless the first token with a letter or
-/// digit in it is protected or starts with a digit.
 fn capitalize(draft: &mut Draft) {
     let Some(token) = draft.tokens.iter_mut().find(|t| !t.removed && t.text.chars().any(char::is_alphanumeric)) else {
         return;
@@ -116,7 +106,6 @@ fn capitalize(draft: &mut Draft) {
     token.text = after;
 }
 
-/// `trailing_space`: appends a space to non-empty text.
 fn trailing_space(draft: &mut Draft) {
     if draft.has_text() {
         let end = draft.raw.len();

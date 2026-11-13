@@ -1,5 +1,3 @@
-//! The metric definitions.
-
 use psst_eval::{
     metrics::{Counts, Scoring, score},
     text::{count_term, normalise},

@@ -1,5 +1,4 @@
-/* The psst web UI: one centred column under a slim top bar. Dark only: true black, white text,
-   high-contrast secondary colours. No inline styles anywhere, so the CSP can forbid them. */
+/* No inline styles anywhere: the CSP forbids them. */
 
 :root {
   --bg: #000000;
@@ -44,7 +43,6 @@ p { margin: 0; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; user-select: none; }
 .icon { width: 18px; height: 18px; flex: none; }
 
-/* Top bar */
 .top {
   position: sticky; top: 0; z-index: 20; background: var(--bg); border-bottom: 1px solid var(--line);
   padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
@@ -75,7 +73,6 @@ p { margin: 0; }
   .tabs a { flex: 1; justify-content: center; min-height: 48px; }
 }
 
-/* The model, only when it isn't ready */
 .banner { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); border-bottom: 1px solid var(--line); background: var(--surface); }
 .banner.warn { background: var(--warn-soft); }
 .banner.bad { background: var(--danger-soft); }
@@ -87,7 +84,6 @@ progress.meter::-webkit-progress-bar { background: var(--line); border-radius: 3
 progress.meter::-webkit-progress-value { background: var(--accent); border-radius: 3px; }
 progress.meter::-moz-progress-bar { background: var(--accent); border-radius: 3px; }
 
-/* Page */
 main { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 32px 96px; }
 .page { max-width: var(--col); margin: 0 auto; display: grid; gap: 24px; }
 .head { display: grid; gap: 4px; }
@@ -102,7 +98,6 @@ main { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: m
 .notice.warning { background: var(--warn-soft); }
 .notice ul { margin: 0; padding-left: 1.2rem; }
 
-/* Buttons and fields */
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 0 16px;
   border-radius: 8px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--fg);
@@ -153,7 +148,6 @@ details.adv[open] > summary .icon { rotate: 90deg; }
 details.adv > summary:hover { color: var(--fg); }
 .adv-body { display: grid; gap: 20px; padding: 6px 0 4px; }
 
-/* History */
 .day { display: grid; }
 .day-h { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; padding-bottom: 8px; }
 .entry {
@@ -193,7 +187,6 @@ details.adv > summary:hover { color: var(--fg); }
   main { padding-block: 20px 96px; } .page { gap: 18px; }
 }
 
-/* The fix form, inside each dictation */
 .fixbox > summary { list-style: none; position: absolute; top: 12px; right: 14px; display: inline-flex; padding: 6px; border-radius: 6px; color: var(--muted); cursor: pointer; }
 .fixbox > summary::-webkit-details-marker { display: none; }
 .fixbox > summary:hover { color: var(--accent); background: var(--accent-soft); }
@@ -226,7 +219,6 @@ details.adv > summary:hover { color: var(--fg); }
 .done form { margin: 0; }
 .more { justify-self: start; }
 
-/* Dictionary */
 .words { list-style: none; margin: 0; padding: 0; columns: 3 13rem; column-gap: 24px; }
 .words li { break-inside: avoid; }
 .word {
@@ -241,7 +233,6 @@ details.adv > summary:hover { color: var(--fg); }
 .nomatch { color: var(--muted); display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 details.hidden-words { border-top: 0; }
 
-/* Profiles */
 .plist { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
 .prow { display: grid; grid-template-columns: 8rem minmax(0, 1fr) auto; gap: 4px 16px; align-items: center; padding: 16px 0; border-bottom: 1px solid var(--line); text-decoration: none; color: var(--fg); }
 .prow:hover { background: var(--surface); color: var(--fg); }
@@ -253,7 +244,6 @@ details.hidden-words { border-top: 0; }
 .tokens .meter { flex: 1; max-width: 10rem; }
 .tokens.over { color: var(--warn); }
 
-/* The side panel for one word or profile: a page of its own without JavaScript */
 .scrim { position: fixed; inset: 0; z-index: 40; background: var(--scrim); }
 .panel {
   position: fixed; z-index: 41; top: 0; right: 0; bottom: 0; width: min(30rem, 100%); background: var(--surface);
@@ -285,7 +275,6 @@ details.hidden-words { border-top: 0; }
 .source { font-size: 14px; color: var(--muted); display: grid; gap: 8px; }
 .source pre { margin: 0; font-family: var(--mono); font-size: 13px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); }
 
-/* Signed-out pages */
 .solo { min-height: 70vh; display: grid; place-items: center; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
 .solo-in { width: min(28rem, 100%); display: grid; gap: 14px; }
 .solo h1 { font-size: 24px; font-weight: 600; }

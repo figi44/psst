@@ -1,7 +1,3 @@
-//! The HTTP API (`/api/*`) at the same endpoint as `/v1/client`: the Unix socket on the
-//! server's machine, TCP with the device token elsewhere. One request per connection, which is all
-//! the CLI needs. Like the rest of this crate, it reports problems and never retries.
-
 use std::{io, time::Duration};
 
 use psst_proto::{Endpoint, Token, api::ApiError};
@@ -11,14 +7,12 @@ use tokio::{
     net::{TcpStream, UnixStream},
 };
 
-/// How long one request may take, from connecting to the end of the answer.
 pub const API_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiCallError {
     #[error("cannot connect to {endpoint}: {source}")]
     Connect { endpoint: Endpoint, source: io::Error },
-    /// The server answered with an error status and an [`ApiError`].
     #[error("{} (HTTP {status})", .error.message)]
     Api { status: u16, error: ApiError },
     #[error("no answer from {0} within {API_TIMEOUT:?}")]
@@ -46,7 +40,6 @@ impl Method {
     }
 }
 
-/// Calls `/api/*` routes at one endpoint.
 #[derive(Debug, Clone)]
 pub struct ApiClient {
     endpoint: Endpoint,
@@ -54,7 +47,6 @@ pub struct ApiClient {
 }
 
 impl ApiClient {
-    /// `token` is the device token, required over TCP and not sent over the socket.
     pub fn new(endpoint: Endpoint, token: Option<Token>) -> Self {
         Self { endpoint, token }
     }
@@ -63,7 +55,6 @@ impl ApiClient {
         &self.endpoint
     }
 
-    /// Sends `body` as JSON (none when `None`) and parses the JSON answer.
     pub async fn call<T: DeserializeOwned>(
         &self,
         method: Method,
@@ -76,7 +67,6 @@ impl ApiClient {
             .map_err(|err| ApiCallError::Protocol { endpoint: self.endpoint.clone(), message: err.to_string() })
     }
 
-    /// Like [`ApiClient::call`], for routes that answer with no body (`204 No Content`).
     pub async fn call_empty(
         &self,
         method: Method,
@@ -87,7 +77,6 @@ impl ApiClient {
         self.request(method, path, body).await.map(drop)
     }
 
-    /// One exchange; the body of a successful answer.
     async fn request(&self, method: Method, path: &str, body: Option<Vec<u8>>) -> Result<Vec<u8>, ApiCallError> {
         tokio::time::timeout(API_TIMEOUT, self.exchange(method, path, body))
             .await
@@ -129,7 +118,7 @@ impl ApiClient {
         }
     }
 
-    /// Writes the request and reads the whole answer; the server closes after it.
+    /// One request per connection, which is all the CLI needs.
     async fn send(
         &self,
         mut stream: impl AsyncRead + AsyncWrite + Unpin,
@@ -150,7 +139,6 @@ impl ApiClient {
     }
 }
 
-/// The status and body of a complete HTTP/1.1 response.
 fn parse_response(raw: &[u8]) -> Result<(u16, Vec<u8>), String> {
     let mut headers = [httparse::EMPTY_HEADER; 32];
     let mut response = httparse::Response::new(&mut headers);

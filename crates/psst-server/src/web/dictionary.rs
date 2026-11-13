@@ -1,8 +1,3 @@
-//! The dictionary page (plan 6.8): every word as a plain list, with search, and a side panel for
-//! one word (`?word=`) or a new one (`?new`): its spelling and heard spellings, and under Advanced
-//! its language, matching, pinning, notes, never rules and where it comes from. Every change goes
-//! through the same functions as `/api/dictionary`.
-
 use std::{collections::BTreeSet, sync::Arc};
 
 use axum::{
@@ -35,25 +30,20 @@ type AppRef = Arc<AppState>;
 pub struct PageQuery {
     #[serde(default)]
     q: String,
-    /// The word whose panel is open.
     word: Option<String>,
-    /// Any value opens the panel for a new word, with `text` filled in.
     new: Option<String>,
     #[serde(default)]
     text: String,
 }
 
-/// A word's form: the fields as entered, plus the search to come back to.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TermForm {
     #[serde(default)]
     text: String,
-    /// Spellings, comma-separated.
     #[serde(default)]
     sounds_like: String,
     #[serde(default)]
     languages: String,
-    /// A checkbox: present when ticked.
     #[serde(default, with = "checkbox")]
     fuzzy: bool,
     #[serde(default, with = "checkbox")]
@@ -64,7 +54,7 @@ pub struct TermForm {
     q: String,
 }
 
-/// A checkbox is `on` when ticked and absent otherwise.
+/// HTML forms send a ticked checkbox as `on` and leave an unticked one out.
 mod checkbox {
     use serde::{Deserialize, Deserializer, Serializer};
 
@@ -119,7 +109,6 @@ pub struct NeverForm {
     q: String,
 }
 
-/// A one-button form: the search, and the word whose panel to come back to.
 #[derive(Debug, Default, Deserialize)]
 pub struct ButtonForm {
     #[serde(default)]
@@ -128,13 +117,11 @@ pub struct ButtonForm {
     word: String,
 }
 
-/// One word as the list shows it.
 #[derive(Debug, Serialize)]
 struct Row {
     id: String,
     text: String,
     hidden: bool,
-    /// Left out: it clashes with dictionary.toml.
     problem: bool,
 }
 
@@ -147,7 +134,6 @@ fn row(term: &DictionaryTerm) -> Row {
     }
 }
 
-/// Whether a search matches a term: by identity, spelling or notes, ignoring case.
 fn matches(term: &DictionaryTerm, q: &str) -> bool {
     let q = q.trim().to_lowercase();
     if q.is_empty() {
@@ -160,7 +146,6 @@ fn matches(term: &DictionaryTerm, q: &str) -> bool {
             .any(|s| s.to_lowercase().contains(&q))
 }
 
-/// `term` as dictionary.toml lines, for showing the file's version.
 fn toml_lines(term: &Term) -> String {
     let quote = |s: &str| format!("{s:?}");
     let mut lines = vec![format!("text = {}", quote(&term.text))];
@@ -185,12 +170,11 @@ fn toml_lines(term: &Term) -> String {
     lines.join("\n")
 }
 
-/// What a page shows besides the dictionary: a refusal, and the values entered.
 #[derive(Debug, Default)]
 struct Outcome {
     status: Option<StatusCode>,
     error: Option<String>,
-    /// The form the error is about: a word's identity, `new`, or `never`; none for the top.
+    /// A word's identity, `new` or `never`; `None` puts the error at the top of the page.
     error_for: Option<String>,
     form: Option<TermForm>,
     never: Option<NeverForm>,
@@ -251,7 +235,6 @@ fn page(state: &AppState, viewer: &Viewer, query: &PageQuery, outcome: Outcome) 
     render(outcome.status.unwrap_or(StatusCode::OK), "dictionary.html", ctx)
 }
 
-/// The side panel for one word.
 fn panel(state: &AppState, view: &psst_proto::api::DictionaryView, t: &DictionaryTerm, outcome: &Outcome) -> Value {
     let term = t.term.clone().unwrap_or_else(|| Term {
         text: t.id.clone(),
@@ -316,7 +299,6 @@ fn panel(state: &AppState, view: &psst_proto::api::DictionaryView, t: &Dictionar
     }
 }
 
-/// Back to the list (or a word's panel), with the search kept.
 fn back(q: &str, word: &str) -> Response {
     let mut params = Vec::new();
     if !q.trim().is_empty() {
@@ -335,7 +317,6 @@ fn refused(err: ApiErr) -> (StatusCode, String) {
     (status, err.message().to_owned())
 }
 
-/// `GET /dictionary?q=&word=&new=`.
 pub async fn show(
     viewer: Viewer,
     State(state): State<AppRef>,
@@ -345,13 +326,11 @@ pub async fn show(
     page(&state, &viewer, &query, Outcome::default())
 }
 
-/// A form that didn't parse: the page again, with the reason at the top.
 fn bad_form(state: &AppState, viewer: &Viewer, err: FormRejection) -> Response {
     let outcome = Outcome { status: Some(StatusCode::BAD_REQUEST), error: Some(err.body_text()), ..Outcome::default() };
     page(state, viewer, &PageQuery::default(), outcome)
 }
 
-/// `POST /dictionary/terms`: adds a word.
 pub async fn add(viewer: Viewer, State(state): State<AppRef>, form: Result<Form<TermForm>, FormRejection>) -> Response {
     let Form(form) = match form {
         Ok(form) => form,
@@ -374,8 +353,6 @@ pub async fn add(viewer: Viewer, State(state): State<AppRef>, form: Result<Form<
     }
 }
 
-/// `POST /dictionary/terms/{id}`: saves a word. A new spelling with another identity renames it:
-/// the new word is added and the old one hidden (or removed, if only the database had it).
 pub async fn save(
     viewer: Viewer,
     State(state): State<AppRef>,
@@ -410,14 +387,12 @@ pub async fn save(
     }
 }
 
-/// Renames a word: the old one goes (hidden, or removed if only the database had it) in the same
-/// change that adds the new one, so its heard spellings are free for it.
+/// One change, so the old word's heard spellings are free for the new one.
 fn rename(state: &AppState, id: &str, term: Term) -> Result<(), ApiErr> {
     let changes = vec![Change::Remove(id.to_owned()), Change::Add(term.into())];
     dictionary::change_terms(&state.live, &state.db, changes).map(drop)
 }
 
-/// A one-button change to a word or a never rule; on refusal, the page with the reason.
 fn button(state: &AppState, viewer: &Viewer, form: &ButtonForm, result: Result<(), ApiErr>) -> Response {
     match result {
         Ok(()) => back(&form.q, &form.word),
@@ -429,7 +404,6 @@ fn button(state: &AppState, viewer: &Viewer, form: &ButtonForm, result: Result<(
     }
 }
 
-/// `POST /dictionary/terms/{id}/hide`: hides a file word, or removes an added one.
 pub async fn hide(
     viewer: Viewer,
     State(state): State<AppRef>,
@@ -441,7 +415,6 @@ pub async fn hide(
     button(&state, &viewer, &ButtonForm { word: String::new(), ..form }, result)
 }
 
-/// `POST /dictionary/terms/{id}/reset`: brings back the file's version, if any.
 pub async fn reset(
     viewer: Viewer,
     State(state): State<AppRef>,
@@ -453,7 +426,6 @@ pub async fn reset(
     button(&state, &viewer, &form, result)
 }
 
-/// `POST /dictionary/never`: adds a never rule, from a word's panel.
 pub async fn add_never(
     viewer: Viewer,
     State(state): State<AppRef>,
@@ -480,7 +452,6 @@ pub async fn add_never(
     }
 }
 
-/// `POST /dictionary/never/{id}/remove`.
 pub async fn remove_never(
     viewer: Viewer,
     State(state): State<AppRef>,
@@ -491,12 +462,10 @@ pub async fn remove_never(
     button(&state, &viewer, &form, dictionary::remove_never(&state.live, &state.db, id))
 }
 
-/// `GET /dictionary.toml`: the export, as a download.
 pub async fn export(_: Viewer, State(state): State<AppRef>) -> Response {
     download("dictionary.toml", state.live.layered().export())
 }
 
-/// A TOML file to save.
 pub(super) fn download(name: &str, toml: String) -> Response {
     (
         [

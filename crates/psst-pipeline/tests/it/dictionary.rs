@@ -1,5 +1,3 @@
-//! The dictionary stage with exact spellings, through `run`.
-
 use crate::support;
 
 use support::*;
@@ -51,7 +49,6 @@ fn a_common_word_is_neither_changed_nor_protected() {
     assert_eq!(out.text, "Go home ");
     assert_eq!(out.edits, [rule("capitalize", 0..2, "go", "Go"), rule("trailing_space", 7..7, "", " ")]);
     assert_eq!(text(&said("use go modules"), go), "Use go modules ");
-    // "water" is a common word, "gitea" isn't.
     assert_eq!(text(&said("gitea water"), "[[terms]]\ntext = \"Gitea\"\n[[terms]]\ntext = \"Water\""), "Gitea water ");
 }
 

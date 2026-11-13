@@ -1,6 +1,3 @@
-//! One engine child process: framed messages over its stdin and stdout, stderr forwarded to the
-//! log, and its exit reported once.
-
 use std::{io, process::Stdio, sync::Arc, time::Duration};
 
 use nix::{
@@ -18,19 +15,16 @@ use tokio::{
 
 use super::EngineConfig;
 
-/// What the process tells the supervisor, tagged with its generation.
 #[derive(Debug)]
 pub enum ProcEvent {
     Message(Box<FromEngine>),
-    /// A frame over a limit, or a stream that ended inside a frame.
     Corrupt(String),
-    /// The process is gone; sent once, after its last message.
+    /// Sent once, after the process's last message.
     Exited(String),
 }
 
 type Outgoing = (Vec<u8>, Arc<Vec<u8>>);
 
-/// A running engine. Dropping it kills the process.
 #[derive(Debug)]
 pub struct EngineProcess {
     pub generation: u64,
@@ -143,14 +137,12 @@ impl EngineProcess {
         let _ = self.writer.send((encode(msg), payload));
     }
 
-    /// Asks the process to end (`SIGTERM`).
     pub fn terminate(&self) {
         if let Some(pid) = self.pid {
             let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
         }
     }
 
-    /// Ends the process now (`SIGKILL`).
     pub fn kill(&mut self) {
         if let Some(kill) = self.kill.take() {
             let _ = kill.send(());

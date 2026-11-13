@@ -1,16 +1,3 @@
-//! Audio capture.
-//!
-//! An [`AudioSource`] captures mono `f32` at its own rate into a lock-free ring buffer (the
-//! [`Feed`]). The recorder thread ([`recorder::start`]) drains it, resamples to 16 kHz with
-//! rubato, cuts 20 ms frames, writes them to the recording's WAV from the very first frame, and
-//! hands each one to the daemon with its level.
-//!
-//! - **Glitches don't stop a recording.** A ring-buffer overflow or a capture discontinuity is
-//!   filled with silence and the recording is flagged `gapped`.
-//! - **Only a failed write or a lost device stops it.**
-//! - **At stop** the recorder waits for one more capture callback, drains the ring and flushes
-//!   the resampler, so the last syllable isn't cut off.
-
 mod cpal_source;
 mod file_source;
 pub mod gaps;
@@ -28,28 +15,21 @@ pub use cpal_source::CpalSource;
 pub use file_source::FileSource;
 use psst_config::AudioInput;
 
-/// Ring-buffer capacity in samples: about 2.7 s at 48 kHz.
+/// About 2.7 s at 48 kHz.
 pub const RING_SAMPLES: usize = 1 << 17;
 
-/// Captures audio for one recording.
 pub trait AudioSource: Send + Sync + 'static {
-    /// Starts capturing into `feed`. Called on the recorder thread; capture stops when the
-    /// returned [`OpenCapture`] is dropped.
+    /// Called on the recorder thread; capture stops when the [`OpenCapture`] is dropped.
     fn open(&self, feed: Feed) -> Result<OpenCapture, String>;
 }
 
-/// A running capture.
 pub struct OpenCapture {
-    /// Rate of the mono samples pushed into the feed.
     pub sample_rate: u32,
-    /// Whether the recorder should wait for one more callback at stop (real devices) or not
-    /// (the file source, which has nothing buffered).
+    /// Wait for one more capture callback at stop; the file source buffers nothing.
     pub drain_on_stop: bool,
-    /// Keeps the capture alive.
     pub guard: Box<dyn Any>,
 }
 
-/// The source for `audio.input`.
 pub fn source_for(input: &AudioInput) -> Arc<dyn AudioSource> {
     match input {
         AudioInput::Default => Arc::new(CpalSource { device: None }),
@@ -58,23 +38,18 @@ pub fn source_for(input: &AudioInput) -> Arc<dyn AudioSource> {
     }
 }
 
-/// What the capture callback and the recorder share besides the ring buffer.
 #[derive(Debug, Default)]
 pub struct FeedShared {
-    /// Silence owed for samples that didn't fit in the ring (at the source's rate). The capture
-    /// side pushes it, in capture order, before any newer samples; the recorder appends what's
-    /// still owed once capture has stopped.
+    /// At the source's rate. Pushed before any newer samples; the recorder appends what's still
+    /// owed once capture has stopped.
     owed_silence: AtomicU64,
-    /// A glitch whose length is unknown (an xrun).
     glitched: AtomicBool,
-    /// Capture callbacks so far.
     callbacks: AtomicU64,
-    /// Why capture failed for good (a lost device).
     failed: Mutex<Option<String>>,
 }
 
 impl FeedShared {
-    /// Silence still owed; call only once capture has stopped.
+    /// Call only once capture has stopped.
     pub fn take_owed_silence(&self) -> u64 {
         self.owed_silence.swap(0, Ordering::AcqRel)
     }
@@ -91,19 +66,17 @@ impl FeedShared {
         self.failed.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// A glitch whose length is unknown.
     pub fn glitch(&self) {
         self.glitched.store(true, Ordering::Release);
     }
 
-    /// Capture can't continue (for example the device is gone). The first reason is kept.
     pub fn fail(&self, reason: impl FnOnce() -> String) {
         let mut failed = self.failed.lock().unwrap_or_else(|e| e.into_inner());
         failed.get_or_insert_with(reason);
     }
 }
 
-/// The capture side of the ring buffer. Never blocks.
+/// Used from the capture callback, so it must never block.
 pub struct Feed {
     producer: rtrb::Producer<f32>,
     shared: Arc<FeedShared>,
@@ -114,8 +87,7 @@ impl Feed {
         Feed { producer, shared }
     }
 
-    /// Pushes captured samples. What doesn't fit is replaced by silence in its place: the
-    /// recording keeps its length and order.
+    /// What doesn't fit is replaced by silence, so the recording keeps its length and order.
     pub fn push(&mut self, samples: &[f32]) {
         if !self.pay_silence() {
             self.owe(samples.len());
@@ -127,7 +99,6 @@ impl Feed {
         }
     }
 
-    /// Pushes `n` samples of silence for a discontinuity of known length.
     pub fn push_silence(&mut self, n: usize) {
         self.owe(n);
         self.pay_silence();
@@ -138,7 +109,6 @@ impl Feed {
         self.shared.glitched.store(true, Ordering::Release);
     }
 
-    /// Pushes the silence owed so far, as far as it fits; `true` once nothing is owed.
     fn pay_silence(&mut self) -> bool {
         const ZEROS: [f32; 256] = [0.0; 256];
         let mut owed = self.shared.owed_silence.load(Ordering::Acquire);
@@ -154,17 +124,14 @@ impl Feed {
         true
     }
 
-    /// A glitch of unknown length.
     pub fn glitch(&self) {
         self.shared.glitch();
     }
 
-    /// Counts a capture callback, for draining at stop.
     pub fn tick(&self) {
         self.shared.callbacks.fetch_add(1, Ordering::AcqRel);
     }
 
-    /// Capture can't continue (for example the device is gone).
     pub fn fail(&self, reason: String) {
         self.shared.fail(|| reason);
     }
@@ -174,7 +141,6 @@ impl Feed {
     }
 }
 
-/// The level of a frame for the meter: RMS in dBFS mapped from −60…0 dB to 0…1.
 pub fn level(frame: &[i16]) -> f32 {
     if frame.is_empty() {
         return 0.0;
@@ -197,7 +163,7 @@ mod tests {
         let (producer, mut ring) = rtrb::RingBuffer::new(4);
         let shared = Arc::new(FeedShared::default());
         let mut feed = Feed::new(producer, shared.clone());
-        feed.push(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]); // 5 and 6 don't fit
+        feed.push(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
         let mut out = vec![0.0; 4];
         let _ = ring.pop_partial_slice(&mut out);
         assert_eq!(out, [1.0, 2.0, 3.0, 4.0]);

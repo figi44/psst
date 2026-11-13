@@ -1,5 +1,3 @@
-//! The dictionary stage: exact spellings, then fuzzy matches.
-
 use std::ops::Range;
 
 use psst_dict::{Dictionary, FuzzyToken, Outcome, Term};
@@ -12,8 +10,6 @@ pub(crate) fn apply(draft: &mut Draft, dict: &Dictionary, language: &str) {
     fuzzy(draft, dict, language);
 }
 
-/// Step 2: replaces only the matched characters, so "hyper land." becomes "Hyprland.", and
-/// protects every token a match accepts. A match spanning several tokens merges them into one.
 fn exact(draft: &mut Draft, dict: &Dictionary, language: &str) {
     let matches = dict.exact_matches(&draft.raw, language, |range| {
         draft.tokens[draft.overlapping(&range)].iter().all(|t| !t.removed)
@@ -32,8 +28,6 @@ fn exact(draft: &mut Draft, dict: &Dictionary, language: &str) {
     draft.edits.extend(edits);
 }
 
-/// Steps 3–7: fuzzy matches over the tokens that are neither removed nor protected, with the
-/// tokens' `prob` for the confidence gate. Every match is protected.
 fn fuzzy(draft: &mut Draft, dict: &Dictionary, language: &str) {
     let tokens: Vec<FuzzyToken> = draft
         .tokens
@@ -41,8 +35,7 @@ fn fuzzy(draft: &mut Draft, dict: &Dictionary, language: &str) {
         .map(|t| FuzzyToken {
             range: t.raw.clone(),
             prob: t.prob,
-            // Matches index the raw text, so a token must still read as it did there. Only
-            // matches change tokens, and they protect them, so this holds for every other one.
+            // Matches index the raw text, so a token must still read as it did there.
             available: !t.removed && !t.protected && draft.raw[t.raw.clone()] == t.text,
         })
         .collect();
@@ -59,8 +52,6 @@ fn fuzzy(draft: &mut Draft, dict: &Dictionary, language: &str) {
     draft.edits.extend(edits);
 }
 
-/// Replaces the raw characters `range` of `tokens` with the term's `text`, keeping the rest of
-/// the tokens' text around it, and merges the tokens into the first one, which is protected.
 fn replace(
     draft: &mut Draft,
     tokens: Range<usize>,

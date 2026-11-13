@@ -6,7 +6,6 @@ use psst_engine_proto::{
 };
 use serde_json::{Value, json};
 
-/// `msg` encodes to exactly `wire` and decodes back, and its `type_name` is a known type.
 #[track_caller]
 fn assert_wire<M: Message + PartialEq + Debug>(msg: M, wire: Value) {
     let header = encode(&msg);
@@ -113,7 +112,6 @@ fn result_timings_shape() {
         json!({"decode_ms": 180, "prompt_tokens": 19, "bias_terms_used": 3, "prompt_truncated": false,
                "chunks": 2, "chunks_reused": 1})
     );
-    // A `transcribe` result leaves the stream counts out.
     let result: EngineTimings =
         serde_json::from_value(json!({"decode_ms": 180, "prompt_tokens": 19, "bias_terms_used": 3,
                                       "prompt_truncated": false}))

@@ -1,9 +1,3 @@
-//! The overlay surface: a layer-shell surface on the overlay layer that never takes keyboard
-//! focus and lets clicks through (empty input region). Frames come from `psst-overlay`, are drawn
-//! only when the state changes (at most once per frame callback), and are scaled with
-//! `wp_fractional_scale_v1` + `wp_viewporter` (or the integer buffer scale without them).
-//! `OverlayShown` follows the first frame `wp_presentation` reports as presented.
-
 use std::os::fd::{AsFd, OwnedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -38,7 +32,6 @@ use wayland_protocols_wlr::layer_shell::v1::client::{
 use crate::thread::State;
 use crate::{Anchor, WaylandEvent};
 
-/// The globals the overlay uses, bound once per connection.
 pub(crate) struct Globals {
     compositor: Option<WlCompositor>,
     shm: Option<WlShm>,
@@ -61,7 +54,6 @@ impl Globals {
     }
 }
 
-/// What the overlay should show, and its surface while it's shown.
 pub(crate) struct Overlay {
     renderer: Renderer,
     levels: Levels,
@@ -72,7 +64,6 @@ pub(crate) struct Overlay {
 }
 
 impl Overlay {
-    /// Builds the font system: once, when the thread starts.
     pub(crate) fn new() -> Self {
         Self {
             renderer: Renderer::new(),
@@ -101,11 +92,9 @@ struct Surface {
     viewport: Option<WpViewport>,
     fractional: Option<WpFractionalScaleV1>,
     configured: bool,
-    /// Logical size from the last configure.
+    /// Logical, from the last configure.
     size: (u32, u32),
-    /// Preferred scale × 120, from `wp_fractional_scale_v1`.
     scale120: Option<u32>,
-    /// Integer scale from `wl_surface.preferred_buffer_scale`, used without fractional scaling.
     buffer_scale: i32,
     buffers: Option<Buffers>,
     frame_pending: bool,
@@ -215,7 +204,6 @@ impl State {
         });
     }
 
-    /// Draws the desired state if the surface is ready for a new frame.
     fn draw_overlay(&mut self) {
         let Some(wl) = &self.wl else { return };
         let Overlay { renderer, levels, desired: Some(state), surface: Some(s), .. } = &mut self.overlay else {
@@ -285,7 +273,6 @@ impl State {
     }
 }
 
-/// Shared-memory buffers of one size in one memfd, reused once the compositor releases them.
 struct Buffers {
     fd: OwnedFd,
     pool: WlShmPool,
@@ -330,7 +317,6 @@ impl Buffers {
         self.slots.push(Slot { buffer, offset, busy });
     }
 
-    /// A free buffer holding `pixmap`; grows the pool when every buffer is still in use.
     fn next(&mut self, qh: &QueueHandle<State>, pixmap: &Pixmap) -> std::io::Result<WlBuffer> {
         let index = match self.slots.iter().position(|s| !s.busy.load(Ordering::Acquire)) {
             Some(i) => i,
@@ -386,7 +372,7 @@ impl Dispatch<ZwlrLayerSurfaceV1, SurfaceId> for State {
                 st.draw_overlay();
             }
             zwlr_layer_surface_v1::Event::Closed => {
-                // The compositor took it away (its output went, say). The next state makes a new one.
+                // The compositor took it away (its output went, say); the next state makes a new one.
                 if st.surface_mut(*id).is_some()
                     && let Some(s) = st.overlay.surface.take()
                 {

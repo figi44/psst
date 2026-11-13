@@ -1,5 +1,3 @@
-//! The hallucination guard.
-
 use std::{
     collections::{HashMap, HashSet},
     sync::LazyLock,
@@ -9,12 +7,9 @@ use psst_proto::{Edit, EngineResult, Stage};
 
 use crate::draft::Draft;
 
-/// Above this `no_speech_prob`, a segment's speech evidence is weak.
 const NO_SPEECH_PROB: f32 = 0.6;
-/// Without `no_speech_prob`, a result with less speech than this has weak evidence.
 const WEAK_SPEECH_MS: u32 = 500;
 
-/// Phrases Whisper writes over silence and noise, per language, normalised.
 static PHRASES: LazyLock<HashMap<&str, HashSet<String>>> = LazyLock::new(|| {
     let parse =
         |file: &str| file.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#')).map(normalise).collect();
@@ -24,7 +19,6 @@ static PHRASES: LazyLock<HashMap<&str, HashSet<String>>> = LazyLock::new(|| {
     ])
 });
 
-/// Lowercase, with every run of characters other than letters, digits and apostrophes as one space.
 fn normalise(text: &str) -> String {
     let text = text.to_lowercase().replace(['\u{2019}', '\u{2018}'], "'");
     text.split(|c: char| !(c.is_alphanumeric() || c == '\'')).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ")
@@ -34,14 +28,6 @@ fn is_known_phrase(language: &str, text: &str) -> bool {
     PHRASES.get(language).is_some_and(|phrases| phrases.contains(&normalise(text)))
 }
 
-/// Removes, as `guard` edits:
-/// - every segment, when the engine's VAD found no speech (`speech_ms == 0`): rule `no_speech`;
-/// - a segment that is one of the language's known phrases, when its speech evidence is weak
-///   (`no_speech_prob` above 0.6, or no probability and `speech_ms` under 500): rule
-///   `hallucination`.
-///
-/// Nothing else is removed. A removed segment takes one joining space with it, so no stray spacing
-/// is left behind.
 pub(crate) fn apply(draft: &mut Draft, result: &EngineResult, language: &str) {
     let rules: Vec<Option<&str>> = draft
         .segments
@@ -64,8 +50,7 @@ pub(crate) fn apply(draft: &mut Draft, result: &EngineResult, language: &str) {
         let tokens = draft.segments[s].tokens.clone();
         let kept_before = rules[..s].iter().any(Option::is_none);
         let kept_after = rules[s + 1..].iter().any(Option::is_none);
-        // Take the space before the segment, or, for what would become the start of the text, the
-        // space after it.
+        // At what would become the start of the text, take the space after instead of before.
         let takes_space_after = !kept_before && kept_after;
         let first = &draft.tokens[tokens.start];
         let last = &draft.tokens[tokens.end - 1];

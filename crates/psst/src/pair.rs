@@ -1,6 +1,3 @@
-//! `psst pair <url> <code>` and the device token it stores in
-//! `$XDG_STATE_HOME/psst/credentials` (mode 0600).
-
 use std::{
     io::{self, Read, Write},
     net::TcpStream,
@@ -18,10 +15,8 @@ use crate::store::{read_json, write_json_atomic};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The credentials file: the token a server issued to this device.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Credentials {
-    /// The server that issued the token.
     pub server: Endpoint,
     pub device_id: DeviceId,
     pub token: Token,
@@ -41,7 +36,6 @@ impl Credentials {
     }
 }
 
-/// Redeems a pairing code at `server` and returns the credentials to store.
 pub fn redeem(server: &Endpoint, code: &str, name: &str) -> Result<Credentials, String> {
     let Endpoint::Tcp { host, port } = server else {
         return Err("pairing is for other machines: give the server as http://host[:port]".into());
@@ -60,7 +54,6 @@ pub fn redeem(server: &Endpoint, code: &str, name: &str) -> Result<Credentials, 
     Ok(Credentials { server: server.clone(), device_id: redeemed.device_id, token: redeemed.token })
 }
 
-/// This machine's name, for the device list.
 pub fn hostname() -> String {
     std::fs::read_to_string("/proc/sys/kernel/hostname")
         .ok()
@@ -69,7 +62,6 @@ pub fn hostname() -> String {
         .unwrap_or_else(|| "psst".into())
 }
 
-/// A minimal HTTP/1.1 POST with a JSON body: returns the status and the body.
 fn post(host: &str, port: u16, path: &str, body: &str) -> io::Result<(u16, Vec<u8>)> {
     let mut stream = TcpStream::connect((host, port))?;
     stream.set_read_timeout(Some(TIMEOUT))?;

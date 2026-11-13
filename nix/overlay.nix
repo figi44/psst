@@ -1,6 +1,6 @@
-# `overlays.default`. It never refers to its own attributes through `final`, so the modules can
-# apply it to the host's pkgs as a plain function (`overlay pkgs pkgs`) without changing
-# `nixpkgs.overlays` or instantiating nixpkgs again.
+# Never refer to this overlay's own attributes through `final`: the modules apply it to the host's
+# pkgs as a plain function (`overlay pkgs pkgs`), without changing `nixpkgs.overlays` or
+# instantiating nixpkgs again.
 final: prev:
 let
   engine = final.callPackage ./packages/psst-engine-faster-whisper.nix { };

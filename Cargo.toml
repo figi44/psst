@@ -10,17 +10,16 @@ license = "MIT"
 repository = "https://github.com/figi44/psst"
 publish = false
 
-# Debug info is most of a test binary's size (254 MB → 41 MB without it), and every
-# integration-test file is its own binary. Line tables keep file:line in backtraces for
-# our crates; dependencies get none. For a debugging session: CARGO_PROFILE_DEV_DEBUG=true.
+# Debug info is most of a test binary's size (254 MB → 41 MB without it); line tables keep
+# file:line in backtraces. For a debugging session: CARGO_PROFILE_DEV_DEBUG=true.
 [profile.dev]
 debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
 
-# The dictionary matcher's performance test
-# runs with every other test, so the matcher is optimised in the dev profile too.
+# The dictionary matcher's performance test runs with every other test, so the matcher is
+# optimised in the dev profile too.
 [profile.dev.package.psst-dict]
 opt-level = 3
 

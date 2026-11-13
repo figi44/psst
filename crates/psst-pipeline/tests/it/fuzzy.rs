@@ -1,7 +1,4 @@
-//! Fuzzy matching and never rules, through `run`.
-//!
-//! `said` has no word probabilities, which is the medium band; `said_p` and `said_words` give the
-//! engine's probabilities.
+//! `said` has no word probabilities, which is the medium band.
 
 use crate::support;
 
@@ -11,7 +8,6 @@ use support::*;
 const HYPRLAND: &str = "[[terms]]\ntext = \"Hyprland\"";
 const KUBERNETES: &str = "[[terms]]\ntext = \"Kubernetes\"";
 
-/// A dictionary of terms with only a `text`.
 fn terms(texts: &[&str]) -> String {
     texts.iter().map(|t| format!("[[terms]]\ntext = {t:?}\n")).collect()
 }
@@ -22,7 +18,6 @@ fn a_term_heard_as_several_words_is_joined_back() {
     assert_eq!(out.text, "I switched to Hyprland last week. ");
     assert_eq!(out.edits[0], fuzzy(14..24, "hyprland", "hyper land", "Hyprland", (1.0 / 9.0 * 0.3) as f32));
 
-    // n-grams of up to four words.
     assert_eq!(text(&said("using Power Shell Core"), &terms(&["PowerShell Core"])), "Using PowerShell Core ");
     assert_eq!(text(&said("use Web G P U for this"), &terms(&["WebGPU"])), "Use WebGPU for this ");
     assert_eq!(text(&said("Git Lab CI runner"), &terms(&["GitLab", "CI"])), "GitLab CI runner ");
@@ -30,7 +25,6 @@ fn a_term_heard_as_several_words_is_joined_back() {
         text(&said("we send it with Mail Chim, which lets you email"), &terms(&["Mailchimp"])),
         "We send it with Mailchimp, which lets you email "
     );
-    // The term's text is written whatever the spoken case.
     assert_eq!(text(&said("MAIL CHIM is great"), &terms(&["Mailchimp"])), "Mailchimp is great ");
     // A trailing digit is part of the key, so it's never written twice ("Llama-33").
     assert_eq!(text(&said("use Llama3 for this"), &terms(&["Llama-3"])), "Use Llama-3 for this ");
@@ -54,7 +48,6 @@ fn diacritics_fold_away_in_the_key() {
 fn leading_and_trailing_punctuation_stays() {
     assert_eq!(text(&said("(hyper-land),"), HYPRLAND), "(Hyprland), ");
     assert_eq!(text(&said("...hyper land..."), HYPRLAND), "...Hyprland... ");
-    // Punctuation outside ASCII.
     assert_eq!(text(&said("«hyperland»"), HYPRLAND), "«Hyprland» ");
 }
 
@@ -64,7 +57,6 @@ fn only_letters_digits_hyphens_and_apostrophes_may_sit_inside_a_span() {
     assert_eq!(text(&said("the Cuber-Netes team"), KUBERNETES), "The Kubernetes team ");
     assert_eq!(text(&said("the cuber. Netes team"), KUBERNETES), "The cuber. Netes team ");
     assert_eq!(text(&said_p("not hyper. Land", 0.3), HYPRLAND), "Not hyper. Land ");
-    // Punctuation between the words keeps them apart.
     assert_eq!(text(&said("(pipe wire), pipe (wire)."), &terms(&["PipeWire"])), "(PipeWire), pipe (wire). ");
 }
 
@@ -81,7 +73,6 @@ fn a_suffix_stays_on_when_the_bare_word_matches_better() {
     // A term that ends in "s" doesn't get a second one.
     assert_eq!(text(&said("on kubernetis"), KUBERNETES), "On Kubernetes ");
 
-    // Possessives.
     let dict = terms(&["PipeWire"]);
     assert_eq!(text(&said("pipe wire's graph, pipe wire’s graph."), &dict), "PipeWire's graph, PipeWire’s graph. ");
     let dict = terms(&["Domino’s", "Earl’s Court"]);
@@ -90,7 +81,6 @@ fn a_suffix_stays_on_when_the_bare_word_matches_better() {
 
 #[test]
 fn a_possessive_inside_a_span_keeps_its_words_apart() {
-    // "pipe’s wire" is not PipeWire.
     assert_eq!(text(&said("pipe’s wire"), &terms(&["PipeWire"])), "Pipe’s wire ");
     let dict = terms(&["Claude Code"]);
     assert_eq!(text(&said("check claude's code"), &dict), "Check claude's code ");
@@ -140,19 +130,14 @@ fn a_match_that_changes_nothing_is_protected_without_an_edit() {
 
 #[test]
 fn tokens_an_exact_spelling_accepted_take_no_part() {
-    // "wayland" is the exact spelling of Wayland, so "x wayland" never becomes XWayland.
     assert_eq!(text(&said("run x wayland apps"), &terms(&["XWayland", "Wayland"])), "Run x Wayland apps ");
 }
 
 #[test]
 fn a_term_that_is_a_common_word_never_recases_it_but_the_word_can_match_others() {
-    // The exact step leaves "home" alone for the term Home, a common word; so does fuzzy matching,
-    // even unsure.
     assert_eq!(text(&said_p("go home now", 0.3), &terms(&["Home"])), "Go home now ");
-    // Nor in another form of the word.
     assert_eq!(text(&said_p("go home's way", 0.3), &terms(&["Home"])), "Go home's way ");
     assert_eq!(text(&said_p("play games now", 0.3), &terms(&["Games"])), "Play games now ");
-    // "land" may still be part of a longer span, or become another term.
     let dict = terms(&["Hyprland", "Land"]);
     assert_eq!(text(&said("on hyper land"), &dict), "On Hyprland ");
     assert_eq!(text(&said_p("go home now", 0.3), &terms(&["Home", "Homer"])), "Go Homer now ");
@@ -196,7 +181,6 @@ fn sounding_alike_only_helps_a_spelling_that_is_already_close() {
 #[test]
 fn keys_need_four_characters_and_a_similar_length() {
     assert_eq!(text(&said_p("run k 3 s here", 0.3), &terms(&["k3s"])), "Run k 3 s here ");
-    // AT&T's key "att" is too short, so neither "ATT" nor "A T and T" matches it.
     let dict = terms(&["AT&T"]);
     assert_eq!(text(&said_p("call ATT about it", 0.3), &dict), "Call ATT about it ");
     assert_eq!(text(&said_p("call A T and T about it", 0.3), &dict), "Call A T and T about it ");
@@ -254,7 +238,6 @@ fn a_never_rule_vetoes_a_term_for_a_span_exactly_and_fuzzily() {
     let spoken = "the cuber netes, cubernetes and kubernetis";
     let out = run_with_never(&said(spoken), KUBERNETES, &[("Kubernetes", "cuber netes")]);
     assert_eq!(out.text, "The cuber netes, cubernetes and Kubernetes ");
-    // The span as written, suffix and all.
     let out = run_with_never(&said("cubernetes's pods"), KUBERNETES, &[("Kubernetes", "cubernetes's")]);
     assert_eq!(out.text, "Cubernetes's pods ");
 }

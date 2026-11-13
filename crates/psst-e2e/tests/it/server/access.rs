@@ -1,5 +1,3 @@
-//! Access: local users by peer credentials, paired devices by token, pairing codes.
-
 use psst_engine_proto::fake::Script;
 use psst_proto::{
     ErrorCode, SessionId,
@@ -14,9 +12,8 @@ fn tcp_server() -> TestServer {
     server(Script::default(), |cfg| cfg.tcp = true)
 }
 
-/// Pairs a device called `thinkpad` and returns its id and token.
 pub async fn pair(server: &TestServer) -> PairRedeemed {
-    let pairing = admin_json(server, &["pair", "--name", "thinkpad"]);
+    let pairing = admin_json(server, &["pair", "--name", "work-laptop"]);
     let code = pairing["code"].as_str().unwrap();
     assert_eq!(code.len(), 8);
     let body = json!({"code": code.to_lowercase(), "name": "laptop"});
@@ -45,7 +42,7 @@ async fn a_paired_device_dictates_and_calls_the_api_with_its_token() {
 
     let devices = admin_json(&server, &["devices", "list"]);
     let device = devices.as_array().unwrap().iter().find(|d| d["id"] == paired.device_id.as_str()).unwrap();
-    assert_eq!((device["name"].as_str(), device["kind"].as_str()), (Some("thinkpad"), Some("token")));
+    assert_eq!((device["name"].as_str(), device["kind"].as_str()), (Some("work-laptop"), Some("token")));
     assert!(device["last_seen"].is_string());
     let history = admin_json(&server, &["history"]);
     assert_eq!(history[0]["device"], paired.device_id.as_str());
@@ -69,7 +66,7 @@ async fn tcp_callers_without_a_valid_token_are_refused() {
 async fn a_pairing_code_is_void_after_five_wrong_attempts() {
     let server = tcp_server();
     let addr = server.tcp_addr().unwrap();
-    let code = admin_json(&server, &["pair", "--name", "thinkpad"])["code"].as_str().unwrap().to_owned();
+    let code = admin_json(&server, &["pair", "--name", "work-laptop"])["code"].as_str().unwrap().to_owned();
     for _ in 0..5 {
         let (status, body) =
             http(addr, "POST", "/api/pair/redeem", None, Some(json!({"code": "WRONG234", "name": "x"}))).await;
@@ -152,8 +149,6 @@ async fn the_servers_own_user_is_an_admin_on_the_socket_when_local_users_is_empt
     assert!(pairing["expires_at"].is_string());
 }
 
-/// A `psst-server serve` started the way `psst-server.socket` starts it: the listening socket on
-/// fd 3, with `LISTEN_PID` and `LISTEN_FDS`. Killed on drop.
 struct Activated {
     child: std::process::Child,
 }

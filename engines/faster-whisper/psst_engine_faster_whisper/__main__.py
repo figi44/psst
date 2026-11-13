@@ -1,5 +1,3 @@
-"""Entry point: ``psst-engine-faster-whisper`` (or ``python -m psst_engine_faster_whisper``)."""
-
 from __future__ import annotations
 
 import os

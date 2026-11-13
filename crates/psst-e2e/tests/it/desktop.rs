@@ -1,20 +1,3 @@
-//! A whole dictation on the desktop, end to end in the nested-niri sandbox:
-//! the real server (`psst-server-e2e` with the scripted fake engine), the real daemon
-//! (`psst-e2e-daemon`) with a WAV replayed in place of the microphone and its real Wayland
-//! thread, and `psst-paste-target` focused. A [`Watcher`] takes screenshots to see the overlay.
-//!
-//! `dictation_timings` prints the client's timings:
-//! `cargo nextest run -p psst-e2e -E 'test(=desktop::dictation_timings)' --no-capture`.
-//!
-//! `on_the_gpu` repeats the dictation with the real faster-whisper engine and large-v3-turbo on
-//! an eval clip. It's ignored by default (CI has no GPU) and refuses to run outside
-//! `scripts/gpu-session.sh`:
-//!
-//! ```sh
-//! scripts/gpu-session.sh nix develop .#gpu --command \
-//!     cargo nextest run -p psst-e2e -E 'test(/^desktop::/)' --run-ignored only --no-capture
-//! ```
-
 use crate::support;
 
 use std::{
@@ -39,15 +22,11 @@ use support::{App, Proxy, Seen, Watcher, in_order, now_us};
 const DAEMON: &str = env!("CARGO_BIN_EXE_psst-e2e-daemon");
 const SERVER: &str = env!("CARGO_BIN_EXE_psst-server-e2e");
 const WAIT: Duration = Duration::from_secs(15);
-/// What the app had copied before dictating.
 const ORIGINAL: &str = "copied before dictating ✓";
-/// The clipboard is restored this long after the paste.
 const RESTORE: Duration = Duration::from_secs(5);
-/// How often the [`Watcher`] looks at the screen.
 const LOOK: Duration = Duration::from_millis(30);
 
-/// The server with the fake engine, which transcribes the next dictations as `texts` in order.
-/// The pipeline appends a space (the `trailing_space` rule).
+/// The pipeline appends a space to each (the `trailing_space` rule).
 fn server(texts: &[&str]) -> TestServer {
     let transcribe = texts
         .iter()
@@ -62,7 +41,6 @@ fn server(texts: &[&str]) -> TestServer {
     spawn_server(Path::new(SERVER), TestServerConfig { script, ..Default::default() })
 }
 
-/// The sandbox's desktop: nested niri, the app focused and owning the clipboard, and the daemon.
 struct Desktop {
     sandbox: Arc<Sandbox>,
     app: App,
@@ -71,12 +49,10 @@ struct Desktop {
 }
 
 impl Desktop {
-    /// Every dictation replays `audio`; the daemon talks to `server`.
     fn start(server: Endpoint, audio: &[i16]) -> Desktop {
         Desktop::start_with(server, audio, |_| {})
     }
 
-    /// [`Desktop::start`] with `client.toml` changed by `tweak`.
     fn start_with(server: Endpoint, audio: &[i16], tweak: impl FnOnce(&mut ClientConfig)) -> Desktop {
         let sandbox = Arc::new(nested_niri());
         let app = App::start(&sandbox);
@@ -132,7 +108,6 @@ impl Desktop {
         self.wait_for("idle", |s| s["state"] == "idle")
     }
 
-    /// The paste the app received, within `timeout`.
     #[track_caller]
     fn pasted(&self, timeout: Duration) -> Value {
         let deadline = Instant::now() + timeout;
@@ -160,15 +135,13 @@ fn assert_pasted(got: &Value, text: &str) {
     assert_eq!(got["chord"], "ctrl+v", "niri reports psst-paste-target, which gets Ctrl+V");
 }
 
-/// The transcriptions the fake engine was asked for.
 fn transcriptions(server: &TestServer) -> Vec<LoggedRequest> {
     server.engine_requests().into_iter().filter(|r| r.header["type"] == "transcribe").collect()
 }
 
-/// The engine got the whole recording, not just the part after the network failed. The recording
-/// ran at least `recorded`, from the first `toggle`'s reply (the daemon starts the recorder before
-/// it answers) to sending the second, less the first frame's wait; timing the commands themselves
-/// too would count their start-up, which takes longer than the slack on a loaded machine.
+/// `recorded` runs from the first `toggle`'s reply (the daemon starts the recorder before it
+/// answers) to sending the second, so the slack covers only the first frame's wait: timing the
+/// commands too would count their start-up, which takes longer than that on a loaded machine.
 #[track_caller]
 fn assert_whole(request: &LoggedRequest, recorded: Duration) {
     let ms = request.samples as u128 / 16;
@@ -178,8 +151,6 @@ fn assert_whole(request: &LoggedRequest, recorded: Duration) {
 fn timings(status: &Value) -> Value {
     status["last_timings"].clone()
 }
-
-// ---------------------------------------------------------------------- dictating
 
 #[test]
 fn a_dictation_is_pasted_into_the_focused_app_and_the_clipboard_comes_back() {
@@ -199,7 +170,6 @@ fn a_dictation_is_pasted_into_the_focused_app_and_the_clipboard_comes_back() {
     let status = desk.wait_idle();
     assert_eq!(desk.recordings(), 0, "the delivered recording is deleted");
     assert_eq!(desk.last_json()["text"], "Push the fix to psst. ");
-    // Until the restore, the dictation is what the clipboard holds.
     assert_eq!(desk.app.probe()["text"].as_str(), Some("Push the fix to psst. "));
     watcher.wait_for(Seen::Done, Duration::from_secs(3));
     watcher.wait_for(Seen::Hidden, Duration::from_secs(3));
@@ -240,8 +210,6 @@ fn the_focused_apps_rule_from_niri_picks_the_chord() {
     assert_eq!((got["text"].as_str(), got["chord"].as_str()), (Some("In a terminal. "), Some("ctrl+shift+v")), "{got}");
 }
 
-// ---------------------------------------------------------------------- the network
-
 #[test]
 fn a_connection_dropped_while_recording_is_uploaded_with_resume_at_stop() {
     let server = server(&["After the drop."]);
@@ -253,7 +221,7 @@ fn a_connection_dropped_while_recording_is_uploaded_with_resume_at_stop() {
     desk.ok(&["toggle"]);
     let recording = Instant::now();
     watcher.wait_for(Seen::Recording, Duration::from_secs(3));
-    // Streaming live: the server has the session.
+    // Cut only once the server has the session.
     server.wait_for_log(": recording", 1, WAIT);
     thread::sleep(Duration::from_millis(500));
     let cut = Instant::now();
@@ -281,9 +249,6 @@ fn a_connection_dropped_while_recording_is_uploaded_with_resume_at_stop() {
     assert_whole(&requests[0], recorded);
 }
 
-// ---------------------------------------------------------------------- timings
-
-/// The client's timings over several dictations, as the daemon measures them.
 #[test]
 fn dictation_timings() {
     // Enough to catch a dictation that's slower than the first; with this few, p95 is the max.
@@ -319,14 +284,9 @@ fn dictation_timings() {
     assert!(p95("stop_to_dispatch_ms") < 1_000, "{summary:?}");
 }
 
-// ---------------------------------------------------------------------- the GPU
-
-/// The eval clip the GPU run dictates.
 const GPU_CLIP: (&str, &str) =
     ("syn-en-181-lj", "Please write down the steps you took, so we can reproduce the crash tomorrow.");
 
-/// The same dictation with the real engine on the GPU, from `nix develop .#gpu` inside
-/// `scripts/gpu-session.sh` (see the top of this file).
 #[test]
 #[ignore = "GPU: runs inside scripts/gpu-session.sh with nix develop .#gpu"]
 fn on_the_gpu() {
@@ -374,7 +334,7 @@ fn which(program: &str) -> Option<PathBuf> {
     env::split_paths(&env::var_os("PATH")?).map(|dir| dir.join(program)).find(|path| path.is_file())
 }
 
-/// The shared model cache, as `psst-eval audio` uses it.
+/// The model cache `psst-eval audio` uses.
 fn model_cache() -> PathBuf {
     let cache = env::var_os("PSST_CACHE_DIR").map(PathBuf::from).unwrap_or_else(|| {
         env::var_os("XDG_CACHE_HOME")
@@ -392,7 +352,6 @@ fn words(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// A 16 kHz mono clip from `evals/clips`.
 fn read_flac(path: &Path) -> Vec<i16> {
     let mut reader = claxon::FlacReader::open(path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
     let info = reader.streaminfo();

@@ -1,5 +1,3 @@
-"""The request loop, driven through its input and output streams with a stub model."""
-
 from __future__ import annotations
 
 import io
@@ -191,8 +189,6 @@ def test_streams_are_checked_like_transcriptions():
 
 
 class StreamingStub(StubModel):
-    """A stub with streams of its own, which records the background work it's asked to do."""
-
     def __init__(self) -> None:
         super().__init__(FakeClock())
         self.appended: dict[int, int] = {}

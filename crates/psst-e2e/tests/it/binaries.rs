@@ -1,6 +1,3 @@
-//! The end-to-end binaries are the real programs: `psst-server-e2e` runs `psst_server::main` and
-//! `psst-e2e-daemon` runs `psst::main`. Tests start them through `psst-testkit`.
-
 use std::{fs, process::Command};
 
 const SERVER: &str = env!("CARGO_BIN_EXE_psst-server-e2e");

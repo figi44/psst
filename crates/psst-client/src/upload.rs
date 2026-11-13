@@ -1,6 +1,3 @@
-//! The task behind [`crate::upload_file`]: waits for `ready`, streams the file from disk with
-//! awaited backpressure if the server needs the audio, then sends `stop`.
-
 use std::{io::SeekFrom, path::PathBuf};
 
 use psst_proto::{FRAME_BYTES, FRAME_SAMPLES, SessionId};
@@ -26,7 +23,7 @@ pub(crate) async fn run(
     // `cmd` keeps the connection open until the audio is queued, even if every handle is dropped.
     let need_audio = match ready.wait_for(Option::is_some).await {
         Ok(need_audio) => need_audio.expect("waited for Some"),
-        Err(_) => return, // the session ended before `ready`
+        Err(_) => return,
     };
     if !need_audio {
         return;
@@ -36,8 +33,8 @@ pub(crate) async fn run(
     }
 }
 
-/// Sends every frame and then `stop`. `Ok` also when the session stopped taking audio (it was
-/// cancelled or ended), since there's nothing left to report then.
+/// `Ok` also when the session stopped taking audio (it was cancelled or ended), since there's
+/// nothing left to report then.
 async fn stream(path: &PathBuf, frames: &mpsc::Sender<Outgoing>) -> Result<(), String> {
     let fail = |err: &dyn std::fmt::Display| format!("cannot read {}: {err}", path.display());
     let mut file = File::open(path).await.map_err(|e| fail(&e))?;

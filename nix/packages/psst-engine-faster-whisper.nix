@@ -1,5 +1,4 @@
-# The faster-whisper engine (engines/faster-whisper). The flake exports only the CUDA build,
-# `psst-engine-faster-whisper-cuda`; `cudaSupport` stays for other hosts.
+# The flake exports only the CUDA build; `cudaSupport` stays for other hosts.
 {
   lib,
   config,
@@ -9,10 +8,9 @@
   cudaSupport ? config.cudaSupport,
 }:
 let
-  # ctranslate2 with CUDA. With `allowUnfree`, its C++ library is the derivation the NixOS CUDA
-  # cache and Flox's cache serve for the nixpkgs they've built (the flake's pin included), so it
-  # is substituted rather than compiled. Its Python bindings build locally: the caches build them
-  # with `cudaSupport`, which puts CUDA torch in their test inputs and so changes their hash.
+  # With `allowUnfree`, the C++ library comes from the NixOS CUDA and Flox caches instead of
+  # compiling. Its Python bindings build locally: the caches build them with `cudaSupport`, whose
+  # CUDA torch test input changes their hash.
   python = python3.override {
     packageOverrides =
       final: prev:
@@ -23,7 +21,7 @@ let
       };
   };
 
-  # The driver's libcuda, then cuBLAS and cuDNN.
+  # /run/opengl-driver/lib holds the driver's libcuda.
   libraryPath = lib.optionalString cudaSupport "/run/opengl-driver/lib:${
     lib.makeLibraryPath [
       cudaPackages.libcublas
@@ -62,14 +60,12 @@ python.pkgs.buildPythonApplication {
     libraryPath
   ];
 
-  # pytest runs in CI and the dev shell against a stub model; here the package only has to
-  # import.
+  # pytest runs in CI against a stub model; here the package only has to import.
   pythonImportsCheck = [ "psst_engine_faster_whisper" ];
 
   passthru = {
     inherit python libraryPath cudaSupport;
-    # The engine's dependencies without the engine itself, for running a worktree's copy of
-    # it (`psst-engine-dev` in `devShells.gpu`).
+    # Without the engine itself, for running a worktree's copy of it (`psst-engine-dev`).
     pythonEnv = python.withPackages dependencies;
   };
 

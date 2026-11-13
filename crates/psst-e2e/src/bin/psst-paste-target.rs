@@ -1,18 +1,3 @@
-//! The app in the Wayland end-to-end tests: a window that takes keyboard focus and, on Ctrl+V or
-//! Ctrl+Shift+V, reads the clipboard through `wl_data_device` as any app does. It prints one JSON
-//! line per event on stdout:
-//!
-//! ```text
-//! {"ev":"focus"} · {"ev":"keymap","name":..} · {"ev":"mods",..}
-//! {"ev":"key","sym":..,"utf8":..,"raw":..,"t":..}
-//! {"ev":"paste","chord":"ctrl+v","mods":{..},"mimes":[..],"text":..,"blobs":{mime:{len,fnv}},"t_key":..,"t_done":..}
-//! ```
-//!
-//! Every offered type is read: text from the first plain-text type, other types as length and
-//! FNV-1a hash. A `probe` line on stdin reads the clipboard the same way without a key press
-//! (`"chord":"probe"`). Timestamps are CLOCK_MONOTONIC µs. It runs only inside a sandbox
-//! (`psst_testkit::Sandbox::command`) and refuses any other environment.
-
 use std::io::Read;
 use std::time::Duration;
 
@@ -47,7 +32,7 @@ fn emit(v: Value) {
     println!("{v}");
 }
 
-/// CLOCK_MONOTONIC µs, comparable with the test's clock.
+/// Comparable with the test's clock.
 fn now_us() -> u64 {
     let t = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
     t.tv_sec as u64 * 1_000_000 + t.tv_nsec as u64 / 1_000

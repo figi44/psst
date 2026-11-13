@@ -1,8 +1,3 @@
-//! Logging a browser in with a one-time link from `psst ui`, and out.
-//!
-//! `GET /login?token=` only shows a form; posting it to `/api/login/redeem` uses the token up and
-//! sets the session cookie. A link preview that fetches the page changes nothing.
-
 use std::{sync::Arc, time::Instant};
 
 use axum::{
@@ -40,7 +35,7 @@ pub struct RedeemForm {
     token: String,
 }
 
-/// `GET /login?token=`: the form that logs in with the token.
+/// Only shows a form, so a link preview that fetches the page doesn't use the token up.
 pub async fn page(query: Result<Query<LoginQuery>, QueryRejection>) -> Response {
     match query.ok().and_then(|Query(query)| query.token).filter(|token| !token.is_empty()) {
         Some(token) => render(StatusCode::OK, "login.html", context! { token }),
@@ -54,8 +49,6 @@ pub async fn page(query: Result<Query<LoginQuery>, QueryRejection>) -> Response 
     }
 }
 
-/// `POST /api/login/redeem`: uses up the link's token and starts a session for the device that
-/// asked for the link.
 pub async fn redeem(
     State(state): State<AppRef>,
     ConnectInfo(peer): ConnectInfo<Peer>,
@@ -114,7 +107,6 @@ pub async fn redeem(
     (StatusCode::SEE_OTHER, [(LOCATION, "/history".to_owned()), (SET_COOKIE, cookie)]).into_response()
 }
 
-/// `POST /logout`: ends the browser's session.
 pub async fn logout(viewer: Viewer, State(state): State<AppRef>) -> Response {
     if let Some(session) = &viewer.session
         && let Err(err) = state.db.delete_web_session(session)
@@ -129,7 +121,6 @@ pub async fn logout(viewer: Viewer, State(state): State<AppRef>) -> Response {
     page
 }
 
-/// The session cookie: only for this server's own requests, never for scripts.
 fn session_cookie(state: &AppState, value: &str, max_age_s: u64) -> String {
     let secure = state.server.web_url.as_deref().is_some_and(|url| url.starts_with("https://"));
     format!(

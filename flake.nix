@@ -21,7 +21,7 @@
         "x86_64-linux"
         "aarch64-linux"
       ];
-      # nixpkgs with `allowUnfree` (for the CUDA engine), plus psst.
+      # `allowUnfree` for the CUDA engine.
       pkgsFor = lib.genAttrs systems (
         system:
         import nixpkgs {
@@ -34,7 +34,6 @@
     in
     {
       overlays.default = import ./nix/overlay.nix;
-      # Both build psst from the host's pkgs through the overlay.
       nixosModules.psst-server = import ./nix/modules/nixos.nix self.overlays.default;
       homeManagerModules.psst = import ./nix/modules/home-manager.nix self.overlays.default;
 
@@ -51,7 +50,6 @@
             pkgs.clippy
             pkgs.rustfmt
             pkgs.cargo-nextest
-            # `just check` runs everything CI checks (justfile).
             pkgs.just
             pkgs.sccache
             pkgs.mold
@@ -59,9 +57,6 @@
             (pkgs.python3.withPackages (ps: [ ps.pytest ]))
           ];
           nativeBuildInputs = [ pkgs.rustPlatform.bindgenHook ];
-          # The system libraries the crates link: PipeWire and ALSA for audio, libopus for audio
-          # on the wire, D-Bus for asking RTKit for real-time priority, Wayland and xkbcommon for
-          # the overlay and virtual keyboard, SQLite for the server.
           buildInputs = [
             pkgs.pipewire
             pkgs.alsa-lib
@@ -77,8 +72,7 @@
           # store hash, and the PipeWire bindings rebuild whenever bindgen's flags change: without
           # dropping it, any change to the shell rebuilds them (and misses CI's cache).
           #
-          # sccache shares compiled crates across worktrees (~/.cache/sccache). CI uses its own
-          # build cache instead.
+          # sccache shares compiled crates across worktrees; CI has its own build cache.
           shellHook = ''
             export BINDGEN_EXTRA_CLANG_ARGS="$(sed -E 's/ ?-frandom-seed=[^ ]+//' <<<"$BINDGEN_EXTRA_CLANG_ARGS")"
             if [ -z "''${CI:-}" ]; then
@@ -87,7 +81,6 @@
           '';
         };
 
-        # The default shell plus `psst-engine-dev`, which runs this worktree's engine on the GPU.
         # GPU work runs only inside scripts/gpu-session.sh.
         gpu = default.overrideAttrs (old: {
           nativeBuildInputs = old.nativeBuildInputs ++ [
@@ -98,8 +91,7 @@
         });
       });
 
-      # CI evaluates these (`nix flake check --no-build`); building them, the VM test included,
-      # runs locally. The CUDA engine is left out: it's unfree, and checked with
+      # The CUDA engine is left out: it's unfree, and checked with
       # `nix build --dry-run .#psst-engine-faster-whisper-cuda` instead.
       checks = forAllSystems (pkgs: {
         devShell = self.devShells.${pkgs.stdenv.hostPlatform.system}.default;

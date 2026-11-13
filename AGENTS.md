@@ -1,7 +1,7 @@
 # Working on psst
 
 psst is a self-hosted dictation system: a Rust server runs the speech model on a GPU machine, and
-thin clients send it audio over the network. The code and its doc comments are the documentation.
+thin clients send it audio over the network. The code is the documentation.
 
 ## What we care about
 
@@ -25,7 +25,9 @@ everything CI checks, before every push.
 - Each crate's integration tests are one binary, `tests/it/main.rs`: add a module there, not a new
   `tests/*.rs`.
 - Add dependencies with `cargo add`.
-- A change to a contract (wire messages, config files) updates its doc comments in the same PR.
+- Comment only what the code can't say: a counter-intuitive why, a workaround, an invariant that
+  is easy to break. Never restate what the code does. Doc comments that tools turn into output
+  (clap's `--help`, `just --list`) stay.
 
 ## Hard rules
 

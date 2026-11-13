@@ -1,5 +1,3 @@
-"""faster-whisper and the Hugging Face cache, faked at the engine's ``Backend``."""
-
 from __future__ import annotations
 
 from collections.abc import Iterator
@@ -27,8 +25,6 @@ def snapshot_dir(repo: str, commit: str) -> str:
 
 @dataclass
 class Bar:
-    """What huggingface_hub's progress bars look like to the engine."""
-
     unit: str = "it"
     total: int = 0
     n: int = 0
@@ -36,18 +32,12 @@ class Bar:
 
 @dataclass
 class FakeWhisper:
-    """The Hub, the local cache, and faster-whisper's models, as the engine sees them."""
-
     cached: set[str] = field(default_factory=set)
-    """Repositories whose snapshot is complete in the local cache."""
     broken: dict[str, Exception] = field(default_factory=dict)
-    """Snapshot directories that fail to load with an error, until downloaded again by force."""
     download_error: Exception | None = None
     fail_next: Exception | None = None
-    """Raised while the next transcription's segments are read, as faster-whisper does."""
+    """Raised while the segments are read: faster-whisper's segments are a lazy generator."""
     after_oom: list[Exception] = field(default_factory=lambda: [INVALID_DEVICE])
-    """Raised by the next calls into the model after it ran out of memory, one per call. By
-    default the first call fails, as CTranslate2's does."""
     segments: list[Any] = field(default_factory=lambda: [default_segment()])
     duration_after_vad: float = 2.5
     language: str = "en"
@@ -55,12 +45,9 @@ class FakeWhisper:
     downloads: list[dict[str, Any]] = field(default_factory=list)
     models: list[dict[str, Any]] = field(default_factory=list)
     runs: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
-    """``(runner, kwargs)`` of every ``transcribe`` call except warm-ups: ``batched`` for the
-    ``BatchedInferencePipeline``, ``model`` for ``WhisperModel`` itself."""
     warmed_up: list[Any] = field(default_factory=list)
     warm_up_error: Exception | None = None
     _broken: list[Exception] = field(default_factory=list)
-    """What the next calls into the model raise."""
 
     def backend(self) -> Backend:
         return Backend(

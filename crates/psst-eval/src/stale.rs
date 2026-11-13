@@ -1,25 +1,3 @@
-//! The stale-trace check: recompute each case's engine request from the current code
-//! and `evals/*.toml`, and compare it with what the recorded traces say was used.
-//!
-//! A trace records the model, the effective options and the prompt the engine built, not the
-//! request itself, so the check compares against those:
-//!
-//! - **Model:** `trace.model` is `[model] model`, and `trace.revision` the pinned revision if
-//!   there is one.
-//! - **Language:** the engine transcribed in the profile's language.
-//! - **Options:** every requested option is in `trace.options` with the requested value. The
-//!   engine may add options.
-//! - **Bias:** with `eval.bias = false` the prompt is empty. Otherwise it's the style and the
-//!   first `k` terms, rendered as the engine does (`style + " " + terms.join(", ") + "."`),
-//!   or a tail of the style alone when the style is over the budget. Since the engine drops terms
-//!   only to fit 223 tokens, and a token is at least one byte, dropping a term whose prompt would
-//!   have been under 223 bytes is stale too: the trace was recorded with a different term list.
-//!
-//! The prompt check can't see a change to the terms past the ones the engine kept, when the
-//! prompt with the next term really is over the budget; that needs the tokenizer. Nor can the
-//! options check see an option deleted from [`psst_config::ModelOptions`]: the engine may still
-//! report the value it used under the same key.
-
 use psst_config::{ModelConfig, Profile};
 use psst_dict::Dictionary;
 use psst_engine_proto::Bias;
@@ -28,10 +6,9 @@ use serde_json::Value;
 
 use crate::cases::EvalSet;
 
-/// The prompt budget in tokens, shared by style and terms.
+/// The faster-whisper engine's `BUDGET` (`bias.py`).
 pub const PROMPT_BUDGET_TOKENS: usize = 223;
 
-/// The parts of a `transcribe` request that shape the engine's output.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EngineRequest {
     pub language: String,
@@ -39,9 +16,6 @@ pub struct EngineRequest {
     pub options: Value,
 }
 
-/// The request the server sends for a dictation with `profile`: the profile's
-/// language, its style and the dictionary's bias terms, or no bias at all for
-/// `eval.bias = false`, and `[model.options]`.
 pub fn engine_request(profile: &Profile, dictionary: &Dictionary, model: &ModelConfig, bias: bool) -> EngineRequest {
     let bias = if bias {
         Bias { style: profile.prompt_style.clone(), terms: dictionary.bias_terms(&profile.language) }
@@ -51,16 +25,13 @@ pub fn engine_request(profile: &Profile, dictionary: &Dictionary, model: &ModelC
     EngineRequest { language: profile.language.clone(), bias, options: model.options.to_json() }
 }
 
-/// A recorded trace that no longer matches its recomputed request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StaleTrace {
     pub case: String,
-    /// `engine_output` or `engine_output_raw`.
     pub trace: &'static str,
     pub reason: String,
 }
 
-/// Every stale trace in the set.
 pub fn stale_traces(set: &EvalSet) -> anyhow::Result<Vec<StaleTrace>> {
     let model = &set.files.server.model;
     let mut stale = Vec::new();
@@ -77,7 +48,6 @@ pub fn stale_traces(set: &EvalSet) -> anyhow::Result<Vec<StaleTrace>> {
     Ok(stale)
 }
 
-/// Whether `trace` could have come from `request`; the reason if not.
 pub fn check_trace(request: &EngineRequest, model: &ModelConfig, trace: &EngineTrace) -> Result<(), String> {
     if trace.model != model.model {
         return Err(format!("recorded with model `{}`, configured `{}`", trace.model, model.model));
@@ -94,6 +64,8 @@ pub fn check_trace(request: &EngineRequest, model: &ModelConfig, trace: &EngineT
     check_prompt(&request.bias, &trace.prompt)
 }
 
+/// The engine may add options. An option deleted from `ModelOptions` goes unseen, since the
+/// engine may still report the value it used.
 fn check_options(requested: &Value, recorded: &Value) -> Result<(), String> {
     let (Value::Object(requested), Value::Object(recorded)) = (requested, recorded) else {
         return Err(format!("options {recorded} aren't an object"));
@@ -108,19 +80,20 @@ fn check_options(requested: &Value, recorded: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// The prompt the faster-whisper engine builds from a bias, before its
-/// token budget.
+/// Must render a bias as the faster-whisper engine does, before its token budget.
 pub fn render_prompt(style: &str, terms: &[String]) -> String {
     let terms = (!terms.is_empty()).then(|| format!("{}.", terms.join(", ")));
     [(!style.is_empty()).then(|| style.to_owned()), terms].into_iter().flatten().collect::<Vec<_>>().join(" ")
 }
 
-/// Whether a prompt fits the budget whatever the tokenizer does: every token is at least one
-/// byte, and the engine may add a leading space and a separator.
+/// Every token is at least one byte, and the engine may add a leading space and a separator.
 fn surely_fits(prompt: &str) -> bool {
     prompt.len() + 2 <= PROMPT_BUDGET_TOKENS
 }
 
+/// The engine drops terms only to fit the budget, so a trace that dropped a term that surely fits
+/// was recorded with a different term list. A change to terms past a cut that really is over
+/// the budget goes unseen; that needs the tokenizer.
 fn check_prompt(bias: &Bias, prompt: &str) -> Result<(), String> {
     if bias.style.is_empty() && bias.terms.is_empty() {
         return match prompt {

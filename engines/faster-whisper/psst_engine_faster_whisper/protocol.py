@@ -1,10 +1,3 @@
-"""Frame codec of the psst engine protocol.
-
-A frame is an 8-byte prefix (header length, then payload length, both u32 little-endian), a
-UTF-8 JSON header with a ``type``, and an optional payload. Audio payloads are f32 little-endian
-mono samples at 16 kHz.
-"""
-
 from __future__ import annotations
 
 import json
@@ -25,11 +18,11 @@ AUDIO_BYTES_PER_SECOND = 64_000
 
 
 class CorruptStream(Exception):
-    """A frame over a limit, or a stream that ended inside a frame. The engine exits."""
+    pass
 
 
 class BadHeader(Exception):
-    """A complete frame whose header isn't a JSON object with a string ``type``."""
+    pass
 
 
 @dataclass(frozen=True)
@@ -39,17 +32,11 @@ class Frame:
 
 
 def max_payload_bytes(max_audio_s: int) -> int:
-    """Largest payload accepted by an engine that takes recordings of up to ``max_audio_s``."""
     return max_audio_s * AUDIO_BYTES_PER_SECOND + PAYLOAD_SLACK_BYTES
 
 
 def claim_stdout() -> BinaryIO:
-    """Keeps stdout for the protocol and sends everything else that prints to stderr.
-
-    The protocol moves to a duplicate of the original stdout, and file descriptor 1 is pointed at
-    stderr, so a library that prints can't corrupt the stream. Call it before importing anything
-    that might print.
-    """
+    """Points fd 1 at stderr, so a library that prints can't corrupt the protocol stream."""
     sys.stdout.flush()
     protocol_fd = os.dup(1)
     os.dup2(2, 1)
@@ -69,7 +56,6 @@ def _read_exact(inp: BinaryIO, n: int) -> bytes:
 
 
 def read_frame(inp: BinaryIO, max_payload: int) -> Frame | None:
-    """Reads one frame; ``None`` at a clean end of stream (between frames)."""
     prefix = _read_exact(inp, PREFIX.size)
     if not prefix:
         return None
@@ -88,7 +74,6 @@ def read_frame(inp: BinaryIO, max_payload: int) -> Frame | None:
 
 
 def parse_header(header: bytes) -> dict[str, Any]:
-    """Parses a header into a dict with a string ``type``."""
     try:
         message = json.loads(header.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as err:
@@ -103,7 +88,6 @@ def encode_header(message: dict[str, Any]) -> bytes:
 
 
 def write_frame(out: BinaryIO, message: dict[str, Any], payload: bytes = b"") -> None:
-    """Writes one frame and flushes."""
     header = encode_header(message)
     if len(header) > MAX_HEADER_BYTES:
         raise ValueError(f"frame header of {len(header)} bytes is over the {MAX_HEADER_BYTES}-byte limit")
@@ -114,7 +98,6 @@ def write_frame(out: BinaryIO, message: dict[str, Any], payload: bytes = b"") ->
 
 
 def samples_from_payload(payload: bytes) -> array:
-    """Decodes an audio payload into f32 samples."""
     if len(payload) % 4:
         raise ValueError("audio payload length is not a multiple of 4")
     samples = array("f")
@@ -125,5 +108,4 @@ def samples_from_payload(payload: bytes) -> array:
 
 
 def payload_from_samples(samples: list[float] | array) -> bytes:
-    """Encodes f32 samples as an audio payload."""
     return struct.pack(f"<{len(samples)}f", *samples)

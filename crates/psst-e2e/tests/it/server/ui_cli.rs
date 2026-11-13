@@ -1,6 +1,3 @@
-//! `psst ui` as built (`psst-e2e-daemon ui`): a login link from the server `client.toml` names,
-//! opened with `xdg-open` or printed, over the socket and over TCP with the paired token.
-
 use std::{ffi::OsStr, fs, os::unix::fs::PermissionsExt};
 
 use psst_engine_proto::fake::Script;
@@ -8,7 +5,6 @@ use psst_proto::api::LoginLink;
 
 use super::{browser::Browser, harness::*};
 
-/// What a browser makes of the link: it logs in once.
 async fn logs_in(server: &psst_testkit::TestServer, url: &str) {
     let link = LoginLink { url: url.trim().to_owned(), expires_at: jiff::Timestamp::now() };
     let mut browser = Browser::new(server.tcp_addr().unwrap());
@@ -46,7 +42,7 @@ async fn psst_ui_prints_the_link_for_another_machines_browser() {
     let server = server(Script::default(), |cfg| cfg.tcp = true);
     let endpoint = server.tcp_endpoint().unwrap();
     let home = Home::new(endpoint.clone());
-    let code = admin_json(&server, &["pair", "--name", "thinkpad"])["code"].as_str().unwrap().to_owned();
+    let code = admin_json(&server, &["pair", "--name", "work-laptop"])["code"].as_str().unwrap().to_owned();
     home.ok(&["pair", &endpoint.to_string(), &code]);
 
     let url = home.ok(&["ui", "--print"]);

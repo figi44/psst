@@ -1,6 +1,3 @@
-//! `psst dict add|rm|reset|list|never|test`: the dictionary's database layer, through the server's
-//! API, at the server `client.toml` names ([`crate::server_api`]).
-
 use std::{fmt::Write as _, process::ExitCode};
 
 use clap::{Args, Subcommand};
@@ -76,7 +73,6 @@ enum DictCommand {
     },
 }
 
-/// Runs one `psst dict` command.
 pub fn run(args: DictArgs) -> anyhow::Result<ExitCode> {
     let api = server_api::connect()?;
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
@@ -155,7 +151,6 @@ fn print<T: Serialize>(json: bool, value: &T, human: impl FnOnce(&T) -> String) 
     }
 }
 
-/// The text a term shows as: its `text`, or its identity when neither layer has a version.
 fn name(term: &DictionaryTerm) -> &str {
     term.term.as_ref().map_or(&term.id, |t| t.text.as_str())
 }
@@ -188,7 +183,6 @@ fn describe_never(rule: &NeverRule) -> String {
     format!("`{}` never replaces {:?}{inactive}", rule.term, rule.span)
 }
 
-/// `psst dict list`.
 fn list(view: &DictionaryView) -> String {
     let rows: Vec<[String; 5]> = view
         .terms
@@ -247,7 +241,6 @@ fn list(view: &DictionaryView) -> String {
     out
 }
 
-/// What `add`, `rm` and `reset` did.
 fn changed(change: &TermChange, asked: &str) -> String {
     let mut out = match &change.term {
         None => format!("removed `{asked}`\n"),
@@ -268,7 +261,7 @@ fn changed(change: &TermChange, asked: &str) -> String {
     out
 }
 
-/// `psst dict test`: the text, quoted so spacing shows, then each edit.
+/// Quoted so spacing shows.
 fn tested(fin: &Final) -> String {
     let mut out = format!("{:?}\n", fin.text);
     for edit in &fin.edits {

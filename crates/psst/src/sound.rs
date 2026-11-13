@@ -1,6 +1,3 @@
-//! The error sound: two short falling tones on the default output device, played on a
-//! thread of its own so nothing waits for it. `sounds = false` turns it off.
-
 use std::{
     f32::consts::TAU,
     sync::{
@@ -17,7 +14,6 @@ use cpal::{
 };
 use tracing::debug;
 
-/// Plays the error sound unless one is already playing.
 pub fn play_error() {
     static PLAYING: AtomicUsize = AtomicUsize::new(0);
     if PLAYING.fetch_add(1, Ordering::AcqRel) > 0 {
@@ -75,7 +71,6 @@ fn build<T: SizedSample + Send + 'static>(
         .map_err(|e| e.to_string())
 }
 
-/// 660 Hz then 440 Hz, 120 ms each with short fades.
 fn tone(rate: u32) -> Vec<f32> {
     let mut out = Vec::new();
     for freq in [660.0f32, 440.0] {

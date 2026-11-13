@@ -1,15 +1,4 @@
-"""Engine benchmarks for faster-whisper. Run through scripts/bench/run.sh.
-
-Every experiment loads large-v3-turbo (int8_float16, CUDA), uses beam 5 and vad_filter, and writes one JSON record per
-transcription to --out. scripts/bench/report.py turns the records into tables.
-
-  quality        every synthetic clip × {sequential, batched} × bias {none, terms in prompt, terms as hotwords}
-  prompt         2–5 s clips × path × {no prompt, full 223-token prompt}, 5 runs each, interleaved (latency)
-  long-terms     60 and 180 s of sentences with terms × path × bias, 3 runs (do terms fade after 30 s?)
-  latency        2–180 s × path × word_timestamps, 5–7 runs each, interleaved
-  batch          one path/batch size per process: latency and peak VRAM on 30, 60, 180 and 600 s
-  targets        the chosen configuration on every clip ≤ 15 s and on seven 60 s dictations, 3–5 runs
-"""
+"""Engine benchmarks for faster-whisper. Run through scripts/bench/run.sh."""
 
 from __future__ import annotations
 
@@ -83,6 +72,7 @@ def exp_prompt(args, out):
                           {"id": c.id, "run": run, "seconds_audio": c.seconds})
 
 
+# Do terms fade after the first 30 s window?
 def exp_long_terms(args, out):
     cases = bl.load_cases()
     r = Runner(out)

@@ -1,6 +1,3 @@
-//! The daemon against a server on another protocol version: it says which side to update, keeps
-//! the dictation for `psst retry`, and forgets the prompt once a connection succeeds.
-
 use psst::follow::WaybarLine;
 use psst_proto::PROTOCOL_VERSION;
 use tokio::time::Instant;
@@ -24,7 +21,6 @@ async fn a_newer_server_prompts_to_update_psst_and_keeps_the_dictation_for_retry
     server.push_outcome(Outcome::Final("after the update ".into()));
     let d = daemon(&server, |_, deps| deps.timing.notice_shown = Duration::from_millis(300)).await;
 
-    // At start-up, before anyone dictates.
     wait_until(|| error_shown(&d, PROMPT) == 1).await;
     let status = d.status().await;
     assert_eq!(status.warnings, vec![PROMPT.to_string()]);
@@ -34,7 +30,6 @@ async fn a_newer_server_prompts_to_update_psst_and_keeps_the_dictation_for_retry
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    // A dictation records to its file, and is saved as soon as the upload is refused.
     let id = d.dictate(300).await;
     let stopped = Instant::now();
     d.idle().await;
@@ -45,7 +40,6 @@ async fn a_newer_server_prompts_to_update_psst_and_keeps_the_dictation_for_retry
     assert_eq!(d.store.read_meta(id).unwrap().state, RecState::Complete);
     assert!(d.wayland.inserted().is_empty());
 
-    // Once the two speak the same protocol again, it's delivered and the prompt is gone.
     server.speak_protocol(PROTOCOL_VERSION, true);
     assert!(d.run(Request::Retry { session: None }).await.ok);
     d.idle().await;
@@ -58,7 +52,7 @@ async fn a_newer_server_prompts_to_update_psst_and_keeps_the_dictation_for_retry
 async fn an_older_server_prompts_to_update_the_server() {
     const PROMPT: &str = "update the server";
     let server = FakeServer::start(FakeServerConfig::default());
-    // As from a server before the refusal said what it speaks.
+    // A refusal without the server's version, as older servers send it.
     server.speak_protocol(PROTOCOL_VERSION - 1, false);
     let d = daemon(&server, |_, _| {}).await;
 

@@ -1,11 +1,6 @@
-//! Mic spike: cpal 0.18 with its native PipeWire host.
-//!
 //!   mic-spike list        [--host pipewire|alsa]
 //!   mic-spike first-frame [--host ..] [--runs N] [--device ID-SUBSTRING] [--buffer FRAMES]
 //!   mic-spike capture     [--host ..] [--secs N] [--device ..]
-//!
-//! Every stream asks for 16 kHz mono f32. Audio is only measured (level,
-//! frame counts, timestamps); nothing is saved.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -17,7 +12,7 @@ use cpal::{BufferSize, ErrorKind, HostId, StreamConfig};
 
 const RATE: u32 = 16_000;
 
-/// `--buffer N` asks for N frames per callback (PipeWire: node.latency).
+/// `--buffer`: frames per callback, which PipeWire applies as node.latency.
 static BUFFER: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
 
 fn main() {
@@ -110,7 +105,6 @@ fn stats(name: &str, v: &mut [f64]) {
     println!("{name:<26} {:>8.2} {:>8.2} {:>8.2} {:>8.2}", q(0.5), q(0.95), v[0], v[v.len() - 1]);
 }
 
-/// open (device lookup + build + play) → first callback with samples.
 fn first_frame(host: &cpal::Host, want: Option<String>, runs: usize) {
     let (mut lookup, mut build, mut play, mut first, mut total) = (vec![], vec![], vec![], vec![], vec![]);
     let mut first_len = vec![];
@@ -168,9 +162,7 @@ struct Rec {
     wall: Option<Instant>,
 }
 
-/// Steady capture: gaps from capture timestamps, xruns from the error
-/// callback, ring-buffer overflows with a 2 s SPSC ring drained every 20 ms
-/// (as psst's writer would).
+/// A 2 s ring drained every 20 ms, as psst's writer drains it.
 fn capture(host: &cpal::Host, want: Option<String>, secs: u64) {
     let dev = pick(host, &want);
     let ring_cap = (RATE * 2) as usize;
@@ -219,7 +211,6 @@ fn capture(host: &cpal::Host, want: Option<String>, secs: u64) {
         )
         .expect("build_input_stream (16 kHz mono f32)");
     stream.play().expect("play");
-    // The writer: drains the ring every 20 ms; tracks its own lateness.
     let deadline = Instant::now() + Duration::from_secs(secs);
     let mut drained = 0u64;
     let mut worst_fill = 0usize;
@@ -243,7 +234,6 @@ fn capture(host: &cpal::Host, want: Option<String>, secs: u64) {
     let elapsed = start.elapsed();
     let recs = recs.lock().unwrap().clone();
     let total: u64 = recs.iter().map(|r| r.frames as u64).sum();
-    // Gaps: a buffer that starts later than the previous one's end.
     let mut gaps = 0;
     let mut gap_ms = 0.0;
     let mut max_cb_interval = Duration::ZERO;
@@ -251,7 +241,7 @@ fn capture(host: &cpal::Host, want: Option<String>, secs: u64) {
     for w in recs.windows(2) {
         let expected = w[0].capture_ns + w[0].frames as u128 * 1_000_000_000 / RATE as u128;
         let delta = w[1].capture_ns as i128 - expected as i128;
-        // tolerance: half a buffer (cpal timestamps come from the graph clock)
+        // Half a buffer: cpal timestamps come from the graph clock.
         let tol = (w[0].frames as i128 * 1_000_000_000 / RATE as i128) / 2;
         if delta > tol {
             gaps += 1;

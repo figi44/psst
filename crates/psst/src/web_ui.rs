@@ -1,7 +1,3 @@
-//! `psst ui`: asks the server for a one-time login link to its web UI and
-//! opens it with `xdg-open`, or prints it with `--print`. The server is the one `client.toml`
-//! names ([`crate::server_api`]); the link is valid for a minute and logs in once.
-
 use std::{
     os::unix::process::CommandExt,
     process::{Command, ExitCode, Stdio},
@@ -15,11 +11,9 @@ use psst_proto::api::{LoginLink, routes};
 
 use crate::server_api;
 
-/// How long `xdg-open` may take to fail. It may stay running with the browser it started, which
-/// is fine.
+/// `xdg-open` may stay running with the browser it started, so outlasting this counts as success.
 const OPEN_WAIT: Duration = Duration::from_secs(2);
 
-/// Runs `psst ui`.
 pub fn run(print: bool) -> anyhow::Result<ExitCode> {
     let api = server_api::connect()?;
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
@@ -35,8 +29,7 @@ pub fn run(print: bool) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Opens `url` with `xdg-open`, in its own process group so the browser it starts outlives this
-/// command and its terminal's Ctrl-C.
+/// Own process group, so the browser it starts survives the terminal's Ctrl-C.
 fn open(url: &str) -> anyhow::Result<()> {
     let by_hand = || format!("open this link yourself within a minute:\n{url}");
     let mut child = Command::new("xdg-open")

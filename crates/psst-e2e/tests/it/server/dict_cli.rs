@@ -1,6 +1,3 @@
-//! `psst dict` as built (`psst-e2e-daemon dict …`), against the real server: over the socket, and
-//! over TCP with the token `psst pair` stored.
-
 use std::path::Path;
 
 use psst_config::{ConfigFile, DictionaryFile};
@@ -96,7 +93,7 @@ async fn psst_dict_reaches_another_machine_with_the_paired_token() {
         format!("psst: this device isn't paired with {endpoint}; run `psst pair {endpoint} <code>`\n")
     );
 
-    let code = admin_json(&server, &["pair", "--name", "thinkpad"])["code"].as_str().unwrap().to_owned();
+    let code = admin_json(&server, &["pair", "--name", "work-laptop"])["code"].as_str().unwrap().to_owned();
     home.ok(&["pair", &endpoint.to_string(), &code]);
     assert_eq!(home.ok(&["dict", "add", "t3code"]), "`t3code` added\n");
     assert!(home.ok(&["dict", "list"]).contains("\nt3code      added"));

@@ -1,5 +1,3 @@
-//! Human-readable tables of a baseline's metrics, on stdout.
-
 use crate::{
     audio::LatencyRow,
     baseline::{Baseline, Metrics, StressResult},
@@ -13,7 +11,6 @@ fn pair(output: String, raw: String) -> String {
     format!("{output:>6} ({raw:>5})")
 }
 
-/// Prints the metrics per group, with raw in parentheses.
 pub fn print_summary(baseline: &Baseline) {
     if baseline.cases.is_empty() {
         println!("no cases with recorded traces");
@@ -40,7 +37,6 @@ pub fn print_summary(baseline: &Baseline) {
     print_stress(&baseline.stress);
 }
 
-/// Prints the stress test per language.
 pub fn print_stress(stress: &[StressResult]) {
     if stress.is_empty() {
         println!("no stress sentences");
@@ -61,7 +57,6 @@ pub fn print_stress(stress: &[StressResult]) {
     }
 }
 
-/// Prints the audio eval's latency per range of recording lengths.
 pub fn print_latency(rows: &[LatencyRow]) {
     println!(
         "{:<12} {:>10}  {:>22}  {:>22}",

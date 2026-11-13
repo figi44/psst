@@ -1,6 +1,3 @@
-//! `SIGHUP` reloads `profiles.toml` and `dictionary.toml`, keeping a file's old
-//! version when the new one fails validation.
-
 use std::{fs, time::Duration};
 
 use nix::{
@@ -35,7 +32,6 @@ fn start(session_id: SessionId, profile: &str, resume: bool) -> StartMsg {
     }
 }
 
-/// Dictates once with `profile`; the engine request's language and bias terms, or the error.
 async fn dictate(server: &TestServer, profile: &str, id: SessionId) -> Result<(String, serde_json::Value), ErrorCode> {
     let mut client = Client::connect(server).await;
     client.start_with(start(id, profile, false)).await;

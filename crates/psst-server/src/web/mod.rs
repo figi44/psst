@@ -1,11 +1,4 @@
-//! The web UI and the browser login: server-rendered HTML from the
-//! templates in `web/templates`, with the stylesheet and scripts in `web/static`, all embedded in
-//! the binary.
-//!
-//! Every page is rendered whole, with minijinja escaping every value; a page that uses htmx swaps
-//! itself in place (`hx-boost`), so each one also works without JavaScript. Forms post and
-//! redirect back with `303`; a change the checks refuse renders the page again with status 422,
-//! the reason and the values entered.
+//! Every page also works without JavaScript: htmx only swaps it in place (`hx-boost`).
 
 mod dictionary;
 mod history;
@@ -40,7 +33,6 @@ use crate::{
 
 type AppRef = Arc<AppState>;
 
-/// The pages' policy: nothing from elsewhere, no inline scripts or styles, no framing.
 const CSP: &str = "default-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'";
 
 const TEMPLATES: &[(&str, &str)] = &[
@@ -52,7 +44,6 @@ const TEMPLATES: &[(&str, &str)] = &[
     ("history.html", include_str!("../../../../web/templates/history.html")),
 ];
 
-/// Static files: name, content type, contents.
 const ASSETS: &[(&str, &str, &[u8])] = &[
     ("psst.css", "text/css; charset=utf-8", include_bytes!("../../../../web/static/psst.css")),
     ("login.js", "text/javascript; charset=utf-8", include_bytes!("../../../../web/static/login.js")),
@@ -60,7 +51,6 @@ const ASSETS: &[(&str, &str, &[u8])] = &[
     ("htmx.min.js", "text/javascript; charset=utf-8", include_bytes!("../../../../web/vendor/htmx/htmx.min.js")),
 ];
 
-/// The web UI's routes; the API's are in [`crate::api`].
 pub fn router() -> Router<AppRef> {
     Router::new()
         .route("/", get(|| async { Redirect::to("/history") }))
@@ -89,8 +79,6 @@ fn templates() -> &'static Environment<'static> {
     static TEMPLATES_ENV: OnceLock<Environment<'static>> = OnceLock::new();
     TEMPLATES_ENV.get_or_init(|| {
         let mut env = Environment::new();
-        // A value as one path segment (or query value): everything but unreserved characters
-        // percent-encoded, `/` included.
         env.add_filter("segment", |value: String| psst_proto::api::encode_segment(&value));
         for (name, source) in TEMPLATES {
             env.add_template(name, source).expect("the web UI's templates parse");
@@ -99,7 +87,7 @@ fn templates() -> &'static Environment<'static> {
     })
 }
 
-/// A short hash of every asset, in their URLs, so browsers may cache them for good.
+/// Goes in the assets' URLs, so browsers may cache them for good.
 fn assets_version() -> &'static str {
     static VERSION: OnceLock<String> = OnceLock::new();
     VERSION.get_or_init(|| {
@@ -127,7 +115,6 @@ async fn asset(Path(file): Path<String>) -> Response {
     }
 }
 
-/// Renders a page with `ctx`, plus what every page needs (`assets`).
 fn render(status: StatusCode, template: &str, ctx: Value) -> Response {
     let ctx = context! { assets => assets_version(), ..ctx };
     match templates().get_template(template).and_then(|template| template.render(ctx)) {
@@ -152,8 +139,6 @@ fn render(status: StatusCode, template: &str, ctx: Value) -> Response {
     }
 }
 
-/// What a signed-in page's header needs: which page it is, the model's state, and whether there's
-/// a browser session to log out of.
 fn chrome(state: &AppState, viewer: &Viewer, page: &str) -> Value {
     let model = state.engine.status();
     context! {
@@ -165,7 +150,6 @@ fn chrome(state: &AppState, viewer: &Viewer, page: &str) -> Value {
     }
 }
 
-/// What the page says about a model that isn't ready; nothing while it is.
 fn banner(model: &psst_proto::api::ModelStatus) -> Option<Value> {
     use psst_proto::api::ModelState;
     let load = Some("psst-server model load");
@@ -205,12 +189,10 @@ fn banner(model: &psst_proto::api::ModelStatus) -> Option<Value> {
     Some(context! { tone, title, text, command, progress })
 }
 
-/// A page with a title, a sentence and, optionally, a command to run.
 pub(crate) fn message(status: StatusCode, title: &str, text: &str, command: Option<&str>) -> Response {
     render(status, "message.html", context! { title, text, command })
 }
 
-/// The page for a request without a live session.
 fn log_in_first() -> Response {
     message(
         StatusCode::UNAUTHORIZED,
@@ -221,9 +203,7 @@ fn log_in_first() -> Response {
     )
 }
 
-/// An authenticated web UI caller: a browser by its session, or a local user or paired device.
 pub(crate) struct Viewer {
-    /// The browser session's hash, which logging out ends.
     session: Option<String>,
 }
 

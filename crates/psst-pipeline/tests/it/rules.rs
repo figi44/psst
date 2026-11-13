@@ -1,6 +1,3 @@
-//! The built-in rules: only the first letter of the text is capitalised, and only listed
-//! fillers go.
-
 use crate::support;
 
 use psst_config::Rule;
@@ -39,30 +36,26 @@ fn only_standalone_fillers_go() {
 
 #[test]
 fn fillers_come_from_the_profile() {
-    // "ehm" is a filler only in Czech, and German has no list, so its "um" ("at") stays.
+    // "ehm" is a filler only in Czech; German has no list, so its "um" ("at") stays.
     assert_eq!(text(&said("ehm is a Czech filler"), ""), "Ehm is a Czech filler ");
     assert_eq!(with(&profile("de"), "um acht Uhr"), "Um acht Uhr ");
-    // A custom list, and an empty one.
     let rules = [Rule::Fillers, Rule::Whitespace, Rule::Capitalize];
     assert_eq!(
         with(&profile_with("en", &rules, &["basically", "like"]), "basically the fix like works"),
         "The fix works"
     );
     assert_eq!(with(&profile_with("en", &rules, &[]), "Then uh it works"), "Then uh it works");
-    // Czech fillers in a Czech session.
     assert_eq!(text(&said_cs("no ehm, já nevím, eee"), ""), "No já nevím, ");
 }
 
 #[test]
 fn a_protected_filler_stays() {
-    // A dictionary term for the filler keeps it.
     assert_eq!(text(&said("Set it to ten, uh, twelve."), "[[terms]]\ntext = \"uh\""), "Set it to ten, uh, twelve. ");
 }
 
 #[test]
 fn whitespace_collapses_runs_of_spaces_and_nothing_else() {
     assert_eq!(text(&said("Ship    it   today"), ""), "Ship it today ");
-    // Spaces before punctuation are kept, and so are tabs and newlines.
     assert_eq!(text(&said("Wait , what ?"), ""), "Wait , what ? ");
     assert_eq!(text(&said("one\n\ntwo\t three"), ""), "One\n\ntwo\t three ");
     assert_eq!(text(&said("then cd .. twice"), ""), "Then cd .. twice ");
@@ -112,7 +105,6 @@ fn rules_run_in_the_profiles_order() {
     assert_eq!(with(&profile, "um so"), " so ");
     let out = run(&said("um so"), &profile, &Dictionary::default(), &PipelineOptions::default());
     assert_eq!(out.edits, [rule("fillers", 0..2, "um", ""), rule("trailing_space", 5..5, "", " ")]);
-    // `whitespace` after `trailing_space` removes the appended space too.
     let profile = profile_with("en", &[Rule::TrailingSpace, Rule::Whitespace], &[]);
     assert_eq!(with(&profile, "so  be it"), "so be it");
     let profile = profile_with("en", &[Rule::TrailingSpace, Rule::Fillers, Rule::Whitespace], &["um"]);

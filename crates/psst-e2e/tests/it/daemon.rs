@@ -1,7 +1,3 @@
-//! The `psst` daemon and CLI as built, end to end, against the real server: `psst-e2e-daemon`
-//! runs in a headless sandbox with audio replayed from a WAV and the `[insert] record` seam in
-//! place of Wayland; `psst-server-e2e` runs with the scripted fake engine.
-
 use std::{
     fs,
     io::{BufRead, BufReader, Read},
@@ -25,12 +21,10 @@ const DAEMON: &str = env!("CARGO_BIN_EXE_psst-e2e-daemon");
 const SERVER: &str = env!("CARGO_BIN_EXE_psst-server-e2e");
 const WAIT: Duration = Duration::from_secs(15);
 
-/// `psst-server serve` with the fake engine.
 struct Server(TestServer);
 
 impl Server {
-    /// A server whose engine transcribes the next dictations as `texts`, in order. The pipeline
-    /// then appends a space (the `trailing_space` rule).
+    /// The pipeline appends a space to each (the `trailing_space` rule).
     fn start(texts: &[&str], tcp: bool) -> Server {
         let transcribe = texts
             .iter()
@@ -49,22 +43,19 @@ impl Server {
         self.0.endpoint()
     }
 
-    /// Stops the server: connections close and new ones are refused.
     fn stop(&mut self) {
         self.0.kill();
     }
 
-    /// Starts it again with the same state.
     fn start_again(&mut self) {
         self.0.restart();
     }
 
-    /// How many transcriptions the engine was asked for, across restarts.
+    /// Across engine restarts.
     fn transcriptions(&self) -> usize {
         self.0.engine_requests().iter().filter(|r| r.header["type"] == "transcribe").count()
     }
 
-    /// Runs an admin command (`psst-server <args> --json`) and returns its output.
     fn admin(&self, args: &[&str]) -> Value {
         let out = Command::new(SERVER).args(args).arg("--json").arg("--socket").arg(self.0.socket()).output().unwrap();
         assert!(out.status.success(), "psst-server {args:?}: {}", String::from_utf8_lossy(&out.stderr));
@@ -116,7 +107,6 @@ impl Client {
         serde_json::from_str(&self.ok(&["status", "--json"])).unwrap()
     }
 
-    /// The commands the daemon sent its stand-in Wayland thread.
     fn commands(&self) -> Vec<Value> {
         let text = fs::read_to_string(&self.inserted).unwrap_or_default();
         // A line the daemon is still writing has no newline yet; leave it for the next look.
@@ -168,7 +158,6 @@ fn toggle_twice_pastes_the_transcript_and_cleans_up() {
     assert_eq!(fs::metadata(state.join("last.json")).unwrap().permissions().mode() & 0o777, 0o600);
     let status = client.status();
     assert!(status["last_timings"]["stop_to_dispatch_ms"].is_u64(), "{status}");
-    // The client's timings reach the server's history.
     let deadline = Instant::now() + WAIT;
     loop {
         let history = server.admin(&["history"]);
@@ -240,7 +229,7 @@ fn pairing_stores_a_private_token_that_the_daemon_uses_over_tcp() {
     let mut client = Client::start(tcp.clone());
     let out = client.psst(&["pair", &tcp.to_string(), "WRONG234"]);
     assert!(!out.status.success());
-    let code = server.admin(&["pair", "--name", "thinkpad"])["code"].as_str().unwrap().to_owned();
+    let code = server.admin(&["pair", "--name", "work-laptop"])["code"].as_str().unwrap().to_owned();
     client.ok(&["pair", &tcp.to_string(), &code]);
     let creds = client.daemon().state_dir().join("credentials");
     assert_eq!(fs::metadata(&creds).unwrap().permissions().mode() & 0o777, 0o600);

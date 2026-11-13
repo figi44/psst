@@ -1,6 +1,3 @@
-//! Browser login: one-time links from `POST /api/login/link`, their
-//! redemption, the session cookie on `/api` over TCP, cross-site refusal, logout and revocation.
-
 use jiff::Timestamp;
 use psst_client::api::{ApiCallError, ApiClient, Method};
 use psst_engine_proto::fake::Script;
@@ -17,7 +14,6 @@ fn tcp_server() -> TestServer {
     server(Script::default(), |cfg| cfg.tcp = true)
 }
 
-/// A browser logged in with a link asked for over the socket.
 async fn logged_in(server: &TestServer) -> Browser {
     let mut browser = Browser::new(server.tcp_addr().unwrap());
     let link = login_link(server.endpoint(), None).await;
@@ -67,7 +63,6 @@ async fn a_link_asked_for_over_tcp_starts_with_the_address_the_client_reached() 
         link.body
     );
 
-    // The link works for the browser, which logs in for the device that asked for it.
     let tcp = Endpoint::Tcp { host: addr.ip().to_string(), port: addr.port() };
     let mut browser = Browser::new(addr);
     assert_eq!(browser.log_in(&login_link(tcp, Some(paired.token.clone())).await).await.status, 303);

@@ -10,5 +10,4 @@ rtrb = "0.4.1"
 [workspace]
 
 [features]
-# Real-time promotion of the PipeWire callback thread through RTKit.
 realtime = ["cpal/realtime-dbus"]

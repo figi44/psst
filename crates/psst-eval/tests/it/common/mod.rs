@@ -1,5 +1,3 @@
-//! An eval set in a temp dir, and `psst-eval` run against it.
-
 #![allow(dead_code)]
 
 use std::{
@@ -52,8 +50,7 @@ text = "Hyprland"
 pin = true
 "#;
 
-/// What the engine was asked to use for an English case with the files above: the style, then
-/// the pinned term, then the others alphabetically.
+/// The style, then the pinned term, then the others alphabetically.
 pub const EN_PROMPT: &str = "I'm updating the NixOS config. Hyprland, psst, t3code.";
 pub const CS_PROMPT: &str = "Upravuji konfiguraci NixOS. Hyprland, psst, t3code.";
 
@@ -67,7 +64,6 @@ pub struct Evals {
 }
 
 impl Evals {
-    /// An eval set with the config files above and no cases.
     pub fn new() -> Self {
         let dir = tempfile::Builder::new().prefix("psst-eval-test-").tempdir().unwrap();
         fs::write(dir.path().join("server.toml"), SERVER_TOML).unwrap();
@@ -98,7 +94,6 @@ impl Evals {
         write_cases(&self.file("cases.jsonl"), cases).unwrap();
     }
 
-    /// Runs `psst-eval <command> --evals <dir> <args>`.
     pub fn run(&self, command: &str, args: &[&str]) -> Run {
         let output = Command::new(env!("CARGO_BIN_EXE_psst-eval"))
             .arg(command)
@@ -110,19 +105,16 @@ impl Evals {
         Run(output)
     }
 
-    /// Regenerates baseline.json, as an agent does before pushing; panics if that fails.
     pub fn write_baseline(&self) {
         self.run("replay", &["--write"]).success();
     }
 
-    /// Keeps the current baseline.json as main's, and returns its path.
     pub fn save_main_baseline(&self) -> String {
         let main = self.file("main-baseline.json");
         fs::copy(self.file("baseline.json"), &main).unwrap();
         main.display().to_string()
     }
 
-    /// A GitHub event payload for a pull request with these labels.
     pub fn event(&self, labels: &[&str]) -> String {
         let labels: Vec<Value> = labels.iter().map(|name| json!({"name": name})).collect();
         let path = self.file("event.json");
@@ -153,7 +145,6 @@ impl Run {
         self
     }
 
-    /// A failed check: exit status 1, with `message` among the failures.
     #[track_caller]
     pub fn fails_with(&self, message: &str) -> &Self {
         assert_eq!(self.code(), 1, "expected a failed check\nstdout:\n{}\nstderr:\n{}", self.stdout(), self.stderr());
@@ -162,7 +153,6 @@ impl Run {
     }
 }
 
-/// An engine trace with one segment.
 pub fn trace(lang: &str, prompt: &str, text: &str) -> EngineTrace {
     EngineTrace {
         engine: "faster-whisper".into(),
@@ -185,7 +175,6 @@ pub fn trace(lang: &str, prompt: &str, text: &str) -> EngineTrace {
     }
 }
 
-/// A recorded English case: the engine heard `heard` with the bias, and `heard_raw` without.
 pub fn case(id: &str, reference: &str, terms: &[&str], heard: &str, heard_raw: &str) -> Case {
     Case {
         id: id.into(),

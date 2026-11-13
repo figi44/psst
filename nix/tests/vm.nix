@@ -1,5 +1,3 @@
-# `checks.vm`: the NixOS module in a VM, with psst-server's scripted fake engine in place of the
-# GPU engine.
 { self, pkgs }:
 let
   # The fake engine logs every request next to its script, so the script is copied into the
@@ -14,13 +12,10 @@ let
       ];
     }
   );
-  # Stands in for the faster-whisper engine on the service's PATH.
   fakeEngine = pkgs.writeShellScriptBin "psst-engine-fake" ''
     exec ${pkgs.psst-server}/bin/psst-server __fake-engine /var/lib/psst/fake-engine.json
   '';
-  # A minimal client on the socket, in place of `psst daemon` (which needs audio): says hello,
-  # then uploads one second of silence. Prints the answer to `hello`, then the answer to the
-  # dictation, one JSON line each.
+  # In place of `psst daemon`, which needs audio.
   dictate =
     pkgs.writers.writePython3Bin "psst-dictate"
       {
@@ -38,7 +33,6 @@ let
 
 
         def answer(ws):
-            """The next message that isn't progress."""
             while True:
                 msg = json.loads(ws.recv(timeout=30))
                 if msg["type"] != "progress":

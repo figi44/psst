@@ -1,6 +1,3 @@
-# psst's checks, run inside the dev shell (`nix develop`). `just` lists them; `just check` runs
-# everything CI checks, in CI's order.
-
 _default:
     @just --list
 

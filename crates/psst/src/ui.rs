@@ -1,10 +1,3 @@
-//! The daemon's side of the Wayland thread: it sends [`WaylandCmd`]s and receives
-//! [`WaylandEvent`]s, and nothing else. The thread itself lives in `psst-wayland`.
-//!
-//! The daemon asks [`Wayland`] for a sink when it has none: at the first command, and again
-//! after `Disconnected`. [`DesktopWayland`] is the real thread; tests and the `[insert] record`
-//! seam use [`RecordingWayland`], which writes every command to a file instead.
-
 use std::{
     fs::{File, OpenOptions},
     io::Write,
@@ -22,18 +15,14 @@ use tokio::sync::mpsc;
 
 pub type WaylandEvents = mpsc::UnboundedSender<WaylandEvent>;
 
-/// Where the daemon sends Wayland commands.
 pub trait WaylandSink: Send {
     fn send(&mut self, cmd: WaylandCmd);
 }
 
-/// Starts (or restarts) the Wayland thread.
 pub trait Wayland: Send {
-    /// Connects and returns the command sink; events go to `events`.
     fn connect(&mut self, events: WaylandEvents) -> Result<Box<dyn WaylandSink>, String>;
 }
 
-/// `client.toml`'s `[overlay]` as the Wayland thread takes it.
 pub fn overlay_config(cfg: &psst_config::OverlayConfig) -> OverlayConfig {
     let rgba = |c: Color| Rgba::new(c.r, c.g, c.b, c.a);
     OverlayConfig {
@@ -48,13 +37,9 @@ pub fn overlay_config(cfg: &psst_config::OverlayConfig) -> OverlayConfig {
     }
 }
 
-/// The real Wayland thread (`psst-wayland`).
-///
-/// [`DesktopWayland::new`] starts it with the daemon, so the overlay's font system is built once,
-/// before the first `toggle`. The thread connects to the compositor on its first command, and
-/// again on the next command after it lost the compositor, so the daemon dropping its sink on
-/// `Disconnected` keeps the thread. A thread that has stopped (it panicked) is started again by
-/// the next [`Wayland::connect`].
+/// Started with the daemon so the overlay's font system is built before the first `toggle`. The
+/// thread reconnects to the compositor on its next command, so dropping the sink on
+/// `Disconnected` keeps the thread.
 pub struct DesktopWayland {
     options: psst_wayland::Options,
     running: Option<Arc<Running>>,
@@ -62,14 +47,11 @@ pub struct DesktopWayland {
 
 struct Running {
     thread: WaylandThread,
-    /// Where the thread's events go: the sender from the latest `connect`.
     events: Arc<Mutex<Option<WaylandEvents>>>,
     stopped: AtomicBool,
 }
 
 impl DesktopWayland {
-    /// Starts the thread with `client.toml`'s `[overlay]`. It connects to `WAYLAND_DISPLAY`
-    /// (relative to `XDG_RUNTIME_DIR`) on its first command.
     pub fn new(overlay: &psst_config::OverlayConfig) -> Self {
         let options = psst_wayland::Options { overlay: overlay_config(overlay), ..psst_wayland::Options::default() };
         let mut wayland = DesktopWayland { options, running: None };
@@ -111,7 +93,6 @@ impl Wayland for DesktopWayland {
 struct DesktopSink {
     running: Arc<Running>,
     events: WaylandEvents,
-    /// The thread had stopped when a command was sent; `Disconnected` went out once.
     dead: bool,
 }
 
@@ -134,8 +115,6 @@ impl WaylandSink for DesktopSink {
     }
 }
 
-/// `[insert] record`: appends each command to a file as one JSON line; pastes and copies succeed
-/// at once, and the overlay is "shown" as soon as it's first sent.
 pub struct RecordingWayland {
     pub path: PathBuf,
 }
@@ -159,8 +138,7 @@ struct RecordingSink {
 
 impl WaylandSink for RecordingSink {
     fn send(&mut self, cmd: WaylandCmd) {
-        // One write per line, so a reader never sees half of one: `writeln!` formats a JSON value
-        // in many small writes.
+        // One write per line so a reader never sees half of one; `writeln!` would write in pieces.
         let mut line = record(&cmd).to_string();
         line.push('\n');
         let _ = self.file.write_all(line.as_bytes());
@@ -183,7 +161,6 @@ impl WaylandSink for RecordingSink {
     }
 }
 
-/// One command as the `[insert] record` file writes it.
 pub fn record(cmd: &WaylandCmd) -> Value {
     match cmd {
         WaylandCmd::Overlay(state) => json!({"cmd": "overlay", "state": state.as_ref().map(overlay_json)}),

@@ -1,16 +1,3 @@
-//! The eval metrics, counted per output so they can be summed over any set of cases.
-//!
-//! - **Term recall:** the share of term occurrences in the reference that the output has with the
-//!   exact spelling ([`text::count_term`]).
-//! - **WER:** word errors of the normalised output against the normalised reference
-//!   ([`text::normalise`]), over the reference's words.
-//! - **False corrections:** dictionary and rule edits that turn words matching the reference
-//!   into ones that don't, per 1,000 output words. The edits are replayed in pipeline order, and
-//!   before each one the text so far is aligned with the reference: an edit is a false correction
-//!   when the words it touches that were aligned to equal reference words aren't all, in order,
-//!   among the words that replace them. With `every_dictionary_edit_counts` (clips without terms, and the stress test) every
-//!   dictionary edit counts.
-
 use std::ops::{AddAssign, Range};
 
 use anyhow::{bail, ensure};
@@ -19,18 +6,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::{align::align, text};
 
-/// What one output, or a set of outputs, scored.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Counts {
-    /// Normalised words in the reference.
     pub ref_words: u64,
-    /// Normalised words in the output.
     pub output_words: u64,
-    /// Substitutions, deletions and insertions against the reference.
     pub word_errors: u64,
-    /// Occurrences of the case's terms in the reference.
     pub term_occurrences: u64,
-    /// Of those, how many the output has with the exact spelling.
     pub term_hits: u64,
     pub false_corrections: u64,
 }
@@ -47,39 +28,28 @@ impl AddAssign for Counts {
 }
 
 impl Counts {
-    /// Term recall in percent; `None` without term occurrences.
     pub fn term_recall(&self) -> Option<f64> {
         (self.term_occurrences > 0).then(|| 100.0 * self.term_hits as f64 / self.term_occurrences as f64)
     }
 
-    /// Word error rate in percent; `None` without reference words.
     pub fn wer(&self) -> Option<f64> {
         (self.ref_words > 0).then(|| 100.0 * self.word_errors as f64 / self.ref_words as f64)
     }
 
-    /// False corrections per 1,000 output words (counting at least one word).
     pub fn false_corrections_per_1000(&self) -> f64 {
         1000.0 * self.false_corrections as f64 / self.output_words.max(1) as f64
     }
 }
 
-/// What an output is scored against.
 #[derive(Debug, Clone, Copy)]
 pub struct Scoring<'a> {
     pub reference: &'a str,
-    /// The dictionary terms in the reference; each must occur in it.
     pub terms: &'a [String],
-    /// The language's filler words, removed by normalisation.
     pub fillers: &'a [String],
-    /// Count every dictionary edit as a false correction: for clips without terms, and the
-    /// stress test.
+    /// For references without terms (and the stress test), where any dictionary edit is wrong.
     pub every_dictionary_edit_counts: bool,
 }
 
-/// Scores one pipeline output.
-///
-/// Fails when a listed term doesn't occur in the reference, or when the output's edits, applied
-/// to `raw_text` in order, don't give its `text` (the pipeline's contract).
 pub fn score(scoring: &Scoring, output: &Final) -> anyhow::Result<Counts> {
     let reference = text::normalise(scoring.reference, scoring.fillers);
     let words = text::normalise(&output.text, scoring.fillers);
@@ -117,16 +87,12 @@ pub fn score(scoring: &Scoring, output: &Final) -> anyhow::Result<Counts> {
     })
 }
 
-/// Whether an edit changed a word that was aligned to an equal reference word.
-///
-/// Only the alignment before the edit decides which words were correct. The edit counts when the
-/// correct words it touches, in order, aren't all among the words that replace them, so a word
-/// that repeats can't be mistaken for one that was lost. `region` is the edited part of
-/// `before`; `after` is the whole text after the edit.
+/// Only the alignment before the edit decides which words were correct. Requiring them in order
+/// among the replacing words keeps a repeated word from passing for one that was lost.
+/// `region` is the edited part of `before`; `after` is the whole text after the edit.
 fn breaks_words(reference: &[String], fillers: &[String], before: &str, region: Range<usize>, after: &str) -> bool {
     let tokens = text::tokens(before);
-    // Tokens the edit touches, including ones that merely border it, so joining or splitting
-    // tokens counts as a change of words.
+    // Bordering tokens count as touched, so joining or splitting tokens is a change of words.
     let touched: Vec<usize> =
         (0..tokens.len()).filter(|&i| tokens[i].start <= region.end && tokens[i].end >= region.start).collect();
     let (Some(&first), Some(&last)) = (touched.first(), touched.last()) else {
@@ -149,11 +115,6 @@ fn breaks_words(reference: &[String], fillers: &[String], before: &str, region: 
     !correct.into_iter().all(|word| rest.any(|n| n == word))
 }
 
-/// Applies `edits` to `raw` in order, calling `visit` with each edit, the text before it, the
-/// part of that text it replaces, and the text after it. Returns the final text.
-///
-/// Each edit replaces the current text of its raw span with `after`. An edit may cover earlier
-/// edits whole, but never cut through one.
 fn replay_edits(
     raw: &str,
     edits: &[Edit],
@@ -191,8 +152,8 @@ fn replay_edits(
         split(&mut pieces, raw, span.start)?;
         split(&mut pieces, raw, span.end)?;
 
-        // The pieces the edit replaces. An insertion replaces none and goes after any earlier
-        // insertion at the same place; a replacement leaves insertions at its edges alone.
+        // An insertion goes after any earlier insertion at the same place; a replacement leaves
+        // insertions at its edges alone.
         let is_inside = |p: &Piece| {
             if span.is_empty() {
                 false

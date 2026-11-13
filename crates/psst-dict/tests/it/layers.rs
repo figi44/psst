@@ -1,6 +1,3 @@
-//! The database layer on top of `dictionary.toml`: add, replace, hide, reset
-//! and rename, conflicts, and never rules.
-
 use psst_config::{ConfigFile, DictionaryFile, TermLanguages, TermSpec};
 use psst_dict::{Dictionary, Error, Layer, LayerEntry, LayerTerm, NeverRule, Resolved, fuzzy_key, term_id};
 
@@ -12,7 +9,6 @@ fn term(text: &str, sounds_like: &[&str]) -> TermSpec {
     TermSpec { sounds_like: sounds_like.iter().map(|s| s.to_string()).collect(), ..TermSpec::new(text) }
 }
 
-/// A database entry that adds or replaces `spec`, saved at `saved`.
 fn set(spec: TermSpec, saved: u64) -> (String, LayerTerm) {
     (term_id(&spec.text), LayerTerm { entry: LayerEntry::Set(spec), saved })
 }
@@ -29,12 +25,10 @@ fn resolve(file: &DictionaryFile, layer: &Layer) -> Resolved {
     Dictionary::resolve(file, layer).expect("the file is valid")
 }
 
-/// The texts of the dictionary's terms, in its order.
 fn texts(dictionary: &Dictionary) -> Vec<&str> {
     dictionary.terms().iter().map(|t| t.text.as_str()).collect()
 }
 
-/// What an exact match makes of `spoken` in an English session, if anything.
 fn replaced(dictionary: &Dictionary, spoken: &str) -> Option<String> {
     dictionary.exact_matches(spoken, "en", |_| true).first().map(|m| m.term.text.clone())
 }

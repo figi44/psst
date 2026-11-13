@@ -1,13 +1,9 @@
-//! Restarting the engine after the machine wakes up: logind's
-//! `PrepareForSleep(false)` on the system bus.
-
 use futures_util::StreamExt;
 use tokio::sync::watch;
 use zbus::{MatchRule, MessageStream, message::Type};
 
 use crate::engine::Supervisor;
 
-/// Watches for resume until shutdown. Without a system bus, logs it and returns.
 pub async fn watch_resume(engine: Supervisor, mut shutdown: watch::Receiver<bool>) {
     let mut stream = match subscribe().await {
         Ok(stream) => stream,

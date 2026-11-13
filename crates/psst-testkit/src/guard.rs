@@ -1,11 +1,3 @@
-//! Refuses any client environment that could reach the live session.
-//!
-//! Every path a client uses must resolve inside the sandbox root and outside
-//! `/run/user/<uid>`, the Wayland and niri sockets must not be the live ones (compared by device
-//! and inode, so links and bind mounts don't slip through), the session bus is disabled, and
-//! `WAYLAND_SOCKET` and `DISPLAY` aren't set. The only exemption is the nested niri's own
-//! connection to its host, the sandbox's headless sway.
-
 use std::{
     env,
     ffi::{OsStr, OsString},
@@ -13,20 +5,16 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-/// Directories and sockets a client gets from the sandbox.
 pub(crate) const PATH_VARS: [&str; 6] =
     ["XDG_RUNTIME_DIR", "XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "NIRI_SOCKET"];
 
-/// Variables that reach a session; cleared for every client.
 pub(crate) const CLEARED_VARS: [&str; 6] =
     ["WAYLAND_SOCKET", "DISPLAY", "SWAYSOCK", "I3SOCK", "XAUTHORITY", "HYPRLAND_INSTANCE_SIGNATURE"];
 
-/// The live session's runtime directory.
 pub(crate) fn run_user() -> PathBuf {
     PathBuf::from(format!("/run/user/{}", rustix::process::getuid().as_raw()))
 }
 
-/// The live session's Wayland and niri sockets, from this process's environment.
 pub(crate) fn live_sockets() -> Vec<PathBuf> {
     let runtime = env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(run_user);
     let mut live = Vec::new();
@@ -39,7 +27,6 @@ pub(crate) fn live_sockets() -> Vec<PathBuf> {
     live
 }
 
-/// `path` made absolute and normalised: through symlinks if it exists, lexically otherwise.
 fn resolve(path: &Path) -> Result<PathBuf, String> {
     if !path.is_absolute() {
         return Err(format!("{} is not absolute", path.display()));
@@ -64,6 +51,7 @@ fn resolve(path: &Path) -> Result<PathBuf, String> {
     }
 }
 
+/// By device and inode, so links and bind mounts don't slip through.
 fn same_file(a: &Path, b: &Path) -> bool {
     match (std::fs::metadata(a), std::fs::metadata(b)) {
         (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
@@ -71,8 +59,7 @@ fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// Checks a client environment: `vars` are what the client gets (anything not listed is
-/// removed, see [`CLEARED_VARS`]).
+/// `vars` are what the client gets (anything not listed is removed, see [`CLEARED_VARS`]).
 pub(crate) fn check_isolation(
     root: &Path,
     vars: &[(OsString, OsString)],
@@ -130,8 +117,7 @@ pub(crate) fn check_isolation(
     Ok(())
 }
 
-/// For test programs started in a sandbox (`Sandbox::command`): exits with status 3 unless this
-/// process's environment is the sandbox's. Call it before connecting to anything.
+/// Call it before connecting to anything.
 pub fn assert_client_env() {
     let refuse = |msg: String| -> ! {
         eprintln!("sandbox guard: REFUSING: {msg}");
@@ -163,7 +149,6 @@ mod tests {
         _listeners: Vec<UnixListener>,
     }
 
-    /// A sandbox root with its sockets, and a stand-in for the live runtime dir and socket.
     fn fixture() -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("root/run")).unwrap();
@@ -210,11 +195,9 @@ mod tests {
     #[test]
     fn refuses_the_live_session() {
         let f = fixture();
-        // The live runtime dir, an absolute live WAYLAND_DISPLAY, the live niri socket.
         assert!(check(&f, &with(&f, "XDG_RUNTIME_DIR", &f.live_dir)).is_err());
         assert!(check(&f, &with(&f, "WAYLAND_DISPLAY", &f.live)).is_err());
         assert!(check(&f, &with(&f, "NIRI_SOCKET", &f.live)).is_err());
-        // A link inside the root to the live socket.
         std::os::unix::fs::symlink(&f.live, f.root.join("run/wayland-9")).unwrap();
         let err = check(&f, &with(&f, "WAYLAND_DISPLAY", "wayland-9")).unwrap_err();
         assert!(err.contains("outside the sandbox"), "{err}");

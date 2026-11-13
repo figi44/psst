@@ -1,5 +1,3 @@
-//! The `psst-server` binary: `check-config` and the `__fake-engine` mode.
-
 use std::{
     fs,
     io::{BufReader, Write},

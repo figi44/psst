@@ -1,19 +1,3 @@
-//! A scripted stand-in for `psst-server` that speaks `/v1/client` (and `/api/pair/redeem`), for
-//! client and daemon tests that need what the real server doesn't do on demand: stop reading
-//! mid-session, hold `ready` back, refuse connections while keeping its registry, reject the
-//! next `start`, or speak another protocol version. End-to-end tests use the real server (`spawn_server`).
-//!
-//! It keeps a session registry like the real one: `start` gets `ready` at once, `progress`
-//! follows every [`FakeServerConfig::progress_interval`], `stop` is checked against the audio
-//! received and answered after [`FakeServerConfig::final_delay`] with the next scripted
-//! [`Outcome`]. Finished sessions answer `resume` with their `final`; running ones are attached.
-//! A disconnect drops sessions still recording and keeps stopped ones running. A device that
-//! connects again replaces its older connection, as with the real server. Its `welcome` offers
-//! only `pcm_s16le`, as servers from before Opus do, so [`SeenSession::audio`] is exactly what the
-//! client sent.
-//!
-//! It runs on its own thread with its own runtime, so sync and async tests use it the same way.
-
 use std::{
     collections::{HashMap, VecDeque},
     net::SocketAddr,
@@ -42,32 +26,24 @@ use tokio_tungstenite::tungstenite::{
     handshake::server::{Request, Response},
 };
 
-/// How a stopped session ends.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outcome {
-    /// `final` with this text (`""` is "nothing heard").
+    /// `""` is "nothing heard".
     Final(String),
-    /// `error` with this code.
     Error(ErrorCode),
-    /// Never finishes; `progress` keeps coming.
+    /// `progress` keeps coming.
     Hang,
 }
 
 #[derive(Debug, Clone)]
 pub struct FakeServerConfig {
-    /// Also listen on a free TCP port on 127.0.0.1.
     pub tcp: bool,
-    /// The device token TCP clients must present.
     pub token: String,
-    /// The code `/api/pair/redeem` accepts; it hands out [`FakeServerConfig::token`].
     pub pair_code: String,
     pub max_recording_s: u32,
     pub progress_interval: Duration,
-    /// From `stop` (or a resume's `ready`) until the outcome is sent.
     pub final_delay: Duration,
-    /// `ready.model_state`.
     pub model_state: ReadyModelState,
-    /// Holds each `ready` back this long, like a slow link.
     pub ready_delay: Duration,
 }
 
@@ -86,17 +62,14 @@ impl Default for FakeServerConfig {
     }
 }
 
-/// What the fake server saw of one session.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SeenSession {
     pub id: SessionId,
-    /// Every `start` for this id, in order (a resume adds one).
     pub starts: Vec<StartMsg>,
-    /// The audio of the latest upload or live stream, padding included.
+    /// Of the latest upload or live stream, padding included.
     pub audio: Vec<i16>,
     pub stop_samples: Option<u64>,
     pub cancelled: bool,
-    /// The `final` text sent, if any.
     pub final_text: Option<String>,
 }
 
@@ -111,7 +84,6 @@ enum RegState {
 struct Reg {
     state: RegState,
     history_id: HistoryId,
-    /// The connection the session is attached to.
     conn: Option<u64>,
 }
 
@@ -119,7 +91,6 @@ struct Reg {
 struct State {
     outcomes: VecDeque<Outcome>,
     rejections: VecDeque<ErrorCode>,
-    /// Set by [`FakeServer::speak_protocol`]: (protocol, whether its refusal has a detail).
     protocol: Option<(u32, bool)>,
     stalled: bool,
     registry: HashMap<SessionId, Reg>,
@@ -150,7 +121,6 @@ struct Inner {
     cfg: FakeServerConfig,
     state: Mutex<State>,
     disconnect: broadcast::Sender<()>,
-    /// (device, connection) of each new connection, so the device's older ones close.
     replaced: broadcast::Sender<(String, u64)>,
     listening: tokio::sync::watch::Sender<bool>,
     shutdown: Notify,
@@ -162,7 +132,6 @@ impl Inner {
     }
 }
 
-/// A running fake server. Stops on drop.
 pub struct FakeServer {
     inner: Arc<Inner>,
     socket: PathBuf,
@@ -172,7 +141,6 @@ pub struct FakeServer {
 }
 
 impl FakeServer {
-    /// Starts on a socket in a new temp dir.
     pub fn start(cfg: FakeServerConfig) -> FakeServer {
         let dir = tempfile::Builder::new().prefix("psst-fake-server-").tempdir().expect("temp dir");
         let mut server = Self::start_at(&dir.path().join("client.sock"), cfg);
@@ -180,7 +148,6 @@ impl FakeServer {
         server
     }
 
-    /// Starts on `socket`, which must not exist yet.
     pub fn start_at(socket: &Path, cfg: FakeServerConfig) -> FakeServer {
         let tcp = cfg.tcp.then(|| std::net::TcpListener::bind("127.0.0.1:0").expect("bind tcp"));
         let tcp_addr = tcp.as_ref().map(|l| l.local_addr().expect("tcp addr"));
@@ -191,6 +158,7 @@ impl FakeServer {
         let inner =
             Arc::new(Inner { cfg, state: Mutex::default(), disconnect, replaced, listening, shutdown: Notify::new() });
         let thread_inner = inner.clone();
+        // Its own thread and runtime, so sync and async tests use it the same way.
         let thread = thread::Builder::new()
             .name("fake-server".into())
             .spawn(move || {
@@ -213,37 +181,27 @@ impl FakeServer {
         &self.socket
     }
 
-    /// Queues the outcome of the next stopped session.
     pub fn push_outcome(&self, outcome: Outcome) {
         self.inner.state().outcomes.push_back(outcome);
     }
 
-    /// Rejects the next `start` with this code, before `ready`.
     pub fn reject_next(&self, code: ErrorCode) {
         self.inner.state().rejections.push_back(code);
     }
 
-    /// Speaks `protocol` from the next `hello` on, like a server of another version: a `hello`
-    /// with another protocol gets `error protocol` and the connection closes. With `detail` the
-    /// error carries a [`ProtocolDetail`] (`server_version: "fake"`) as from current servers;
-    /// without, it has none, as from servers before it.
+    /// Without `detail`, the refusal has no [`ProtocolDetail`], as from servers before it.
     pub fn speak_protocol(&self, protocol: u32, detail: bool) {
         self.inner.state().protocol = Some((protocol, detail));
     }
 
-    /// While stalled, the server neither reads nor writes on any connection: no `progress`, no
-    /// pong, no `final`. Connections stay open.
     pub fn set_stalled(&self, stalled: bool) {
         self.inner.state().stalled = stalled;
     }
 
-    /// Closes every connection.
     pub fn disconnect_all(&self) {
         let _ = self.inner.disconnect.send(());
     }
 
-    /// Stops or resumes accepting connections. Stopping also closes every connection; the
-    /// registry is kept.
     pub fn set_listening(&self, listening: bool) {
         self.inner.listening.send_replace(listening);
         if !listening {
@@ -251,7 +209,6 @@ impl FakeServer {
         }
     }
 
-    /// Every session seen so far, in the order of their first `start`.
     pub fn sessions(&self) -> Vec<SeenSession> {
         self.inner.state().seen.clone()
     }
@@ -264,12 +221,10 @@ impl FakeServer {
         self.inner.state().reports.clone()
     }
 
-    /// Connections accepted so far.
     pub fn connections(&self) -> u64 {
         self.inner.state().connections
     }
 
-    /// Polls `check` until it's true or `timeout` passes; returns whether it became true.
     pub fn wait_until(&self, timeout: Duration, mut check: impl FnMut(&FakeServer) -> bool) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
@@ -355,11 +310,9 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(inner: Arc<Inner>, mut st
     if !*inner.listening.borrow() {
         return;
     }
-    // `/api/pair/redeem` is plain HTTP; everything else is the WebSocket.
     const PAIR: &[u8] = b"POST /api/pair/redeem";
     let mut head = [0u8; PAIR.len()];
     let mut buffered = Vec::new();
-    // Peek by reading the request line's start; replay it to the WebSocket handshake.
     while buffered.len() < PAIR.len() {
         let want = PAIR.len() - buffered.len();
         match stream.read(&mut head[..want]).await {
@@ -391,7 +344,6 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(inner: Arc<Inner>, mut st
         let _ = ws.close(None).await;
         return;
     }
-    // hello → welcome
     let hello = loop {
         match ws.next().await {
             Some(Ok(Message::Text(body))) => match serde_json::from_str::<ClientMsg>(&body) {
@@ -418,6 +370,7 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(inner: Arc<Inner>, mut st
         server_version: "fake".into(),
         device: device.clone(),
         limits: ServerLimits { max_recording_s: inner.cfg.max_recording_s },
+        // Like servers before Opus, so `SeenSession::audio` is exactly what the client sent.
         codecs: vec![Codec::PcmS16le],
     };
     if ws.send(send(&ServerMsg::Welcome(welcome))).await.is_err() {
@@ -437,7 +390,7 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(inner: Arc<Inner>, mut st
                 _ = tokio::time::sleep(Duration::from_millis(10)) => continue,
             }
         }
-        // A session another connection took over (a resume) is no longer this one's.
+        // Another connection may have resumed it.
         if let Some((id, _)) = active
             && !attached(&inner.state(), id, conn_id)
         {
@@ -508,7 +461,6 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(inner: Arc<Inner>, mut st
             }
         }
     }
-    // Disconnected: a session still recording is dropped; a stopped one keeps running.
     if let Some((id, _)) = active
         && attached(&inner.state(), id, conn_id)
     {
@@ -612,7 +564,6 @@ fn on_client_msg(
     }
 }
 
-/// The outcome of a running session whose time has come.
 fn finish(inner: &Inner, id: SessionId) -> Option<ServerMsg> {
     let mut state = inner.state();
     let reg = state.registry.get_mut(&id)?;
@@ -689,7 +640,6 @@ async fn pair<S: AsyncRead + AsyncWrite + Unpin>(inner: &Inner, mut stream: S) {
     let _ = stream.shutdown().await;
 }
 
-/// A stream with some already-read bytes put back in front.
 struct Prefixed<S> {
     prefix: Vec<u8>,
     pos: usize,

@@ -1,7 +1,5 @@
-"""The real engine on the CPU with faster-whisper's ``tiny``, offline.
-
-Skipped unless faster-whisper is installed and ``tiny`` is in the local Hugging Face cache
-(``HF_HOME``); loading it once on the GPU, or with this engine, puts it there.
+"""Skipped unless ``tiny`` is in the local Hugging Face cache (``HF_HOME``); loading it once with
+this engine puts it there.
 """
 
 from __future__ import annotations
@@ -81,7 +79,6 @@ def without_decode_time(result: dict) -> dict:
 
 
 def test_a_stream_that_ends_in_a_pause_is_answered_from_the_work_done_ahead(engine):
-    """The answer is the whole recording's, and the chunk was decoded during the pause."""
     second = 16_000
     samples = speech() + [0.0] * second
     whole = engine.transcribe(4, payload(samples), style=STYLE, terms=TERMS)
@@ -103,9 +100,8 @@ def test_a_stream_still_speaking_at_close_is_decoded_then(engine):
 
 
 def test_a_long_stream_reuses_the_chunks_finished_while_recording(engine):
-    """Over 30 s, the chunks decoded ahead were decoded alone rather than in one batch, which may
-    move word timings and probabilities slightly, as another batch size does; the text is the
-    same."""
+    """The chunks decoded ahead weren't batched with the rest, which may move word timings and
+    probabilities slightly, so only the text is compared."""
     samples = long_speech()
     whole = engine.transcribe(8, payload(samples))
     piece = 5 * 16_000

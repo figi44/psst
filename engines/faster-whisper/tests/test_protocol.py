@@ -1,5 +1,3 @@
-"""The frame codec and the stdout redirect."""
-
 from __future__ import annotations
 
 import io

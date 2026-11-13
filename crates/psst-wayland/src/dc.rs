@@ -1,7 +1,3 @@
-//! ext-data-control-v1 and wlr-data-control-unstable-v1 behind one API: both behave identically on
-//! niri and sway. The two protocols have the same shape, so a macro generates the dispatch for
-//! both. ext is preferred when both are offered.
-
 use std::os::fd::{BorrowedFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -23,16 +19,12 @@ pub use wayland_protocols_wlr::data_control::v1::client::{
     zwlr_data_control_source_v1::{self, ZwlrDataControlSourceV1},
 };
 
-/// A data-control protocol.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Proto {
-    /// `ext_data_control_manager_v1`
     Ext,
-    /// `zwlr_data_control_manager_v1` (version 2)
     Wlr,
 }
 
-/// Data a source serves, shared by every type it's offered under.
 pub type Bytes = Arc<dyn AsRef<[u8]> + Send + Sync>;
 
 #[derive(Default)]
@@ -51,15 +43,12 @@ impl SourceData {
     }
 }
 
-/// Implemented by the state that owns a data-control device.
 pub trait DcHandler: Sized {
-    /// New selection; `None` means the clipboard is empty.
     fn dc_selection(&mut self, conn: &Connection, offer: Option<DcOffer>);
-    /// Someone wants our data: write it to `fd` and close it.
+    /// Write the data to `fd` and close it.
     fn dc_send(&mut self, source: &DcSource, mime: String, fd: OwnedFd);
-    /// Our source was replaced (it is already marked dead).
+    /// The source is already marked dead.
     fn dc_cancelled(&mut self, source: &DcSource);
-    /// The device is gone (for example the seat was removed).
     fn dc_finished(&mut self);
 }
 
@@ -118,7 +107,6 @@ impl DcManager {
         }
     }
 
-    /// A source offering every `(mime, bytes)` item.
     pub fn create_source<D>(&self, qh: &QueueHandle<D>, items: Vec<(String, Bytes)>) -> DcSource
     where
         D: Dispatch<ExtDataControlSourceV1, SourceData> + Dispatch<ZwlrDataControlSourceV1, SourceData> + 'static,
@@ -192,7 +180,6 @@ impl DcOffer {
     }
 }
 
-/// Delegate target: `delegate_dc!(State)` routes all data-control objects here.
 pub struct DcDelegate;
 
 macro_rules! impl_dc {

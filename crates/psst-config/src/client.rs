@@ -5,20 +5,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ConfigFile, DEFAULT_PROFILE};
 
-/// `client.toml`, read by the `psst` daemon.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ClientConfig {
     pub server: Endpoint,
-    /// Profile used by `toggle` without `--profile`.
     pub profile: String,
-    /// The error sound. `false` for tests.
     pub sounds: bool,
     pub audio: AudioConfig,
     pub overlay: OverlayConfig,
-    /// Paste rules by Wayland app id.
+    /// By Wayland app id.
     pub apps: BTreeMap<String, AppRule>,
-    /// Test seam: where inserted text goes instead of Wayland.
+    /// Test seam.
     #[serde(skip_serializing_if = "InsertConfig::is_default")]
     pub insert: InsertConfig,
 }
@@ -38,7 +35,6 @@ impl Default for ClientConfig {
 }
 
 impl ClientConfig {
-    /// `$XDG_CONFIG_HOME/psst/client.toml`, else `~/.config/psst/client.toml`.
     pub fn default_path() -> Option<PathBuf> {
         let config_home = env::var_os("XDG_CONFIG_HOME")
             .filter(|dir| !dir.is_empty())
@@ -47,10 +43,6 @@ impl ClientConfig {
         Some(config_home.join("psst").join(Self::FILE_NAME))
     }
 
-    /// How to insert text into the app with this id (`None` when the focused window is unknown).
-    ///
-    /// An `[apps]` rule wins; otherwise [`KNOWN_TERMINALS`] get Ctrl+Shift+V and everything else
-    /// gets Ctrl+V.
     pub fn paste_for(&self, app_id: Option<&str>) -> PasteRule {
         let rule = app_id.and_then(|id| self.apps.get(id));
         let fallback = match app_id {
@@ -64,7 +56,6 @@ impl ClientConfig {
     }
 }
 
-/// App ids that get Ctrl+Shift+V unless an `[apps]` rule says otherwise.
 pub const KNOWN_TERMINALS: &[&str] = &[
     "com.mitchellh.ghostty",
     "Alacritty",
@@ -85,24 +76,19 @@ pub struct AudioConfig {
     pub codec: AudioCodec,
 }
 
-/// `audio.codec`: how audio goes to the server over TCP. Opus by default: its effect on accuracy
-/// can't be told apart from noise on the eval set, though no lossy codec can pass the eval gate's
-/// zero-change tolerances (`psst_client::OpusSettings` has the numbers).
+/// Opus by default: on the eval set its effect on accuracy can't be told apart from noise, though
+/// no lossy codec passes the eval gate's zero-change tolerances (`psst_client::OpusSettings`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AudioCodec {
-    /// Opus over TCP, at 6 % of PCM's bytes (1.9 instead of 32.4 KB/s), for a slow or metered
-    /// link. A server from before Opus gets PCM anyway, and over the socket, which never leaves
-    /// the machine, it's always PCM.
+    /// 6 % of PCM's bytes (1.9 instead of 32.4 KB/s). A server from before Opus, and the Unix
+    /// socket, always get PCM.
     #[default]
     Opus,
-    /// Lossless PCM.
     Pcm,
 }
 
-/// Where audio comes from: `"default"`, a capture device's name, or `"file:<path>"`.
-///
-/// `file:<path>` is the test seam: each recording replays the WAV file (16 kHz mono 16-bit) from
+/// `file:<path>` is a test seam: each recording replays the WAV file (16 kHz mono 16-bit) from
 /// its start, paced in real time, then silence until the recording stops.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
@@ -153,13 +139,11 @@ impl From<AudioInput> for String {
     }
 }
 
-/// `[insert]`, a test seam.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct InsertConfig {
     /// When set, the daemon never connects to Wayland: every command it would send the Wayland
-    /// thread (overlay, clipboard snapshot, paste, copy) is appended to this file as one JSON
-    /// line, and pastes and copies succeed at once.
+    /// thread is appended to this file as one JSON line, and pastes and copies succeed at once.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub record: Option<PathBuf>,
 }
@@ -170,18 +154,16 @@ impl InsertConfig {
     }
 }
 
-/// The overlay's look. Sizes are in logical pixels.
+/// Sizes are in logical pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct OverlayConfig {
     pub anchor: Anchor,
-    /// Distance from the anchored screen edge.
     pub margin: u32,
     pub width: u32,
     pub height: u32,
     pub background: Color,
     pub foreground: Color,
-    /// The recording indicator and level meter.
     pub accent: Color,
 }
 
@@ -199,7 +181,6 @@ impl Default for OverlayConfig {
     }
 }
 
-/// Screen edge the overlay sits on, centred horizontally.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Anchor {
@@ -207,7 +188,6 @@ pub enum Anchor {
     Bottom,
 }
 
-/// An sRGB colour written `#rrggbb` or `#rrggbbaa`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Color {
@@ -252,14 +232,12 @@ impl From<Color> for String {
     }
 }
 
-/// `[apps."<app id>"]`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AppRule {
-    /// `"ctrl+v"`, `"ctrl+shift+v"`, or `false` to copy only. Unset keeps the built-in choice.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paste: Option<PasteAction>,
-    /// Pause between setting the clipboard and pressing the chord; for XWayland apps.
+    /// Pause between setting the clipboard and pressing the chord, for XWayland apps.
     pub paste_delay_ms: u32,
 }
 
@@ -268,7 +246,7 @@ pub struct AppRule {
 pub enum PasteAction {
     CtrlV,
     CtrlShiftV,
-    /// Copy to the clipboard without pasting or restoring.
+    /// Leaves the text on the clipboard: no paste, and no restoring what was there.
     CopyOnly,
 }
 
@@ -302,7 +280,6 @@ impl From<PasteAction> for PasteValue {
     }
 }
 
-/// The resolved way to insert text into one app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PasteRule {
     pub action: PasteAction,

@@ -1,15 +1,5 @@
-//! The overlay's pure renderer: (`OverlayState`, recent levels, style, size, scale) → RGBA pixels.
-//!
-//! The overlay is a pill, centred at the bottom of the screen by default. A round "well" on its
-//! left holds the status icon; the rest shows a live level waveform while recording, or a short
-//! label. [`Renderer::render`] draws one frame; the Wayland thread (`psst-wayland`) puts it on a
-//! layer-shell surface.
-//!
-//! - The font system holds one embedded font, Inter 4.1 Medium (SIL Open Font License 1.1, see
-//!   `fonts/Inter-LICENSE.txt`). It's built once, in [`Renderer::new`].
-//! - The output depends only on the arguments: the same state, levels, style, size and scale
-//!   always give the same pixels. Snapshot tests in `tests/snapshots.rs` hold every state.
-//! - Nothing animates on its own. The waveform moves only as new levels arrive.
+//! Rendering is pure: the same arguments always give the same pixels, and nothing animates on its
+//! own.
 
 use std::collections::VecDeque;
 
@@ -18,23 +8,19 @@ mod render;
 pub use render::Renderer;
 pub use tiny_skia::Pixmap;
 
-/// What the overlay shows. `None` in `WaylandCmd::Overlay` hides it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum OverlayState {
-    /// From `toggle` until the first audio frame, so the overlay never claims to record early.
+    /// Until the first audio frame, so the overlay never claims to record early.
     Starting,
-    /// `level` is the input level, 0.0–1.0.
     Recording {
         level: f32,
     },
-    /// Recording to the file while the server is unreachable or rejected the session.
     Offline {
         level: f32,
         reason: String,
     },
     LoadingModel,
     Processing,
-    /// Uploading a recording.
     Sending,
     Retrying,
     WaitingForServer,
@@ -43,18 +29,15 @@ pub enum OverlayState {
     Error {
         message: String,
     },
-    /// A short notice, for example an ignored toggle or a gapped recording.
     Flash {
         message: String,
     },
-    /// Shown from 30 s before `max_recording_s`.
     LimitWarning {
         seconds_left: u32,
     },
 }
 
 impl OverlayState {
-    /// The input level this state carries, if it's a recording state with one.
     pub fn level(&self) -> Option<f32> {
         match self {
             OverlayState::Recording { level } | OverlayState::Offline { level, .. } => Some(*level),
@@ -63,7 +46,7 @@ impl OverlayState {
     }
 }
 
-/// An sRGB colour with straight (not premultiplied) alpha.
+/// Straight (not premultiplied) alpha.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Rgba {
     pub r: u8,
@@ -77,19 +60,15 @@ impl Rgba {
         Self { r, g, b, a }
     }
 
-    /// The same colour with its alpha multiplied by `factor` (0.0–1.0).
     pub fn faded(self, factor: f32) -> Self {
         Self { a: (self.a as f32 * factor.clamp(0.0, 1.0)).round() as u8, ..self }
     }
 }
 
-/// The overlay's colours: `[overlay]` in `client.toml`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Style {
     pub background: Rgba,
-    /// Text and icons.
     pub foreground: Rgba,
-    /// The recording indicator and level meter.
     pub accent: Rgba,
 }
 
@@ -103,11 +82,8 @@ impl Default for Style {
     }
 }
 
-/// How many levels the waveform keeps.
 pub const LEVEL_HISTORY: usize = 64;
 
-/// Recent input levels for the waveform, oldest first. The Wayland thread pushes one for every
-/// `Recording` or `Offline` update and clears them when the overlay is hidden.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Levels {
     values: VecDeque<f32>,
@@ -118,8 +94,6 @@ impl Levels {
         Self { values: VecDeque::with_capacity(LEVEL_HISTORY) }
     }
 
-    /// Adds the newest level, clamped to 0.0–1.0 (NaN counts as silence), dropping the oldest
-    /// beyond [`LEVEL_HISTORY`].
     pub fn push(&mut self, level: f32) {
         if self.values.len() == LEVEL_HISTORY {
             self.values.pop_front();
@@ -139,7 +113,6 @@ impl Levels {
         self.values.is_empty()
     }
 
-    /// Oldest first.
     pub fn iter(&self) -> impl DoubleEndedIterator<Item = f32> + ExactSizeIterator + '_ {
         self.values.iter().copied()
     }
@@ -155,8 +128,6 @@ impl FromIterator<f32> for Levels {
     }
 }
 
-/// The buffer size, in physical pixels, for a surface of `width` × `height` logical pixels at
-/// `scale` (fractional scales included). Never zero.
 pub fn physical_size(width: u32, height: u32, scale: f64) -> (u32, u32) {
     let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
     let px = |v: u32| ((v.max(1) as f64 * scale).round() as u32).max(1);

@@ -1,16 +1,3 @@
-//! `psst status --follow`, for status bars: it prints the daemon's state as one JSON line at
-//! start and again on every change, and never exits on its own.
-//!
-//! - **Formats:** [`Format::Waybar`] is a [`WaybarLine`] for waybar's `custom` module with
-//!   `return-type: json`; [`Format::Json`] is the full [`Status`].
-//! - **Push, not polling:** it subscribes with [`Request::Follow`], and the daemon writes when
-//!   its state changes, coalescing bursts. A line identical to the previous one isn't printed.
-//! - **Without a daemon** it prints a `stopped` line ([`Status::stopped`]) and tries again after
-//!   [`Backoff::first`], doubling up to [`Backoff::max`]. When a daemon it was following goes
-//!   away, it reconnects at once, and prints `stopped` only if that fails.
-//! - **A closed output** (the bar went away) ends it quietly, even while nothing changes: it
-//!   polls its output for an error alongside the socket.
-
 use std::{
     io::{self, Read, Write},
     os::{fd::AsFd, unix::net::UnixStream},
@@ -26,13 +13,10 @@ use crate::ipc::{CLI_TIMEOUT, Request, Status};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
-    /// A [`WaybarLine`] per line.
     Waybar,
-    /// The full [`Status`] per line, as `psst status --json` prints it but on one line.
     Json,
 }
 
-/// How often [`run`] tries to reach a daemon that isn't there.
 #[derive(Debug, Clone, Copy)]
 pub struct Backoff {
     pub first: Duration,
@@ -45,20 +29,12 @@ impl Default for Backoff {
     }
 }
 
-/// A line for waybar's `custom` module with `return-type: json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WaybarLine {
-    /// The number of saved recordings waiting for `psst retry` or `psst paste-last`, or empty
-    /// when there are none.
     pub text: String,
-    /// The state, for `format-icons`: `idle`, `recording`, `offline` (recording to the file
-    /// only), `finishing`, `error` (while the overlay shows one) or `stopped` (no daemon).
     pub alt: &'static str,
-    /// CSS classes: `alt`, with `recording` also on `offline`, plus `saved` when there are saved
-    /// recordings and `warning` when `psst status` has a warning (an update to make, or saved
-    /// recordings to deal with).
     pub class: Vec<&'static str>,
-    /// Details, as Pango markup (already escaped, so leave waybar's `escape` off).
+    /// Already-escaped Pango markup, so waybar's `escape` must stay off.
     pub tooltip: String,
 }
 
@@ -117,7 +93,6 @@ fn escape_markup(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
-/// The line for `status` in `format`, without its newline.
 pub fn render(format: Format, status: &Status) -> String {
     match format {
         Format::Waybar => serde_json::to_string(&WaybarLine::new(status)),
@@ -126,7 +101,6 @@ pub fn render(format: Format, status: &Status) -> String {
     .expect("status lines serialise")
 }
 
-/// `psst status --follow [--json]`.
 pub fn main(json: bool) -> anyhow::Result<ExitCode> {
     let socket = crate::socket_path()?;
     let format = if json { Format::Json } else { Format::Waybar };
@@ -134,8 +108,6 @@ pub fn main(json: bool) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Follows the daemon at `socket`, writing a line to `out` at start and after every change.
-/// Returns only once `out` is closed, or on an error writing to it.
 pub fn run<W: Write + AsFd>(socket: &Path, format: Format, out: &mut W, backoff: Backoff) -> io::Result<()> {
     let mut printer = Printer { out, format, last: None };
     let mut delay = backoff.first;
@@ -170,8 +142,6 @@ struct Printer<'a, W> {
 }
 
 impl<W: Write> Printer<'_, W> {
-    /// Prints `status` unless its line is the same as the last one. False if the output is
-    /// closed.
     fn print(&mut self, status: &Status) -> io::Result<bool> {
         let line = render(self.format, status);
         if self.last.as_ref() == Some(&line) {
@@ -190,13 +160,9 @@ impl<W: Write> Printer<'_, W> {
 
 enum Ended {
     OutputClosed,
-    /// The daemon closed the connection; `delivered` if it sent a status first.
-    Disconnected {
-        delivered: bool,
-    },
+    Disconnected { delivered: bool },
 }
 
-/// One subscription: prints every status the daemon sends until either side goes away.
 fn follow<W: Write + AsFd>(mut stream: UnixStream, printer: &mut Printer<W>) -> io::Result<Ended> {
     let mut request = serde_json::to_string(&Request::Follow).expect("requests serialise");
     request.push('\n');
@@ -208,6 +174,7 @@ fn follow<W: Write + AsFd>(mut stream: UnixStream, printer: &mut Printer<W>) -> 
     let mut pending = Vec::new();
     let mut buf = [0u8; 16 * 1024];
     loop {
+        // Polling the output too ends this when the bar goes away, even while nothing changes.
         let (readable, closed) = {
             let mut fds = [PollFd::new(&stream, PollFlags::IN), PollFd::new(&*printer.out, PollFlags::empty())];
             match poll(&mut fds, None) {
@@ -241,14 +208,13 @@ fn follow<W: Write + AsFd>(mut stream: UnixStream, printer: &mut Printer<W>) -> 
                         return Ok(Ended::OutputClosed);
                     }
                 }
-                // Not a status, for example a daemon from before `follow` refusing it.
+                // For example an older daemon refusing `follow`.
                 Err(_) => return Ok(Ended::Disconnected { delivered: false }),
             }
         }
     }
 }
 
-/// Waits up to `wait`; true as soon as `out` is closed.
 fn output_closed_within(out: &impl AsFd, wait: Duration) -> io::Result<bool> {
     let deadline = Instant::now() + wait;
     loop {
@@ -266,8 +232,7 @@ fn output_closed_within(out: &impl AsFd, wait: Duration) -> io::Result<bool> {
     }
 }
 
-/// A pipe whose reader is gone reports `ERR`, a socket or terminal that hung up `HUP`, and a
-/// closed descriptor `NVAL`.
+/// A pipe with no reader reports `ERR`, a hung-up socket or terminal `HUP`, a closed fd `NVAL`.
 fn is_closed(revents: PollFlags) -> bool {
     revents.intersects(PollFlags::ERR | PollFlags::HUP | PollFlags::NVAL)
 }

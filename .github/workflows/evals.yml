@@ -1,7 +1,5 @@
-# The replay eval and the stress test, gated against main's
-# evals/baseline.json. Runs only when something the evals read changes, and again when a label is
-# added or removed, which is how the `baseline-change` label takes effect. Both run in one job, so
-# the dev shell and the build are paid for once.
+# Runs again when a label is added or removed, which is how the `baseline-change` label takes
+# effect. Replay and stress share one job, so the dev shell and the build are paid for once.
 name: Evals
 
 on:
@@ -73,7 +71,7 @@ jobs:
           else
             echo "::notice::main has no evals/baseline.json yet, so there's nothing to gate against"
           fi
-      # --check: the committed baseline.json is this replay's. The event carries the labels.
+      # The event carries the labels.
       - name: Replay
         run: |
           args=(--check --event "$GITHUB_EVENT_PATH")

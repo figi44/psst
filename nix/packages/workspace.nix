@@ -1,7 +1,3 @@
-# What the Rust packages share: the Cargo workspace's sources, its version and its lock file.
-# Only the files cargo reads are included, so editing docs, the engine or the Nix files doesn't
-# rebuild the binaries. Crates come from Cargo.lock (importCargoLock), so adding a dependency
-# needs no hash here.
 { lib }:
 let
   root = ../..;
@@ -9,6 +5,8 @@ in
 {
   inherit ((lib.importTOML (root + "/Cargo.toml")).workspace.package) version;
 
+  # Only the files cargo reads, so editing docs, the engine or the Nix files doesn't rebuild the
+  # binaries.
   src = lib.fileset.toSource {
     inherit root;
     fileset = lib.fileset.unions [

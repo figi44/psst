@@ -1,6 +1,3 @@
-//! Listeners: the Unix socket (bound here, or passed in by systemd) with each caller's user id,
-//! and TCP with `TCP_NODELAY` and a 1-hour keepalive.
-
 use std::{
     fs, io,
     net::SocketAddr,
@@ -18,26 +15,19 @@ use axum::{
 };
 use socket2::{Domain, Protocol, SockRef, Socket, TcpKeepalive, Type};
 
-/// Idle time before the server probes a TCP connection, so dead ones are reaped.
 pub const KEEPALIVE_IDLE: Duration = Duration::from_secs(3600);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(60);
 const KEEPALIVE_RETRIES: u32 = 5;
 
-/// Who is on the other end of a connection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Peer {
-    /// A local process, with its user id from `SO_PEERCRED`.
-    Unix {
-        uid: Option<u32>,
-    },
+    Unix { uid: Option<u32> },
     Tcp(SocketAddr),
 }
 
-/// The Unix socket listener; connections carry the caller's user id.
 #[derive(Debug)]
 pub struct UnixSocket(tokio::net::UnixListener);
 
-/// A TCP listener for paired devices.
 #[derive(Debug)]
 pub struct TcpSocket(tokio::net::TcpListener);
 
@@ -122,10 +112,10 @@ impl Connected<IncomingStream<'_, TcpSocket>> for Peer {
     }
 }
 
-/// Binds a TCP listener. IPv6 listeners are IPv6-only, so `0.0.0.0` and `[::]` can both be bound.
 pub fn bind_tcp(addr: SocketAddr) -> io::Result<TcpSocket> {
     let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP))?;
     if addr.is_ipv6() {
+        // So `0.0.0.0` and `[::]` can both be bound.
         socket.set_only_v6(true)?;
     }
     socket.set_reuse_address(true)?;
@@ -135,7 +125,6 @@ pub fn bind_tcp(addr: SocketAddr) -> io::Result<TcpSocket> {
     Ok(TcpSocket(tokio::net::TcpListener::from_std(socket.into())?))
 }
 
-/// Binds the Unix socket at `path` with `mode`, replacing a stale socket file.
 pub fn bind_unix(path: &Path, mode: u32) -> io::Result<std::os::unix::net::UnixListener> {
     if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
         fs::create_dir_all(dir)?;
@@ -164,7 +153,6 @@ pub fn bind_unix(path: &Path, mode: u32) -> io::Result<std::os::unix::net::UnixL
     Ok(listener)
 }
 
-/// The socket systemd passed in (`psst-server.socket`), if this process was socket-activated.
 pub fn systemd_socket() -> Option<std::os::unix::net::UnixListener> {
     const FIRST_FD: i32 = 3;
     let pid: u32 = std::env::var("LISTEN_PID").ok()?.parse().ok()?;

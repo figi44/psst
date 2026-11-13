@@ -1,6 +1,3 @@
-//! The focused window's app id from niri's IPC socket (`$NIRI_SOCKET`), for choosing the paste
-//! chord. One request per connection, as `niri msg` does, so nothing stays open.
-
 use std::{path::Path, time::Duration};
 
 use serde_json::Value;
@@ -10,11 +7,8 @@ use tokio::{
 };
 use tracing::debug;
 
-/// The default for how long the lookup may take before the paste goes ahead with the fallback
-/// chord (`Timing::niri_lookup`).
 pub const TIMEOUT: Duration = Duration::from_millis(150);
 
-/// The focused window's app id; `None` without niri, without a focused window, or on any error.
 pub async fn focused_app_id(socket: &Path, timeout: Duration) -> Option<String> {
     match tokio::time::timeout(timeout, query(socket)).await {
         Ok(Ok(app_id)) => app_id,
@@ -36,7 +30,6 @@ async fn query(socket: &Path) -> std::io::Result<Option<String>> {
     let mut line = String::new();
     BufReader::new(stream).read_line(&mut line).await?;
     let reply: Value = serde_json::from_str(&line).map_err(std::io::Error::other)?;
-    // {"Ok":{"FocusedWindow":{"app_id":"…", …}}}, or null when nothing is focused.
     Ok(reply.pointer("/Ok/FocusedWindow/app_id").and_then(Value::as_str).map(str::to_owned))
 }
 

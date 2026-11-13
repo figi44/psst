@@ -1,5 +1,3 @@
-"""A deterministic model and clock for driving the engine without faster-whisper or a GPU."""
-
 from __future__ import annotations
 
 from array import array
@@ -16,8 +14,6 @@ REVISION = "0123456789abcdef0123456789abcdef01234567"
 
 
 class FakeClock:
-    """A monotonic clock that only moves when told to."""
-
     def __init__(self) -> None:
         self.now = 100.0
 
@@ -29,9 +25,6 @@ class FakeClock:
 
 
 class StubModel:
-    """Loads in 2.4 s with download progress, transcribes in 180 ms, runs out of GPU memory for the
-    request ids in ``oom_ids``, and raises ``errors[id]`` for the ids in ``errors``."""
-
     def __init__(
         self, clock: FakeClock, oom_ids: frozenset[int] = frozenset(), errors: dict[int, Exception] | None = None
     ) -> None:
@@ -39,7 +32,6 @@ class StubModel:
         self.oom_ids = oom_ids
         self.errors = errors or {}
         self.transcribed: list[int] = []
-        """The number of samples of each recording transcribed."""
 
     def load(self, request: LoadRequest, progress: ProgressFn) -> str:
         progress("download", 524_288, 1_048_576)

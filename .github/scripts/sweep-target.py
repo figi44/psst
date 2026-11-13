@@ -1,15 +1,6 @@
 #!/usr/bin/env python3
-"""Delete the dependency artifacts in a target dir that the last builds didn't use.
-
-    cargo ... --message-format json | sweep-target.py <target dir>
-
-rust-cache keeps every artifact whose crate is still a dependency, at any version, so a cache
-restored for an older Cargo.lock and saved again holds both builds, and main's cache grows with
-every lockfile change. CI runs this on main before rust-cache saves. It reads the JSON messages of
-every build the job ran (fresh units are reported too), keeps exactly the artifacts, build script
-outputs and fingerprints of the registry and git dependencies they name, and deletes everything
-else in the dev profile: other builds of those crates, and the workspace's own artifacts, which
-rust-cache drops anyway.
+"""Fresh units are reported in the JSON messages too, so replaying the job's builds names every
+dependency artifact they used. The workspace's own artifacts go too: rust-cache drops them anyway.
 """
 
 import json
@@ -18,7 +9,6 @@ import shutil
 import sys
 from pathlib import Path
 
-# Cargo names a unit's files and directories `<name>-<16 hex digits>[.ext]`.
 UNIT_HASH = re.compile(r"-([0-9a-f]{16})(?=[./]|$)")
 
 

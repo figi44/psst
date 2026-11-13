@@ -1,22 +1,3 @@
-//! The audio eval: transcribes every clip with the worktree's server and
-//! engine, and records the traces in `cases.jsonl`.
-//!
-//! The server runs in this process (`psst_server::serve_in_process`) with the eval set's
-//! `server.toml` (`eval_mode = true`, engine `psst-engine-dev`), a temporary state directory and
-//! the shared model cache. Each clip is uploaded twice, normally and with `eval.bias = false`;
-//! two clips also go through a live session, paced in real time, as a smoke test. Then the
-//! recorded traces must pass the stale-trace check, and `baseline.json` is rewritten. Last, it
-//! prints the server's stop→final latency of the biased uploads.
-//!
-//! **Measuring the codec.** The audio goes as lossless `pcm_s16le`, so the committed traces
-//! measure the model. [`AudioOptions::codec`] (`--codec opus`, with `--opus-bitrate` and
-//! `--opus-application`) sends it as Opus instead, as the daemon can. Since a run rewrites
-//! `cases.jsonl` and `baseline.json` in the directory it's given, run it on a copy of `evals/`,
-//! next to a `pcm` run on another copy, and compare the two with the gate's tolerances:
-//! `psst-eval replay --evals <opus copy> --against <pcm copy>/baseline.json`.
-//!
-//! It uses the GPU, so it runs only inside `scripts/gpu-session.sh`.
-
 use std::{
     env,
     fs::{self, File, TryLockError},
@@ -40,30 +21,21 @@ use uuid::Uuid;
 
 use crate::{cases::EvalSet, replay::replay, stale::stale_traces};
 
-/// How long to wait for the model to become available (a first download takes a while).
+/// A first model download takes a while.
 const MODEL_WAIT: Duration = Duration::from_secs(30 * 60);
-/// Attempts for a transcription that fails with a retryable error.
 const ATTEMPTS: usize = 3;
-/// Clips that also run live.
 const LIVE_CLIPS: usize = 2;
-/// Upper bounds of the recording lengths the latency is reported for, in seconds; the last row
-/// takes the rest.
 const LATENCY_ROWS_S: [u32; 3] = [15, 30, 90];
 
-/// The server's timings for the biased uploads of one range of recording lengths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LatencyRow {
-    /// Recordings longer than this…
     pub over_s: u32,
-    /// …and up to this long; `None` for no limit.
     pub up_to_s: Option<u32>,
     pub dictations: usize,
-    /// From `stop` arriving at the server until it sent `final`.
     pub stop_to_final_ms: Spread,
     pub engine_ms: Spread,
 }
 
-/// Nearest-rank percentiles, in milliseconds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Spread {
     pub p50: u32,
@@ -79,8 +51,7 @@ impl Spread {
     }
 }
 
-/// [`LatencyRow`]s for the ranges that have any of `timings`. Dictations that waited for the
-/// model are left out: the targets assume a loaded engine.
+/// Leaves out dictations that waited for the model: the latency targets assume a loaded engine.
 pub fn latency_rows(timings: &[ServerTimings]) -> Vec<LatencyRow> {
     let mut bounds: Vec<(u32, Option<u32>)> = Vec::new();
     let mut over = 0;
@@ -110,16 +81,14 @@ pub fn latency_rows(timings: &[ServerTimings]) -> Vec<LatencyRow> {
 #[derive(Debug, Clone)]
 pub struct AudioOptions {
     pub evals: PathBuf,
-    /// The model cache (`HF_HOME`), shared across worktrees.
     pub cache_dir: PathBuf,
-    /// Refuse to run outside `scripts/gpu-session.sh`. Off only for tests with the fake engine.
+    /// Off only for tests with the fake engine.
     pub require_gpu_session: bool,
-    /// How the audio goes to the server: [`AudioCodec::Pcm`] for the traces that are committed,
-    /// Opus to measure what the codec costs.
+    /// The committed traces are PCM, so they measure the model rather than the codec.
     pub codec: AudioCodec,
 }
 
-/// `${PSST_CACHE_DIR:-${XDG_CACHE_HOME:-~/.cache}/psst}`, where `gpu-session.sh` keeps its lock.
+/// Must match where `scripts/gpu-session.sh` keeps its lock.
 pub fn psst_cache_dir() -> PathBuf {
     if let Some(dir) = env::var_os("PSST_CACHE_DIR") {
         return dir.into();
@@ -130,13 +99,11 @@ pub fn psst_cache_dir() -> PathBuf {
     cache.join("psst")
 }
 
-/// The default model cache: `hf` in [`psst_cache_dir`].
 pub fn default_model_cache() -> PathBuf {
     psst_cache_dir().join("hf")
 }
 
-/// Fails unless this process runs inside `scripts/gpu-session.sh`: the script exports
-/// `PSST_GPU_SESSION` and holds the GPU lock for as long as its command runs.
+/// `scripts/gpu-session.sh` exports `PSST_GPU_SESSION` and holds the lock while its command runs.
 pub fn check_gpu_session() -> anyhow::Result<()> {
     let lock = psst_cache_dir().join("gpu.lock");
     let held = File::open(&lock).is_ok_and(|file| matches!(file.try_lock(), Err(TryLockError::WouldBlock)));
@@ -149,8 +116,6 @@ pub fn check_gpu_session() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Runs the audio eval, rewriting `cases.jsonl` and `baseline.json`; returns the latency it
-/// printed.
 pub async fn run(opts: &AudioOptions) -> anyhow::Result<Vec<LatencyRow>> {
     if opts.require_gpu_session {
         check_gpu_session()?;
@@ -192,8 +157,7 @@ pub async fn run(opts: &AudioOptions) -> anyhow::Result<Vec<LatencyRow>> {
     crate::cases::write_cases(&set.cases_path(), &set.cases)?;
     eprintln!("wrote {}", set.cases_path().display());
 
-    // The server built these requests; replay recomputes them. A difference here means the two
-    // disagree on how a request is built.
+    // Freshly recorded, so a stale trace means the server and replay build requests differently.
     let stale = stale_traces(&set)?;
     if let Some(first) = stale.first() {
         bail!(
@@ -213,8 +177,6 @@ pub async fn run(opts: &AudioOptions) -> anyhow::Result<Vec<LatencyRow>> {
     Ok(latency)
 }
 
-/// Uploads every clip twice and runs the live smoke test, storing the traces in `set.cases`;
-/// returns the server timings of the biased uploads.
 async fn record(
     set: &mut EvalSet,
     clips: &[(PathBuf, Vec<i16>)],
@@ -285,8 +247,7 @@ fn start_opts(profile: &psst_config::Profile, mode: Mode, bias: bool, codec: Aud
     }
 }
 
-/// Fails unless `session` sends its audio in the codec asked for: a server without Opus would
-/// get PCM instead, and the run would measure the wrong thing.
+/// A server without Opus gets PCM instead, and the run would measure the wrong thing.
 fn check_codec(session: &Session, asked: AudioCodec) -> anyhow::Result<()> {
     let wanted = match asked {
         AudioCodec::Pcm => Codec::PcmS16le,
@@ -296,8 +257,6 @@ fn check_codec(session: &Session, asked: AudioCodec) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The clips that also run live: the shortest one in each language, then the shortest others,
-/// skipping clips with nothing to say.
 fn live_cases(set: &EvalSet, clips: &[(PathBuf, Vec<i16>)]) -> Vec<usize> {
     let mut candidates: Vec<usize> = (0..set.cases.len()).filter(|&i| !set.cases[i].reference.is_empty()).collect();
     candidates.sort_by_key(|&i| (clips[i].1.len(), set.cases[i].id.clone()));
@@ -320,9 +279,7 @@ enum Outcome {
     Refused(ErrorMsg),
 }
 
-/// Waits until the server's model is loaded (a first download takes a while), so no upload waits
-/// for it and every biased upload counts in the latency. A model that failed or is unloaded
-/// stops it at once: nothing here loads it.
+/// Runs before any upload, so every biased upload counts in the latency.
 async fn wait_for_model(endpoint: &Endpoint) -> anyhow::Result<()> {
     let api = ApiClient::new(endpoint.clone(), None);
     let deadline = Instant::now() + MODEL_WAIT;
@@ -351,8 +308,6 @@ async fn wait_for_model(endpoint: &Endpoint) -> anyhow::Result<()> {
     }
 }
 
-/// Runs sessions from `start` until one gives a `final`: waits while the model is unavailable
-/// (loading or downloading) but not once it has failed, and retries retryable errors.
 async fn transcribe(
     client: &mut Client,
     endpoint: &Endpoint,
@@ -369,7 +324,6 @@ async fn transcribe(
             Ok(Outcome::Final(fin)) => return Ok(fin),
             Ok(Outcome::Refused(err)) => err,
             Err(err) => {
-                // The connection is gone; one more try on a new one.
                 failures += 1;
                 if failures >= ATTEMPTS {
                     return Err(err);
@@ -380,8 +334,7 @@ async fn transcribe(
             }
         };
         if err.code == ErrorCode::ModelUnavailable {
-            // A failed model stays failed until `psst-server model load`, which nothing here
-            // sends: the engine can't start, crashed repeatedly, or couldn't load the model.
+            // A failed model stays failed until `psst-server model load`, which nothing here sends.
             ensure!(!model_failed(&err), "{}", err.message);
             if Instant::now() < deadline {
                 let detail = err.detail.as_ref().map(|d| format!(" {d}")).unwrap_or_default();
@@ -398,8 +351,6 @@ async fn transcribe(
     }
 }
 
-/// Whether a `model_unavailable` error says the model failed, rather than that it's still
-/// downloading.
 fn model_failed(err: &ErrorMsg) -> bool {
     err.detail.as_ref().and_then(|detail| detail.get("reason")).and_then(|reason| reason.as_str()) == Some("failed")
 }
@@ -416,8 +367,6 @@ async fn outcome(session: &mut Session) -> anyhow::Result<Outcome> {
     }
 }
 
-/// Streams `samples` through a live session in real time, then stops it and waits for its
-/// `final`.
 async fn live_session(client: &mut Client, opts: StartOpts, samples: &[i16]) -> anyhow::Result<Box<FinalMsg>> {
     let codec = opts.codec;
     let mut session = client.start(opts);
@@ -458,7 +407,6 @@ async fn live_session(client: &mut Client, opts: StartOpts, samples: &[i16]) -> 
     }
 }
 
-/// Reads a 16 kHz mono FLAC clip as 16-bit samples.
 pub fn read_flac(path: &Path) -> anyhow::Result<Vec<i16>> {
     let mut reader = claxon::FlacReader::open(path).with_context(|| format!("cannot read {}", path.display()))?;
     let info = reader.streaminfo();
@@ -480,20 +428,19 @@ pub fn read_flac(path: &Path) -> anyhow::Result<Vec<i16>> {
         .collect()
 }
 
-/// Writes 16 kHz mono 16-bit samples as a WAV file, the format `upload_file` streams.
 pub fn write_wav(path: &Path, samples: &[i16]) -> anyhow::Result<()> {
     let data_len = u32::try_from(samples.len() * 2).context("clip too long")?;
     let mut bytes = Vec::with_capacity(44 + samples.len() * 2);
     bytes.extend_from_slice(b"RIFF");
     bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
     bytes.extend_from_slice(b"WAVEfmt ");
-    bytes.extend_from_slice(&16u32.to_le_bytes()); // fmt chunk size
-    bytes.extend_from_slice(&1u16.to_le_bytes()); // PCM
-    bytes.extend_from_slice(&1u16.to_le_bytes()); // mono
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
     bytes.extend_from_slice(&SAMPLE_RATE.to_le_bytes());
-    bytes.extend_from_slice(&(SAMPLE_RATE * 2).to_le_bytes()); // byte rate
-    bytes.extend_from_slice(&2u16.to_le_bytes()); // block align
-    bytes.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+    bytes.extend_from_slice(&(SAMPLE_RATE * 2).to_le_bytes());
+    bytes.extend_from_slice(&2u16.to_le_bytes());
+    bytes.extend_from_slice(&16u16.to_le_bytes());
     bytes.extend_from_slice(b"data");
     bytes.extend_from_slice(&data_len.to_le_bytes());
     for sample in samples {

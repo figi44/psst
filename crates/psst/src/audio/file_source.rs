@@ -1,6 +1,3 @@
-//! `audio.input = "file:<wav>"`, the test seam: replays a 16 kHz mono 16-bit WAV from its start
-//! for every recording, paced in real time, then gives silence until the recording stops.
-
 use std::{
     fs,
     path::PathBuf,

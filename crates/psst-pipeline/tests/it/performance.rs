@@ -1,6 +1,3 @@
-//! The performance target: a 200-word dictation against 500 terms in under 5 ms, with exact
-//! spellings, and with fuzzy matching at its most expensive.
-
 use std::time::Duration;
 
 use psst_config::{ConfigFile, DictionaryFile, ProfilesFile};
@@ -8,7 +5,6 @@ use psst_dict::{Dictionary, common_words};
 use psst_pipeline::{PipelineOptions, run};
 use psst_proto::{EngineResult, EngineTrace, Segment, Word};
 
-/// 500 made-up terms, each with two `sounds_like` spellings, a quarter of them pinned.
 fn dictionary() -> Dictionary {
     let toml: String = (0..500)
         .map(|i| {
@@ -21,8 +17,6 @@ fn dictionary() -> Dictionary {
     Dictionary::from_file(&DictionaryFile::from_toml_str(&toml).unwrap()).unwrap()
 }
 
-/// Ten segments of 20 items with word timestamps: common English words, and a term spelling of
-/// two or three words as every fifth item. 260 words in all.
 fn dictation() -> EngineTrace {
     let common = common_words("en");
     let words: Vec<String> = (0..200)
@@ -83,8 +77,7 @@ fn a_200_word_dictation_against_500_terms_takes_under_5_ms() {
     assert!(best < Duration::from_millis(5), "took {best:?}");
 }
 
-/// The best of several runs, in this thread's CPU time: the target is the matcher's cost, and CI
-/// runs several tests per CPU, so wall-clock time also counts the time other tests had the CPU.
+/// Thread CPU time, not wall-clock: CI runs several tests per CPU.
 fn best_time<T>(mut f: impl FnMut() -> T) -> Duration {
     (0..20)
         .map(|_| {
@@ -101,8 +94,7 @@ fn cpu_time() -> Duration {
     Duration::new(t.tv_sec as u64, t.tv_nsec as u32)
 }
 
-/// 500 made-up pronounceable terms of letters only, so they all have Double Metaphone codes: two
-/// to four syllables, every seventh one two words.
+/// Letters only, so every term has a Double Metaphone code.
 fn fuzzy_terms() -> Vec<String> {
     const SYLLABLES: [&str; 16] =
         ["ka", "lo", "mi", "tre", "zu", "pen", "dor", "vax", "shi", "qua", "bel", "nor", "fy", "gri", "sto", "lux"];
@@ -119,8 +111,6 @@ fn fuzzy_terms() -> Vec<String> {
         .collect()
 }
 
-/// 200 words: ordinary English, and every tenth word a term misheard, split in two or with one
-/// letter changed.
 fn fuzzy_dictation(terms: &[String]) -> String {
     let common = common_words("en");
     let words: Vec<String> = (0..200)
@@ -147,8 +137,7 @@ fn fuzzy_matching_a_200_word_dictation_against_500_terms_takes_under_5_ms() {
     let spoken = fuzzy_dictation(&terms);
     let profile = ProfilesFile::default().resolve("default").unwrap();
     let opts = PipelineOptions::default();
-    // Without probabilities (the medium band), and unsure of every word (the low band), which
-    // allows the most edits and so scans the most terms.
+    // The medium band, and the low band, which allows the most edits and so scans the most terms.
     for trace in [said(&spoken, None), said(&spoken, Some(0.3))] {
         let out = run(&trace, &profile, &dict, &opts);
         assert!(out.raw_text.split_whitespace().count() >= 200);
@@ -159,7 +148,6 @@ fn fuzzy_matching_a_200_word_dictation_against_500_terms_takes_under_5_ms() {
     }
 }
 
-/// One segment of English, its words with probability `prob` if any.
 fn said(text: &str, prob: Option<f32>) -> EngineTrace {
     let words = prob.map(|prob| {
         text.split_whitespace()

@@ -5,25 +5,22 @@ use serde::{Deserialize, Serialize};
 
 use crate::ConfigFile;
 
-/// `server.toml`. Changes need a server restart.
+/// Changes need a server restart.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ServerConfig {
-    /// TCP listeners for other devices (device tokens). Empty leaves only the socket.
     pub listen: Vec<SocketAddr>,
-    /// The Unix socket for users on this machine. Ignored when systemd passes the socket in.
+    /// Ignored when systemd passes the socket in.
     pub socket: PathBuf,
-    /// Users allowed on the socket, as admins. When empty, `serve` without systemd accepts its
-    /// own user.
+    /// Socket users, as admins. When empty, `serve` without systemd accepts its own user.
     pub local_users: Vec<String>,
     /// Longest an accepted session waits for the model, reloads between attempts included.
     pub load_deadline_s: u32,
-    /// Days history rows are kept.
     pub history_days: u32,
     /// Accept `start.eval` and send `trace` with every `final`. For evals only.
     pub eval_mode: bool,
-    /// Where browsers reach the web UI, as `http://host[:port]` or `https://…`: the start of
-    /// every login link. Unset, a link uses the address the client reached the server by.
+    /// The start of every login link. Unset, a link uses the address the client reached the
+    /// server by.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub web_url: Option<String>,
     pub limits: Limits,
@@ -52,9 +49,8 @@ impl Default for ServerConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Limits {
-    /// Longest recording. Clients stop at it; audio more than 5 s past it gets `too_long`.
+    /// Clients stop at it; audio more than 5 s past it gets `too_long`.
     pub max_recording_s: u32,
-    /// More active sessions than this get `busy`.
     pub max_active_sessions: u32,
 }
 
@@ -64,20 +60,17 @@ impl Default for Limits {
     }
 }
 
-/// The one model and the engine that runs it. Only the file can set these.
+/// Only the file can set these.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ModelConfig {
     pub engine: String,
-    /// The engine program and its arguments.
     pub command: Vec<String>,
     pub model: String,
-    /// A pinned model revision; the resolved revision is recorded either way.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revision: Option<String>,
     pub device: String,
     pub compute_type: String,
-    /// Load at server start, downloading if missing.
     pub preload: bool,
     pub options: ModelOptions,
 }
@@ -97,18 +90,15 @@ impl Default for ModelConfig {
     }
 }
 
-/// Decoding options sent with every `transcribe`, with the defaults the engine benchmarks
-/// (`scripts/bench/`) chose.
+/// The defaults are what the engine benchmarks (`scripts/bench/`) chose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ModelOptions {
     pub path: DecodePath,
     pub beam_size: u32,
     pub word_timestamps: bool,
-    /// Required by the batched path.
     pub vad_filter: bool,
     pub terms_as: TermsAs,
-    /// Chunks the batched path decodes at once.
     pub batch_size: u32,
 }
 
@@ -126,23 +116,19 @@ impl Default for ModelOptions {
 }
 
 impl ModelOptions {
-    /// The options as sent in `transcribe.options`.
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).expect("options always serialise")
     }
 }
 
-/// faster-whisper's decoding path: the batched one, which the engine benchmarks chose for every
-/// length.
+/// Only the batched path: the engine benchmarks chose it for every length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DecodePath {
-    /// `BatchedInferencePipeline`: VAD cuts the recording into chunks of up to 30 s, decoded
-    /// `batch_size` at a time.
+    /// faster-whisper's `BatchedInferencePipeline`.
     Batched,
 }
 
-/// Where dictionary terms go in the engine request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TermsAs {
@@ -186,8 +172,6 @@ impl ConfigFile for ServerConfig {
     }
 }
 
-/// `url` without a trailing slash, if it's `http://` or `https://` followed by a host and an
-/// optional port, and nothing else.
 pub fn web_origin(url: &str) -> Option<&str> {
     let url = url.strip_suffix('/').unwrap_or(url);
     let authority = url.strip_prefix("http://").or_else(|| url.strip_prefix("https://"))?;

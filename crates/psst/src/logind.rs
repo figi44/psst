@@ -1,6 +1,3 @@
-//! Resume from suspend, from logind's `PrepareForSleep(false)` on the system bus: the
-//! daemon reconnects once after it. Without a system bus (tests, containers) this does nothing.
-
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
 use tracing::{debug, info};
@@ -15,7 +12,6 @@ trait Manager {
     fn prepare_for_sleep(&self, start: bool) -> zbus::Result<()>;
 }
 
-/// Sends `()` on `resumed` after every resume, until the receiver is gone.
 pub async fn watch(resumed: mpsc::UnboundedSender<()>) {
     if let Err(err) = run(&resumed).await {
         debug!("not watching for resume: {err}");

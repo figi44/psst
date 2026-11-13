@@ -1,10 +1,3 @@
-//! `psst-eval audio`: it runs only inside `scripts/gpu-session.sh`, and records both traces of
-//! every clip through the in-process server.
-//!
-//! The end-to-end tests here run `audio::run` against `psst_server::serve_in_process` with the
-//! fake engine and a few fixture clips, so they need no GPU. The real run, with the real engine
-//! and `evals/clips`, stays local.
-
 use crate::common;
 
 use std::{fs, fs::File, path::PathBuf, process::Command, time::Duration};
@@ -21,7 +14,6 @@ use psst_eval::{
 };
 use psst_proto::ServerTimings;
 
-/// `psst-eval audio` with the GPU lock in `cache` and `PSST_GPU_SESSION` as given.
 fn audio(evals: &Evals, cache: &std::path::Path, session: Option<&str>) -> Run {
     let mut command = Command::new(env!("CARGO_BIN_EXE_psst-eval"));
     command.args(["audio", "--evals"]).arg(evals.path()).env("PSST_CACHE_DIR", cache).env_remove("PSST_GPU_SESSION");
@@ -46,7 +38,7 @@ fn it_refuses_to_run_outside_a_gpu_session() {
 fn inside_a_gpu_session_it_goes_on_to_the_eval_set() {
     let evals = Evals::new();
     let cache = tempfile::tempdir().unwrap();
-    // What gpu-session.sh does: hold the lock while its command runs, and export its pid.
+    // As gpu-session.sh does: hold the lock while its command runs, and export its pid.
     let lock = File::create(cache.path().join("gpu.lock")).unwrap();
     lock.lock().unwrap();
     let run = audio(&evals, cache.path(), Some("4242"));
@@ -54,12 +46,11 @@ fn inside_a_gpu_session_it_goes_on_to_the_eval_set() {
     assert!(run.stderr().contains("has no cases"), "{}", run.stderr());
 }
 
-/// The fixture clips: 0.5 s, and 4321 samples, which isn't a whole number of 20 ms frames.
 const CLIP: (&str, usize) = ("clip.flac", 8000);
+/// Not a whole number of 20 ms frames.
 const SHORT_CLIP: (&str, usize) = ("short.flac", 4321);
 
-/// An eval set whose server runs the fake engine with `script`, and one case per `(id, clip)`;
-/// the id's first two letters are its language. Returns the script's path, for its request log.
+/// A case's language is the first two letters of its id.
 fn fake_eval_set(evals: &Evals, script: &Script, cases: &[(&str, (&str, usize))]) -> PathBuf {
     let script_path = evals.file("engine-script.json");
     fs::write(&script_path, serde_json::to_vec(script).unwrap()).unwrap();
@@ -119,13 +110,11 @@ async fn it_records_both_traces_of_every_clip_through_the_in_process_server() {
 
     for case in read_cases(&evals.file("cases.jsonl")).unwrap() {
         let (output, raw) = (case.engine_output.unwrap(), case.engine_output_raw.unwrap());
-        // Each case is dictated with its language's profile, biased and then raw.
         let prompt = if case.lang == "cs" { CS_PROMPT } else { EN_PROMPT };
         assert_eq!((output.prompt.as_str(), raw.prompt.as_str()), (prompt, ""), "case {}", case.id);
         assert_eq!((output.result.language.as_str(), raw.result.language.as_str()), (&*case.lang, &*case.lang));
     }
-    // Every clip uploaded twice, and the shortest clip of each language live, each with exactly
-    // the clip's samples: the padding of the last frame never reaches the engine.
+    // The last frame's padding never reaches the engine: each request has the clip's samples.
     let mut transcribed: Vec<usize> = read_request_log(&script)
         .unwrap()
         .into_iter()
@@ -137,9 +126,7 @@ async fn it_records_both_traces_of_every_clip_through_the_in_process_server() {
     expected.extend([SHORT_CLIP.1, CLIP.1]);
     expected.sort_unstable();
     assert_eq!(transcribed, expected);
-    // The baseline it wrote is the replay of what it recorded.
     evals.run("replay", &["--check"]).success();
-    // And the latency of the three biased uploads, all short, none of them waiting for the model.
     assert_eq!(
         latency.iter().map(|row| (row.over_s, row.up_to_s, row.dictations)).collect::<Vec<_>>(),
         [(0, Some(15), 3)]
@@ -154,8 +141,6 @@ fn latency_is_reported_per_range_of_recording_lengths() {
         engine_ms: stop_to_final_ms - 10,
         ..ServerTimings::default()
     };
-    // Twenty short dictations taking 201–220 ms, two of a minute, and one that waited for the
-    // model, which is left out.
     let mut timings: Vec<_> = (1..=20).map(|i| timing(3_000 + i, 200 + i)).collect();
     timings.extend([timing(60_000, 800), timing(90_000, 900)]);
     timings.push(ServerTimings { load_wait_ms: 2_500, ..timing(5_000, 2_700) });

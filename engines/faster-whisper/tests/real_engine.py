@@ -1,6 +1,4 @@
-"""The real engine as the server runs it: a child process speaking the protocol, and speech for it.
-
-``data/speech.wav`` (16 kHz mono, 3.5 s) was made with
+"""``data/speech.wav`` (16 kHz mono, 3.5 s) was made with
 ``espeak-ng -v en-us -s 150 -w raw.wav "Please push the fix to the main branch before lunch."``
 and ``sox raw.wav -r 16000 -c 1 -b 16 speech.wav``.
 """
@@ -44,24 +42,19 @@ def payload(samples: Sequence[float]) -> bytes:
 
 
 def long_speech(repeats: int = 10, gap_s: float = 1.0) -> list[float]:
-    """The speech ``repeats`` times with ``gap_s`` of silence after each: 45 s by default."""
     once = speech() + [0.0] * round(gap_s * SAMPLE_RATE)
     return once * repeats
 
 
 def words(result: dict[str, Any], after_ms: int = 0) -> list[str]:
-    """The words of the segments starting at ``after_ms`` or later, lowercase, without punctuation."""
     segments = result["trace"]["result"]["segments"]
     text = " ".join(segment["text"] for segment in segments if segment["start_ms"] >= after_ms)
     return re.findall(r"[a-z0-9']+", text.lower())
 
 
 def assert_covers_long_speech(result: dict[str, Any]) -> None:
-    """The engine decoded both 30 s chunks of ``long_speech()``, in the recording's time.
-
-    Not a word count: on a chunk that repeats one sentence, Whisper may write it more or fewer
-    times (turbo writes it once).
-    """
+    """Not a word count: on a chunk that repeats one sentence, Whisper may write it more or fewer
+    times (turbo writes it once)."""
     assert result["trace"]["path"] == "batched"
     starts = [segment["start_ms"] for segment in result["trace"]["result"]["segments"]]
     assert min(starts) < 5_000 and max(starts) > 30_000, starts
@@ -69,12 +62,6 @@ def assert_covers_long_speech(result: dict[str, Any]) -> None:
 
 
 class EngineProcess:
-    """The engine started as the server starts it, from this checkout.
-
-    ``command`` defaults to ``PSST_ENGINE_COMMAND`` (split on spaces), then to this Python running
-    ``-m psst_engine_faster_whisper``. Its stderr goes to the test's.
-    """
-
     def __init__(self, command: Sequence[str] | None = None, env: Mapping[str, str] | None = None) -> None:
         if command is None:
             configured = os.environ.get("PSST_ENGINE_COMMAND")
@@ -109,7 +96,6 @@ class EngineProcess:
         return reply
 
     def load(self, model: str, device: str, compute_type: str, timeout: float = 60) -> tuple[dict, list[dict]]:
-        """Loads and returns ``loaded`` and the ``progress`` before it."""
         self.send({"type": "load", "model": model, "device": device, "compute_type": compute_type})
         progress = []
         while (reply := self.recv(timeout))["type"] == "progress":
@@ -143,8 +129,6 @@ class EngineProcess:
         timeout: float = 60,
         **options: Any,
     ) -> dict[str, Any]:
-        """Sends a recording as a stream, in ``pieces`` ``wait_s`` apart, closes it, and returns the
-        answer."""
         request = {"id": stream_id, "language": "en", "bias": {"style": style, "terms": list(terms)}, "options": options}
         self.send({"type": "open", **request})
         for i, piece in enumerate(pieces):

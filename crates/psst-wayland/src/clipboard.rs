@@ -1,48 +1,27 @@
-//! The clipboard state machine. Pure: no Wayland, no clock. The Wayland thread
-//! feeds it [`Input`]s and carries out the [`Action`]s it returns.
+//! Pure: no Wayland, no clock.
 //!
-//! The rules:
-//! - **Snapshot** one representation of the selection: the first plain-text type in
-//!   [`TEXT_MIMES`] order, or else the first type offered. Empty content counts as nothing.
-//! - **Tracking:** once requested, the snapshot follows the clipboard. An external selection
-//!   change re-reads it; psst's own changes don't. It's used by the next paste, or freed after
-//!   [`Config::snapshot_ttl`] if no paste comes (a dictation that heard nothing).
-//! - **Inheritance:** while a restore is pending, if psst owns the selection, or the clipboard's
-//!   text still equals the pending dictation's text (a clipboard manager took it over), the
-//!   snapshot is the pending restore's snapshot. Two quick dictations keep the original.
-//! - **Freezing:** a paste freezes the snapshot and sets up its restore state before the
-//!   selection changes. A paste waits at most [`Config::snapshot_wait`] for an unfinished
-//!   snapshot; after that it goes ahead without a restore.
-//! - **One at a time:** pastes and copies run in the order requested, each after the previous
-//!   one finished.
-//! - **Restore** only after `Pasted`, [`Config::restore_after`] later, and only if psst still
-//!   owns the selection or the clipboard's text still equals the dictated text. The generation
-//!   check keeps an older timer away from a newer dictation. An empty or unreadable original
-//!   isn't restored: the dictation stays.
-//! - **Copy** (copy only) replaces the clipboard on purpose: it cancels a pending restore and
-//!   the tracked snapshot, and is never restored.
-//! - **Memory:** what psst serves is freed once something else owns the selection.
+//! - While a restore is pending, a snapshot of psst's own selection, or of text equal to the
+//!   pending dictation's (a clipboard manager took it over), is the pending restore's snapshot:
+//!   two quick dictations keep the original.
+//! - Restore only after `Pasted`, and only if psst still owns the selection or the clipboard's
+//!   text still equals the dictated text. The generation check keeps an older timer away from a
+//!   newer dictation. An empty or unreadable original isn't restored: the dictation stays.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// A dictation's generation, chosen by the daemon.
 pub type Gen = u64;
-/// Identifies one read of an offer.
 pub type ReadId = u64;
-/// The Wayland thread's handle for a data-control offer.
 pub type OfferKey = u64;
 
-/// The plain-text types, in order of preference. psst's own sources offer text under all five.
+/// In order of preference.
 pub const TEXT_MIMES: [&str; 5] = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING", "TEXT"];
 
 pub fn is_text_mime(mime: &str) -> bool {
     TEXT_MIMES.contains(&mime)
 }
 
-/// The representation a snapshot keeps: the first available plain-text type in preference
-/// order, else the first type offered.
 pub fn choose_mime(mimes: &[String]) -> Option<&str> {
     choose_text_mime(mimes).or(mimes.first().map(String::as_str))
 }
@@ -51,7 +30,6 @@ pub fn choose_text_mime(mimes: &[String]) -> Option<&'static str> {
     TEXT_MIMES.iter().find(|t| mimes.iter().any(|m| m == *t)).copied()
 }
 
-/// What a psst-owned selection is serving.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OwnKind {
     Dictation(Gen),
@@ -59,13 +37,11 @@ pub enum OwnKind {
     Restore(Gen),
 }
 
-/// Who owns the selection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Owner {
-    /// Not known yet (no selection event since connecting).
+    /// No selection event since connecting.
     Unknown,
     Empty,
-    /// psst's latest source is the selection.
     Ours(OwnKind),
     External {
         offer: OfferKey,
@@ -73,7 +49,6 @@ pub enum Owner {
     },
 }
 
-/// One representation of a selection.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Content {
     pub mime: String,
@@ -89,12 +64,11 @@ impl Content {
         is_text_mime(&self.mime)
     }
 
-    /// The types a source serving this content offers: all five for text.
     pub fn offer_mimes(&self) -> Vec<String> {
         if self.is_text() { TEXT_MIMES.iter().map(|s| s.to_string()).collect() } else { vec![self.mime.clone()] }
     }
 
-    /// For logs: the type and size, never the content.
+    /// For logs: never the content.
     pub fn describe(&self) -> String {
         format!("{} ({} bytes)", self.mime, self.data.len())
     }
@@ -118,7 +92,6 @@ pub enum Input {
     SnapshotRequested {
         generation: Gen,
     },
-    /// The timer from [`Action::ExpireSnapshot`] fired.
     SnapshotExpired {
         epoch: u64,
     },
@@ -135,27 +108,22 @@ pub enum Input {
         generation: Gen,
         text: String,
     },
-    /// The timer from [`Action::WaitForSnapshot`] fired.
     PasteWaitExpired {
         generation: Gen,
     },
-    /// The paste was dispatched (the sync after the chord came back).
+    /// The sync after the chord came back.
     Pasted {
         generation: Gen,
     },
-    /// The copy's selection is set.
     Copied {
         generation: Gen,
     },
-    /// The paste or copy couldn't be completed.
     Failed {
         generation: Gen,
     },
-    /// The timer from [`Action::ScheduleRestore`] fired.
     RestoreDue {
         generation: Gen,
     },
-    /// The connection is gone: forget everything.
     Reset,
 }
 
@@ -174,47 +142,14 @@ pub enum Note {
 
 #[derive(Debug)]
 pub enum Action {
-    /// Receive `mime` from `offer`, up to the size cap and within the read timeout, then feed
-    /// [`Input::ReadDone`].
-    Read {
-        id: ReadId,
-        offer: OfferKey,
-        mime: String,
-    },
-    CancelRead {
-        id: ReadId,
-    },
-    /// Feed [`Input::SnapshotExpired`] after `after`.
-    ExpireSnapshot {
-        epoch: u64,
-        after: Duration,
-    },
-    /// Feed [`Input::PasteWaitExpired`] after `max`.
-    WaitForSnapshot {
-        generation: Gen,
-        max: Duration,
-    },
-    /// Set the selection to `content`, sync, wait the paste delay, press the chord, sync, then
-    /// feed [`Input::Pasted`].
-    StartPaste {
-        generation: Gen,
-        content: Arc<Content>,
-    },
-    /// Set the selection to `content`, sync, then feed [`Input::Copied`].
-    StartCopy {
-        generation: Gen,
-        content: Arc<Content>,
-    },
-    /// Feed [`Input::RestoreDue`] after `after`.
-    ScheduleRestore {
-        generation: Gen,
-        after: Duration,
-    },
-    /// Set the selection to `content`.
-    OfferRestore {
-        generation: Gen,
-        content: Arc<Content>,
-    },
+    Read { id: ReadId, offer: OfferKey, mime: String },
+    CancelRead { id: ReadId },
+    ExpireSnapshot { epoch: u64, after: Duration },
+    WaitForSnapshot { generation: Gen, max: Duration },
+    StartPaste { generation: Gen, content: Arc<Content> },
+    StartCopy { generation: Gen, content: Arc<Content> },
+    ScheduleRestore { generation: Gen, after: Duration },
+    OfferRestore { generation: Gen, content: Arc<Content> },
     Note(Note),
 }
 
@@ -241,7 +176,6 @@ enum SnapState {
     Done(Option<Arc<Content>>),
 }
 
-/// The tracked snapshot of the current clipboard.
 #[derive(Debug)]
 struct Snap {
     epoch: u64,
@@ -271,13 +205,11 @@ impl Active {
     }
 }
 
-/// The restore state of the latest paste.
 #[derive(Debug)]
 struct Pending {
     generation: Gen,
     text: String,
     snapshot: Option<Arc<Content>>,
-    /// Set by `Pasted`; only an armed restore is carried out.
     armed: bool,
 }
 
@@ -292,7 +224,7 @@ pub struct Machine {
     active: Option<Active>,
     pending: Option<Pending>,
     restore_check: Option<(ReadId, Gen)>,
-    /// What psst's latest source serves; dropped once someone else owns the selection.
+    /// Dropped once someone else owns the selection.
     own: Option<(OwnKind, Arc<Content>)>,
 }
 
@@ -316,7 +248,6 @@ impl Machine {
         &self.owner
     }
 
-    /// Whether a paste or copy with this generation is queued or running.
     pub fn has_op(&self, generation: Gen) -> bool {
         self.active.as_ref().is_some_and(|a| a.generation() == generation)
             || self.queue.iter().any(|op| match op {
@@ -328,8 +259,7 @@ impl Machine {
         self.pending.is_some()
     }
 
-    /// Bytes held: the tracked snapshot, the pending restore's snapshot, and what psst serves
-    /// (shared content is counted once per holder).
+    /// Shared content is counted once per holder.
     pub fn held_bytes(&self) -> usize {
         let snap = match &self.snap {
             Some(Snap { state: SnapState::Done(Some(c)), .. }) => c.data.len(),
@@ -346,7 +276,7 @@ impl Machine {
             Input::SnapshotRequested { generation: _ } => {
                 let epoch = self.alloc_epoch();
                 match &mut self.snap {
-                    // Already tracking the clipboard: it's current, keep it.
+                    // Tracking keeps it current.
                     Some(snap) => snap.epoch = epoch,
                     None => {
                         let state = self.start_snapshot(&mut out);
@@ -466,7 +396,6 @@ impl Machine {
         out.push(Action::Note(Note::RestoreSkipped { generation, reason: reason.into() }));
     }
 
-    /// Snapshot of the clipboard as it is now.
     fn start_snapshot(&mut self, out: &mut Vec<Action>) -> SnapState {
         match self.owner.clone() {
             Owner::Ours(OwnKind::Dictation(g)) if self.pending.as_ref().is_some_and(|p| p.generation == g) => {
@@ -474,8 +403,6 @@ impl Machine {
                 SnapState::Done(self.pending.as_ref().and_then(|p| p.snapshot.clone()))
             }
             Owner::Ours(_) => {
-                // psst serves the clipboard (a copy, a restore, or a dictation whose restore is
-                // over): that's the content.
                 let content = self.own.as_ref().map(|(_, c)| c.clone());
                 out.push(Action::Note(Note::SnapshotTaken { what: content.as_ref().map(|c| c.describe()) }));
                 SnapState::Done(content)
@@ -546,14 +473,12 @@ impl Machine {
         }
     }
 
-    /// Starts queued operations while none is running.
     fn pump(&mut self, out: &mut Vec<Action>) {
         while self.active.is_none() {
             let Some(op) = self.queue.pop_front() else { return };
             match op {
                 Op::Paste { generation, text } => {
                     if self.snap.is_none() {
-                        // No snapshot requested (or it expired): take one now.
                         let epoch = self.alloc_epoch();
                         let state = self.start_snapshot(out);
                         self.snap = Some(Snap { epoch, state });
@@ -591,7 +516,6 @@ impl Machine {
         }
     }
 
-    /// Freezes the snapshot for this paste, sets up its restore state, then starts it.
     fn freeze(&mut self, generation: Gen, text: String, out: &mut Vec<Action>) {
         let snapshot = match self.snap.take() {
             Some(Snap { state: SnapState::Done(content), .. }) => content,
@@ -703,7 +627,6 @@ mod tests {
         actions.iter().any(|a| matches!(a, Action::Note(n) if *n == note))
     }
 
-    /// The compositor announces psst's source and the paste completes.
     fn complete_paste(m: &mut Machine, generation: Gen) -> Vec<Action> {
         m.handle(Input::SelectionChanged(Owner::Ours(OwnKind::Dictation(generation))));
         let a = m.handle(Input::Pasted { generation });
@@ -711,7 +634,6 @@ mod tests {
         a
     }
 
-    /// Snapshot of the current clipboard (answering its read with `clip`), paste, `Pasted`.
     fn dictate(m: &mut Machine, generation: Gen, text: &str, clip: Option<&str>) {
         let a = m.handle(Input::SnapshotRequested { generation });
         if let Some(clip) = clip {
@@ -760,7 +682,6 @@ mod tests {
         m.handle(Input::ReadDone { id, result: Ok(b"orig".to_vec()) });
         m.handle(Input::PasteRequested { generation: 1, text: "d".into() });
         m.handle(Input::SelectionChanged(Owner::Ours(OwnKind::Dictation(1))));
-        // A stray timer before `Pasted` does nothing, and the restore stays pending.
         let a = m.handle(Input::RestoreDue { generation: 1 });
         assert!(restored(&a).is_none());
         assert!(m.has_pending_restore());
@@ -780,7 +701,6 @@ mod tests {
         assert!(noted(&a, Note::Resnapshot));
         assert_eq!(offer, 2);
         m.handle(Input::ReadDone { id: id2, result: Ok(b"second".to_vec()) });
-        // psst's own source (the restore of an earlier dictation, say) isn't a reason to read.
         let a = m.handle(Input::SelectionChanged(Owner::Ours(OwnKind::Restore(0))));
         assert!(read_of(&a).is_none(), "own change must not re-snapshot");
         m.handle(Input::PasteRequested { generation: 1, text: "d".into() });
@@ -800,12 +720,10 @@ mod tests {
         assert!(matches!(a.last(), Some(Action::StartPaste { .. })));
         assert!(m.has_pending_restore());
         assert!(noted(&a, Note::Frozen { generation: 1, has_snapshot: true }));
-        // A selection change while pasting isn't read: the snapshot is frozen.
         let a = m.handle(Input::SelectionChanged(ext(2, &["text/plain"])));
         assert!(read_of(&a).is_none());
         let a = m.handle(Input::Pasted { generation: 1 });
         assert!(has(&a, |a| matches!(a, Action::ScheduleRestore { .. })));
-        // The user's copy is kept: it isn't the dictated text.
         let (id, offer, _) = read_of(&m.handle(Input::RestoreDue { generation: 1 })).unwrap();
         assert_eq!(offer, 2);
         let a = m.handle(Input::ReadDone { id, result: Ok(b"user copy".to_vec()) });
@@ -817,13 +735,11 @@ mod tests {
         let mut m = machine();
         m.handle(Input::SelectionChanged(ext(1, &["image/png"])));
         dictate(&mut m, 1, "one", Some("PNGDATA"));
-        // The second dictation while psst owns the selection inherits the first's snapshot.
         let a = m.handle(Input::SnapshotRequested { generation: 2 });
         assert!(read_of(&a).is_none());
         assert!(noted(&a, Note::SnapshotInherited { from: 1 }));
         m.handle(Input::PasteRequested { generation: 2, text: "two".into() });
         complete_paste(&mut m, 2);
-        // The first timer fires: superseded, ignored.
         let a = m.handle(Input::RestoreDue { generation: 1 });
         assert!(restored(&a).is_none());
         assert!(noted(&a, Note::TimerIgnored { generation: 1 }));
@@ -905,12 +821,10 @@ mod tests {
         let a = m.handle(Input::ReadDone { id, result: Ok(b"user copy".to_vec()) });
         assert!(restored(&a).is_none());
         assert!(!m.has_pending_restore());
-        // A non-text selection can't be the dictation: skipped without reading.
         dictate(&mut m, 2, "two", Some("user copy"));
         m.handle(Input::SelectionChanged(ext(3, &["image/png"])));
         let a = m.handle(Input::RestoreDue { generation: 2 });
         assert!(read_of(&a).is_none() && restored(&a).is_none());
-        // Neither is a cleared clipboard.
         dictate(&mut m, 3, "three", Some("image"));
         m.handle(Input::SelectionChanged(Owner::Empty));
         assert!(restored(&m.handle(Input::RestoreDue { generation: 3 })).is_none());
@@ -928,7 +842,6 @@ mod tests {
         let a = m.handle(Input::PasteWaitExpired { generation: 1 });
         assert!(has(&a, |a| matches!(a, Action::CancelRead { id: i } if *i == id)));
         assert!(started_paste(&a).is_some());
-        // A late read result is ignored.
         m.handle(Input::ReadDone { id, result: Ok(b"late".to_vec()) });
         complete_paste(&mut m, 1);
         let a = m.handle(Input::RestoreDue { generation: 1 });
@@ -945,7 +858,6 @@ mod tests {
         let a = m.handle(Input::ReadDone { id, result: Ok(b"orig".to_vec()) });
         assert!(started_paste(&a).is_some());
         assert!(noted(&a, Note::Frozen { generation: 1, has_snapshot: true }));
-        // The wait timer firing afterwards changes nothing.
         assert!(m.handle(Input::PasteWaitExpired { generation: 1 }).is_empty());
     }
 
@@ -995,7 +907,6 @@ mod tests {
         drop(c);
         m.handle(Input::SelectionChanged(ext(2, &["text/plain"])));
         assert_eq!(m.held_bytes(), 0);
-        // The dictated text is freed the same way when the user copies during the window.
         dictate(&mut m, 2, "two", Some("x"));
         m.handle(Input::SelectionChanged(ext(3, &["image/png"])));
         m.handle(Input::RestoreDue { generation: 2 });
@@ -1014,7 +925,6 @@ mod tests {
         let a = m.handle(Input::Copied { generation: 2 });
         assert!(!has(&a, |a| matches!(a, Action::ScheduleRestore { .. })));
         assert!(restored(&m.handle(Input::RestoreDue { generation: 1 })).is_none());
-        // A later dictation snapshots the copied text.
         let a = m.handle(Input::SnapshotRequested { generation: 3 });
         assert!(read_of(&a).is_none());
         m.handle(Input::PasteRequested { generation: 3, text: "three".into() });
@@ -1030,7 +940,6 @@ mod tests {
         let (id, _, _) = read_of(&a).unwrap();
         let a = m.handle(Input::PasteRequested { generation: 1, text: "one".into() });
         assert!(started_paste(&a).is_none());
-        // Queued behind the paste that waits for its snapshot.
         assert!(m.handle(Input::CopyRequested { generation: 2, text: "copied".into() }).is_empty());
         assert!(m.handle(Input::PasteRequested { generation: 3, text: "three".into() }).is_empty());
         assert!(m.has_op(2) && m.has_op(3));
@@ -1060,10 +969,8 @@ mod tests {
         m.handle(Input::PasteRequested { generation: 2, text: "two".into() });
         let a = m.handle(Input::Failed { generation: 1 });
         assert!(noted(&a, Note::RestoreSkipped { generation: 1, reason: "the paste failed".into() }));
-        // The next paste starts, inheriting nothing: psst's dictation is in the clipboard.
         assert_eq!(started_paste(&a).unwrap().0, 2);
         assert!(m.handle(Input::Pasted { generation: 1 }).is_empty());
-        // A queued operation can fail too.
         m.handle(Input::PasteRequested { generation: 3, text: "three".into() });
         m.handle(Input::Failed { generation: 3 });
         assert!(!m.has_op(3));
@@ -1084,7 +991,6 @@ mod tests {
         let (id, _, _) = read_of(&a).unwrap();
         m.handle(Input::ReadDone { id, result: Ok(vec![0; 1000]) });
         assert_eq!(m.held_bytes(), 1000);
-        // A newer request extends it: the old timer no longer applies.
         let a = m.handle(Input::SnapshotRequested { generation: 2 });
         let epoch2 = a.iter().find_map(|a| match a {
             Action::ExpireSnapshot { epoch, .. } => Some(*epoch),
@@ -1094,7 +1000,6 @@ mod tests {
         let a = m.handle(Input::SnapshotExpired { epoch: epoch2.unwrap() });
         assert!(noted(&a, Note::SnapshotExpired));
         assert_eq!(m.held_bytes(), 0);
-        // No longer tracking: an external change isn't read.
         assert!(read_of(&m.handle(Input::SelectionChanged(ext(2, &["text/plain"])))).is_none());
     }
 
@@ -1103,16 +1008,15 @@ mod tests {
         let mut m = machine();
         m.handle(Input::SelectionChanged(ext(1, &["text/plain"])));
         dictate(&mut m, 1, "one", Some("orig"));
-        // A manager took over the dictation; the second snapshot reads it...
+        // A manager took over the dictation; the second snapshot reads it while the first
+        // restore checks the same selection.
         m.handle(Input::SelectionChanged(ext(2, &["text/plain"])));
         let (snap_read, _, _) = read_of(&m.handle(Input::SnapshotRequested { generation: 2 })).unwrap();
-        // ...while the first restore checks the same selection and restores.
         let (check, _, _) = read_of(&m.handle(Input::RestoreDue { generation: 1 })).unwrap();
         let a = m.handle(Input::ReadDone { id: check, result: Ok(b"one".to_vec()) });
         assert!(restored(&a).is_some());
         assert!(has(&a, |a| matches!(a, Action::CancelRead { id } if *id == snap_read)));
         m.handle(Input::SelectionChanged(Owner::Ours(OwnKind::Restore(1))));
-        // The stale read can't put the old dictation into the snapshot.
         m.handle(Input::ReadDone { id: snap_read, result: Ok(b"one".to_vec()) });
         m.handle(Input::PasteRequested { generation: 2, text: "two".into() });
         complete_paste(&mut m, 2);

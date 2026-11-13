@@ -1,8 +1,3 @@
-//! One client connection on `/v1/client`: `hello`/`welcome`, then one active session
-//! at a time. The connection buffers its session's audio as PCM, decoding Opus as each packet
-//! arrives; outcomes come back from the registry as [`ConnEvent`]s, and `progress` goes out every
-//! 500 ms while a session is active.
-
 use std::{sync::Arc, time::Duration};
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket, close_code};
@@ -32,15 +27,11 @@ use crate::{
     state::AppState,
 };
 
-/// How long a new connection may take to send `hello`.
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
-/// `progress` interval.
 pub const PROGRESS_EVERY: Duration = Duration::from_millis(500);
-/// Audio more than this far past `max_recording_s` gets `too_long`.
 const TOO_LONG_GRACE_S: u64 = 5;
 const SAMPLES_PER_MS: u64 = SAMPLE_RATE as u64 / 1000;
 
-/// Serves one upgraded WebSocket until it closes.
 pub async fn run(state: Arc<AppState>, mut ws: WebSocket, identity: Result<Identity, Refusal>) {
     // Every refusal answers `hello`, so clients handle them all the same way.
     let hello = match tokio::time::timeout(HELLO_TIMEOUT, ws.recv()).await {
@@ -157,7 +148,6 @@ struct Conn {
     active: Option<Active>,
 }
 
-/// The connection's one active session.
 struct Active {
     key: SessionKey,
     epoch: u64,
@@ -167,27 +157,19 @@ struct Active {
 
 enum Phase {
     Recording(Box<Recording>),
-    /// Queued or running; the outcome arrives as an event.
-    Waiting {
-        status: Arc<JobStatus>,
-        audio_ms: u32,
-    },
+    Waiting { status: Arc<JobStatus>, audio_ms: u32 },
 }
 
 struct Recording {
     pcm: Vec<u8>,
-    /// The session's decoder when its audio is Opus; `None` for `pcm_s16le`.
     opus: Option<Decoder>,
-    /// Live sessions send their audio to the engine as it arrives, a frame behind: the last frame
-    /// is padded, and only its real samples are sent, at `stop`.
+    /// Fed a frame behind: the last frame is padded, so only its real samples are sent, at `stop`.
     stream: Option<Stream>,
-    /// Bytes of `pcm` sent to the stream.
     streamed: usize,
     last_frame: Instant,
     history_id: HistoryId,
     profile: Profile,
     dictionary: Arc<Dictionary>,
-    /// False for `eval.bias = false`: no prompt and no dictionary stage.
     bias: bool,
 }
 
@@ -269,8 +251,7 @@ impl Conn {
             return self.reply(ws, reject(ErrorCode::BadRequest, message)).await;
         }
         let profile_name = start.profile.as_deref().unwrap_or(DEFAULT_PROFILE);
-        // Only a new recording needs the profile; resuming finished or running work doesn't, even
-        // if a reload removed its profile since.
+        // Only a new recording needs the profile: a resume works even if a reload removed it since.
         let profile = self.state.live.profile(profile_name);
         let dictionary = self.state.live.dictionary();
         let key = SessionKey { device: self.device.clone(), session_id };
@@ -375,7 +356,6 @@ impl Conn {
         Flow::Continue
     }
 
-    /// Ends the active recording with an error.
     async fn end_recording(
         &mut self,
         ws: &mut WebSocket,
@@ -420,8 +400,7 @@ impl Conn {
         let Some(handle) =
             self.state.registry.stop(&key, epoch, self.attachment.conn_id, audio_ms, || engine.submit(request))
         else {
-            // Only a resume on another connection takes a recording away from its connection; as
-            // with `Detached`, closing is how this client learns.
+            // Resumed on another connection; as with `Detached`, closing is how this client learns.
             tracing::info!("session {} of {} was resumed on another connection", key.session_id, key.device);
             self.active = None;
             close(ws, close_code::NORMAL, "the session was resumed on another connection").await;
@@ -491,8 +470,7 @@ impl Conn {
             }
             ConnEvent::Detached { session_id } => {
                 if self.active.as_ref().is_some_and(|active| active.key.session_id == session_id) {
-                    // Its outcome now goes to the other connection, so this one can't end the
-                    // session with a terminal message; closing it is how its client learns.
+                    // Its outcome goes to the other connection, so closing is how this client learns.
                     tracing::info!("session {session_id} of {} was resumed on another connection", self.device);
                     self.active = None;
                     close(ws, close_code::NORMAL, "the session was resumed on another connection").await;
@@ -547,8 +525,6 @@ impl Conn {
     }
 }
 
-/// What the engine is told to expect: the profile's style and the dictionary's terms, or nothing
-/// for `eval.bias = false`.
 fn engine_bias(profile: &Profile, dictionary: &Dictionary, bias: bool) -> Bias {
     if bias {
         Bias { style: profile.prompt_style.clone(), terms: dictionary.bias_terms(&profile.language) }
@@ -557,7 +533,6 @@ fn engine_bias(profile: &Profile, dictionary: &Dictionary, bias: bool) -> Bias {
     }
 }
 
-/// Appends one binary message's frame to `pcm`: as it is for `pcm_s16le`, or decoded with `opus`.
 fn append_frame(pcm: &mut Vec<u8>, opus: Option<&mut Decoder>, bytes: &[u8]) -> Result<(), String> {
     let Some(decoder) = opus else {
         if !bytes.len().is_multiple_of(2) {
@@ -582,7 +557,6 @@ fn append_frame(pcm: &mut Vec<u8>, opus: Option<&mut Decoder>, bytes: &[u8]) -> 
     }
 }
 
-/// Whether a new recording may begin, from the model's state.
 fn admit(state: &AppState) -> Result<(), Rejection> {
     let status = state.engine.status();
     let unavailable =
@@ -608,7 +582,6 @@ fn admit(state: &AppState) -> Result<(), Rejection> {
     }
 }
 
-/// A stopped session waiting for its transcription.
 struct SessionJob {
     key: SessionKey,
     epoch: u64,
@@ -682,13 +655,12 @@ fn millis(duration: Duration) -> u32 {
     duration.as_millis().try_into().unwrap_or(u32::MAX)
 }
 
-/// Sends a message; false if the connection is gone.
 async fn send(ws: &mut WebSocket, msg: &ServerMsg) -> bool {
     let text = serde_json::to_string(msg).expect("server messages serialise");
     ws.send(Message::Text(text.into())).await.is_ok()
 }
 
-/// Closes with a close handshake, so the client reads everything sent before.
+/// Waits for the client's close, so it reads everything sent before.
 async fn close(ws: &mut WebSocket, code: u16, reason: &str) {
     let frame = CloseFrame { code, reason: reason.to_owned().into() };
     if ws.send(Message::Close(Some(frame))).await.is_err() {

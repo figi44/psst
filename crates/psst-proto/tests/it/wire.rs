@@ -1,6 +1,3 @@
-//! The JSON shapes of the wire types. Each test pins a message to the exact JSON it has on the
-//! wire, in both directions.
-
 use std::fmt::Debug;
 
 use psst_proto::{
@@ -19,7 +16,6 @@ use psst_proto::{
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
-/// `value` serialises to exactly `wire`, and `wire` deserialises back to `value`.
 #[track_caller]
 fn assert_wire<T: Serialize + DeserializeOwned + PartialEq + Debug>(value: &T, wire: Value) {
     assert_eq!(serde_json::to_value(value).unwrap(), wire, "serialised form");

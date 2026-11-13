@@ -1,5 +1,3 @@
-"""Finding models on the Hugging Face Hub and reporting download progress."""
-
 from __future__ import annotations
 
 import io
@@ -9,21 +7,14 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 MODEL_FILES = ["config.json", "preprocessor_config.json", "model.bin", "tokenizer.json", "vocabulary.*"]
-"""The files faster-whisper 1.2.1 downloads (``allow_patterns`` in ``faster_whisper.utils.download_model``)."""
+"""``allow_patterns`` in faster-whisper 1.2.1's ``faster_whisper.utils.download_model``."""
 
 REPORT_INTERVAL_S = 0.5
-"""Shortest time between two ``progress`` messages during a download."""
 
 ReportFn = Callable[[int, "int | None"], None]
-"""Receives ``(bytes, total)`` of the transfer; ``total`` is ``None`` while unknown."""
 
 
 def repo_id(model: str, aliases: Mapping[str, str]) -> str:
-    """The Hub repository of ``model``: a repo id as given, or a faster-whisper alias resolved.
-
-    ``aliases`` is faster-whisper's table (``faster_whisper.utils._MODELS``), where for example
-    ``large-v3-turbo`` is ``mobiuslabsgmbh/faster-whisper-large-v3-turbo``.
-    """
     if "/" in model:
         return model
     try:
@@ -40,12 +31,6 @@ def snapshot(
     force_download: bool = False,
     transfer: TransferProgress | None = None,
 ) -> str:
-    """The snapshot directory of ``repo`` at ``revision`` (default ``main``) with faster-whisper's
-    files, from the Hugging Face cache in ``HF_HOME`` or downloaded into it.
-
-    Its name is the resolved commit. Raises huggingface_hub's errors, ``LocalEntryNotFoundError``
-    when ``local_files_only`` is set and the cache doesn't have it complete.
-    """
     import huggingface_hub
 
     return huggingface_hub.snapshot_download(
@@ -59,18 +44,6 @@ def snapshot(
 
 
 class TransferProgress:
-    """Turns one ``snapshot_download`` call's byte-transfer bar into progress reports.
-
-    ``snapshot_download(tqdm_class=progress.tqdm_class())`` creates every bar from that class. In
-    huggingface_hub 2.4 those are the transfer bar (bytes received, ``unit="B"``), then the
-    reconstruction bar (bytes written, also ``unit="B"``) and the file-count bar; older versions
-    have a single byte bar. Only the first ``unit="B"`` bar is reported, at most every
-    ``interval`` seconds.
-
-    The class derives from plain ``tqdm``, never from huggingface_hub's: that one disables itself
-    when stderr isn't a terminal, which for an engine it never is. It draws nothing.
-    """
-
     def __init__(self, report: ReportFn, *, clock: Callable[[], float] = time.monotonic, interval: float = REPORT_INTERVAL_S):
         self._report = report
         self._clock = clock
@@ -81,13 +54,14 @@ class TransferProgress:
         self._closed = False
 
     def tqdm_class(self) -> type:
-        """A ``tqdm`` class bound to this reporter, for ``snapshot_download(tqdm_class=...)``."""
         from tqdm.std import tqdm
 
         reporter = self
 
+        # Plain tqdm, not huggingface_hub's: that one disables itself when stderr isn't a terminal,
+        # which for an engine it never is.
         class Bar(tqdm):
-            monitor_interval = 0  # no monitor thread
+            monitor_interval = 0
 
             def __init__(self, *args: Any, **kwargs: Any) -> None:
                 kwargs.pop("name", None)  # huggingface_hub's own tqdm takes it; plain tqdm doesn't
@@ -107,13 +81,13 @@ class TransferProgress:
         return Bar
 
     def created(self, bar: Any) -> None:
-        """A bar was created: the first one counting bytes is the transfer bar."""
+        """huggingface_hub 2.4 creates the transfer bar (bytes received), then the reconstruction
+        bar (bytes written, also ``unit="B"``) and the file-count bar; older versions one byte bar."""
         with self._lock:
             if self._bar is None and getattr(bar, "unit", None) == "B":
                 self._bar = bar
 
     def updated(self, bar: Any) -> None:
-        """A bar moved: report it if it's the transfer bar and the last report is old enough."""
         with self._lock:
             if bar is not self._bar or self._closed:
                 return
@@ -125,6 +99,5 @@ class TransferProgress:
             self._report(max(0, int(bar.n)), total)
 
     def close(self) -> None:
-        """Stops reporting; bars updated afterwards are ignored."""
         with self._lock:
             self._closed = True

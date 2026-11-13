@@ -1,35 +1,3 @@
-//! The daemon: one task that owns every dictation, the connection to the server
-//! and the Wayland seam, fed by the command socket, the recorder threads, the sessions and the
-//! Wayland thread.
-//!
-//! **Dictations.** At most one is recording. After `stop` it joins the pipeline, where results
-//! are delivered strictly in order; a `toggle` meanwhile starts the next recording at once, and
-//! its frames wait (in the daemon, then in the session's frame buffer) until its `start` can go
-//! out after the previous session's terminal message.
-//!
-//! **The connection.** One [`Client`] at a time, used by one session at a time (the "slot").
-//! There are no reconnect timers: the daemon connects at start-up, once after the connection
-//! closes, once after resume, at `start` (within 700 ms, or 3 s just after resume; up to 3 s on a
-//! slow link), and within the 10 s window after `stop` when a recording has to be uploaded.
-//!
-//! **Neither the network nor the server stops the mic.** A recording that can't stream (no
-//! connection, a rejection, `ready` later than 1 s, a lost session, a full frame buffer) goes
-//! offline and keeps recording to its file; at `stop` it's uploaded once with its own
-//! `session_id` and `resume: true`. If that fails too, it stays on disk for `psst retry`.
-//!
-//! **An incompatible server** (`error protocol`: it speaks another protocol version) needs an
-//! update, not a retry. The daemon says which side to update: once on the overlay (or as the
-//! reason of the dictation in flight), and among `psst status`'s warnings until a connection
-//! succeeds. Recordings still go to their files, but an upload gives up at the refusal, so it's
-//! saved for `psst retry` after the update.
-//!
-//! **Followers.** `psst status --follow` subscribes on the command socket. After every input the
-//! daemon compares a cheap summary of its state with the last one it published, and only when it
-//! differs builds the full [`Status`] (which reads the recordings directory) and publishes it on a
-//! watch channel. Each follower's connection task writes the latest status, at most once per
-//! [`Timing::follow_interval`], so bursts arrive as one line and a follower that stops reading
-//! stalls only its own task.
-
 use std::{collections::VecDeque, path::PathBuf, sync::Arc, time::Duration};
 
 use jiff::Timestamp;
@@ -62,35 +30,19 @@ use crate::{
     ui::{Wayland, WaylandSink},
 };
 
-/// The daemon's time limits. [`Timing::default`] is production's; tests shorten them.
 #[derive(Debug, Clone)]
 pub struct Timing {
-    /// `ready` must arrive this soon after `start` goes out, or the recording goes offline.
     pub ready_timeout: Duration,
-    /// After `stop`, how long the daemon tries to get a connection for the upload.
     pub stop_window: Duration,
-    /// The connection check at `start`. On a slow link it leaves room for the pong wait and a
-    /// reconnect after it (TCP, the WebSocket upgrade, `hello`/`welcome`, and a round trip to
-    /// spare): the pong wait plus 4 round trips, up to 3 s.
     pub start_budget: Duration,
-    /// The connection check at `start` within [`Timing::resume_window`] of resume.
     pub resume_budget: Duration,
     pub resume_window: Duration,
-    /// The pong wait inside the check. On a slow link it's 3 round trips, up to 2 s.
     pub pong: Duration,
-    /// Longest single connection attempt inside the stop window.
     pub attempt_budget: Duration,
-    /// First pause between attempts inside the stop window; it doubles up to 2 s.
     pub first_backoff: Duration,
-    /// How long `Done` and `NothingHeard` stay on screen.
     pub done_shown: Duration,
-    /// How long errors and flashes stay on screen.
     pub notice_shown: Duration,
-    /// Longest the focused-window lookup over niri's IPC may take before the paste falls back to
-    /// Ctrl+V.
     pub niri_lookup: Duration,
-    /// Least time between two status lines to a follower (`psst status --follow`); changes in
-    /// between are coalesced into the next line.
     pub follow_interval: Duration,
 }
 
@@ -113,32 +65,24 @@ impl Default for Timing {
     }
 }
 
-/// The longest the pong wait and the check at `start` grow to on a slow link, so a dead server is
-/// still noticed quickly.
+/// Caps for slow links, so a dead server is still noticed quickly.
 const MAX_PONG: Duration = Duration::from_secs(2);
 const MAX_CHECK: Duration = Duration::from_secs(3);
 
-/// What the daemon talks to besides the server, so tests can substitute each.
 pub struct Deps {
     pub audio: Arc<dyn AudioSource>,
     pub wayland: Box<dyn Wayland>,
-    /// Plays the error sound; called only when `sounds = true`.
     pub sound: Arc<dyn Fn() + Send + Sync>,
-    /// niri's IPC socket, for the focused window.
     pub niri_socket: Option<PathBuf>,
     pub timing: Timing,
 }
 
-/// Where the daemon keeps its files.
 #[derive(Debug, Clone)]
 pub struct Paths {
-    /// `$XDG_STATE_HOME/psst`.
     pub state_dir: PathBuf,
-    /// `$XDG_RUNTIME_DIR/psst/daemon.sock`.
     pub socket: PathBuf,
 }
 
-/// A running daemon.
 pub struct DaemonHandle {
     tx: mpsc::UnboundedSender<Input>,
     task: tokio::task::JoinHandle<()>,
@@ -146,7 +90,6 @@ pub struct DaemonHandle {
 }
 
 impl DaemonHandle {
-    /// Handles one command, as the command socket does.
     pub async fn request(&self, request: Request) -> Response {
         let (tx, rx) = oneshot::channel();
         if self.tx.send(Input::Request(request, tx)).is_err() {
@@ -155,8 +98,6 @@ impl DaemonHandle {
         rx.await.unwrap_or_else(|_| Response::err("the daemon has stopped"))
     }
 
-    /// Stops: a recording in progress is finished and kept for `psst retry`, followers are
-    /// disconnected, and the command socket stops accepting connections.
     pub async fn shutdown(self) {
         let (tx, rx) = oneshot::channel();
         if self.tx.send(Input::Shutdown(tx)).is_ok() {
@@ -168,8 +109,6 @@ impl DaemonHandle {
     }
 }
 
-/// Starts the daemon: recovers the recordings, binds the command socket, connects to the server
-/// once, and runs until [`DaemonHandle::shutdown`].
 pub async fn spawn(cfg: ClientConfig, paths: Paths, deps: Deps) -> anyhow::Result<DaemonHandle> {
     // The socket first: it's what proves no other daemon is using the recordings.
     let listener = bind_socket(&paths.socket)?;
@@ -252,9 +191,8 @@ async fn serve_socket(listener: UnixListener, tx: mpsc::UnboundedSender<Input>, 
     }
 }
 
-/// One `follow` connection: the status now, then after each change, at most once per `interval`.
-/// Only this task waits on a follower that stops reading; the watch channel keeps just the latest
-/// status, so the daemon never does. It ends when the follower hangs up or the daemon stops.
+/// The watch channel keeps only the latest status, so a follower that stops reading stalls only
+/// this task, never the daemon.
 async fn serve_follower(
     mut status: watch::Receiver<Status>,
     mut read: impl tokio::io::AsyncRead + Unpin,
@@ -289,40 +227,21 @@ async fn serve_follower(
 enum Input {
     Request(Request, oneshot::Sender<Response>),
     Rec(SessionId, RecEvent),
-    Session {
-        id: SessionId,
-        seq: u64,
-        event: SessionEvent,
-    },
-    Conn {
-        attempt: u64,
-        result: Result<Client, ConnFailure>,
-        fresh: bool,
-    },
-    ConnClosed {
-        epoch: u64,
-        reason: String,
-    },
-    /// The focused window's app id for a paste.
-    Focus {
-        generation: u64,
-        app_id: Option<String>,
-    },
+    Session { id: SessionId, seq: u64, event: SessionEvent },
+    Conn { attempt: u64, result: Result<Client, ConnFailure>, fresh: bool },
+    ConnClosed { epoch: u64, reason: String },
+    Focus { generation: u64, app_id: Option<String> },
     Resumed,
-    /// A follower subscribes to the status.
     Follow(oneshot::Sender<watch::Receiver<Status>>),
     Shutdown(oneshot::Sender<()>),
 }
 
-/// Why a connection attempt failed.
 struct ConnFailure {
     reason: String,
-    /// The server refused this client's protocol version, and this side has to be updated.
     outdated: Option<Outdated>,
 }
 
-/// What the daemon tells the user when the server refused this client's protocol version: short
-/// enough for the overlay to show whole, while `psst status` has the versions on its server line.
+/// Short enough for the overlay to show whole; `psst status` has the versions on its server line.
 fn update_prompt(outdated: Outdated) -> &'static str {
     match outdated {
         Outdated::Client => "update psst",
@@ -332,29 +251,19 @@ fn update_prompt(outdated: Outdated) -> &'static str {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
-    /// Capturing, before the first frame.
     Starting,
     Recording,
-    /// Stopped; the recorder is draining and flushing.
     Draining,
-    /// `stop` went to the live session; waiting for the result.
     Waiting,
-    /// Getting a connection for, or running, the resume upload.
     Uploading,
-    /// Transcribed; waiting for its turn to be inserted.
     Ready,
 }
 
-/// How a recording streams.
 #[derive(Debug, Clone, PartialEq)]
 enum Net {
-    /// Waiting for the connection check at `start`.
     Checking { deadline: Instant },
-    /// Connected; waiting for the connection to be free to send `start`.
     Pending,
-    /// Streaming live.
     Live { ready: bool, since: Instant },
-    /// Recording to the file only; uploaded at `stop`.
     Offline(String),
 }
 
@@ -374,7 +283,6 @@ struct Dictation {
     profile: String,
     generation: u64,
     started_at: Timestamp,
-    /// Started by `psst retry`; an incomplete recording is copied rather than pasted.
     copy_only: bool,
     phase: Phase,
     recorder: Option<Recorder>,
@@ -386,7 +294,6 @@ struct Dictation {
     gapped: bool,
     net: Net,
     session: Option<SessionCtl>,
-    /// Frames captured while no session exists yet.
     backlog: Vec<AudioFrame>,
     uploads_left: u8,
     window_end: Option<Instant>,
@@ -460,12 +367,10 @@ impl Dictation {
     }
 }
 
-/// Text inserted again by `paste-last` or `copy-last`.
 struct Redelivery {
     generation: u64,
     text: String,
     copy: bool,
-    /// A retained `transcribed` recording to delete once delivered.
     delete: Option<SessionId>,
 }
 
@@ -481,7 +386,6 @@ struct Inserting {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AttemptKind {
-    /// Ping the current connection, and reconnect if it doesn't answer.
     Check,
     Connect,
 }
@@ -499,14 +403,13 @@ struct Core {
     epoch: u64,
     connected_at: Instant,
     conn_error: Option<String>,
-    /// The side to update since the server refused this client's protocol version, until a
-    /// connection succeeds.
     incompatible: Option<Outdated>,
-    /// [`Client::round_trip`] of the latest connection, kept while there is none.
+    /// Kept from the latest connection while there is none.
     round_trip: Duration,
     attempt: Option<u64>,
     attempts: u64,
-    /// The session that holds the connection.
+    /// The session holding the connection. One at a time, so a recording started meanwhile keeps
+    /// its frames in its backlog until the slot is free.
     slot: Option<SessionId>,
     resumed_at: Option<Instant>,
     max_recording_s: u32,
@@ -526,10 +429,7 @@ struct Core {
     last_timings: Option<ClientTimings>,
     stopping: Option<(oneshot::Sender<()>, Instant)>,
 
-    /// The status followers see.
     follow: watch::Sender<Status>,
-    /// What the published status was built from: [`Core::status_summary`] and the store's
-    /// revision.
     published: Option<(Status, u64)>,
 }
 
@@ -650,8 +550,6 @@ impl Core {
         }
     }
 
-    // ---- commands ----
-
     fn on_request(&mut self, request: Request) -> Response {
         if self.stopping.is_some() {
             return Response::err("the daemon is stopping");
@@ -714,8 +612,8 @@ impl Core {
         }
         d.net = self.begin_check();
         self.recording = Some(d);
-        // `OverlayShown` comes only when the overlay appears. One already on screen (a notice, or
-        // the previous dictation finishing) just changes state, and the time isn't measured.
+        // `OverlayShown` comes only when the overlay appears, so with one already up (a notice, or
+        // the previous dictation finishing) the time isn't measured.
         self.awaiting_shown = (!self.overlay_visible()).then_some(id);
         info!("recording {id}");
         Response::ok(format!("recording {id}"))
@@ -754,7 +652,6 @@ impl Core {
         Response::ok(format!("cancelled {id}"))
     }
 
-    /// Ends a dictation for good: stops its capture and session and deletes its files.
     fn drop_dictation(&mut self, d: Dictation) {
         if let Some(recorder) = &d.recorder {
             recorder.abort();
@@ -866,7 +763,6 @@ impl Core {
         self.complete_status(self.status_summary())
     }
 
-    /// The status without the saved recordings and their warnings, which come from the disk.
     fn status_summary(&self) -> Status {
         let state = if self.inserting.is_some() {
             "inserting"
@@ -909,7 +805,6 @@ impl Core {
         }
     }
 
-    /// `summary` with the saved recordings and their warnings.
     fn complete_status(&self, mut summary: Status) -> Status {
         let retained = self.store.list();
         summary.warnings.extend(self.store.warnings(&retained));
@@ -942,9 +837,8 @@ impl Core {
         summary
     }
 
-    /// Publishes the status to followers if it changed. The summary is cheap, so this runs after
-    /// every input (audio frames included); the recordings directory is read only when the
-    /// summary or the store changed.
+    /// Runs after every input, audio frames included, so the recordings directory is read only when
+    /// the cheap summary or the store's revision changed.
     fn publish(&mut self) {
         if self.follow.receiver_count() == 0 {
             self.published = None;
@@ -965,13 +859,10 @@ impl Core {
         });
     }
 
-    // ---- the connection ----
-
     fn endpoint_is_tcp(&self) -> bool {
         matches!(self.cfg.server, Endpoint::Tcp { .. })
     }
 
-    /// The network state of a recording that starts now.
     fn begin_check(&mut self) -> Net {
         let resumed = self.resumed_at.is_some_and(|at| at.elapsed() < self.t.resume_window);
         let budget = self.check_budget(if resumed { self.t.resume_budget } else { self.t.start_budget });
@@ -986,18 +877,18 @@ impl Core {
         Net::Checking { deadline }
     }
 
-    /// The pong wait at `start`, scaled to the server's round trip ([`Timing::pong`]).
     fn pong_budget(&self) -> Duration {
         self.t.pong.max(self.round_trip.saturating_mul(3).min(MAX_PONG))
     }
 
-    /// The connection check at `start`, scaled to the server's round trip and at least `floor`
-    /// ([`Timing::start_budget`]).
+    /// Room for the pong wait and a reconnect: TCP, the WebSocket upgrade, `hello`/`welcome`, and
+    /// a round trip to spare.
     fn check_budget(&self, floor: Duration) -> Duration {
         floor.max((self.pong_budget() + self.round_trip.saturating_mul(4)).min(MAX_CHECK))
     }
 
-    /// Starts one connection attempt (or a check of the current connection) within `budget`.
+    /// No reconnect timers: attempts are made only at start-up, once after a close or resume, at
+    /// `start`, and in an upload's window after `stop`.
     fn connect(&mut self, budget: Duration, kind: AttemptKind) {
         if self.attempt.is_some() {
             return;
@@ -1117,9 +1008,8 @@ impl Core {
         }
     }
 
-    /// The server refused this client's protocol version. Says so once, unless a dictation in
-    /// flight will (it can't reach the server either), and ends the window of every upload waiting
-    /// for a connection: retrying can't help until one side is updated.
+    /// Says so once, unless a dictation in flight will, and ends every waiting upload's window:
+    /// retrying can't help until one side is updated.
     fn refused(&mut self, outdated: Outdated) {
         let learned = self.incompatible != Some(outdated);
         self.incompatible = Some(outdated);
@@ -1134,7 +1024,6 @@ impl Core {
         }
     }
 
-    /// Why a dictation that needs the server can't have it.
     fn unreachable_reason(&self) -> String {
         self.incompatible.map_or("no connection to the server", update_prompt).to_string()
     }
@@ -1160,8 +1049,7 @@ impl Core {
         }
     }
 
-    /// What `audio.codec` asks sessions to send. Opus only over TCP: the socket never leaves the
-    /// machine, so compressing would save nothing.
+    /// Opus only over TCP: the Unix socket never leaves the machine, so compressing saves nothing.
     fn codec(&self) -> AudioCodec {
         match self.cfg.audio.codec {
             psst_config::AudioCodec::Opus if self.endpoint_is_tcp() => AudioCodec::Opus(OpusSettings::default()),
@@ -1257,7 +1145,6 @@ impl Core {
         info!("uploading {id}");
     }
 
-    /// Moves a stopped dictation to the resume upload, with a fresh 10 s connection window.
     fn begin_upload(&self, d: &mut Dictation) {
         d.uploads_left = d.uploads_left.saturating_sub(1);
         d.phase = Phase::Uploading;
@@ -1269,7 +1156,7 @@ impl Core {
         d.backoff = self.t.first_backoff;
     }
 
-    /// A recording can no longer stream; it keeps recording to its file.
+    /// The recording goes on to its file: neither the network nor the server stops the mic.
     fn went_offline(&mut self, id: SessionId, reason: String) {
         let Some(d) = self.dictation_mut(id) else { return };
         if matches!(d.net, Net::Offline(_)) {
@@ -1283,8 +1170,6 @@ impl Core {
             self.sound();
         }
     }
-
-    // ---- recorder events ----
 
     fn dictation_mut(&mut self, id: SessionId) -> Option<&mut Dictation> {
         if let Some(rec) = &mut self.recording
@@ -1415,8 +1300,6 @@ impl Core {
         }
     }
 
-    // ---- session events ----
-
     fn on_session(&mut self, id: SessionId, seq: u64, event: SessionEvent) {
         let terminal = event.is_terminal();
         if terminal && self.slot == Some(id) {
@@ -1454,7 +1337,6 @@ impl Core {
         }
     }
 
-    /// A stopped dictation's session failed: upload once more if it may, else keep it for retry.
     fn after_failure(&mut self, id: SessionId, reason: String) {
         let Some(pos) = self.pipeline.iter().position(|d| d.id == id) else { return };
         let mut d = self.pipeline.remove(pos).expect("in range");
@@ -1467,7 +1349,6 @@ impl Core {
         }
     }
 
-    /// Gives up on a dictation for now: its recording stays on disk for `psst retry`.
     fn saved(&mut self, d: Dictation, reason: String) {
         warn!("{} saved for retry: {reason}", d.id);
         if let Some(session) = &d.session {
@@ -1504,8 +1385,6 @@ impl Core {
             warn!("cannot write last.json: {err}");
         }
     }
-
-    // ---- delivery ----
 
     fn deliver_next(&mut self) {
         if self.inserting.is_some() {
@@ -1582,8 +1461,8 @@ impl Core {
             WaylandEvent::Disconnected => {
                 info!("the Wayland thread disconnected");
                 self.sink = None;
-                // The overlay is gone with the connection; it's sent again (and shown again) on
-                // the next refresh, which isn't the `toggle` a recording waits to see.
+                // The overlay is gone with the connection; the next refresh shows it again, which
+                // isn't the `toggle` a recording waits to see.
                 self.overlay = None;
                 self.awaiting_shown = None;
                 if let Some(inserting) = &self.inserting {
@@ -1627,7 +1506,6 @@ impl Core {
         self.error_notice(&format!("paste failed: run {hint}"));
     }
 
-    /// Sends `report` with the client's timings, and keeps them for `status`.
     fn report(&mut self, d: &Dictation, dispatched: Option<Instant>) {
         let ms = |from: Option<Instant>, to: Option<Instant>| match (from, to) {
             (Some(from), Some(to)) => Some(to.saturating_duration_since(from).as_millis() as u32),
@@ -1645,8 +1523,6 @@ impl Core {
             client.report(d.id, result.history_id, timings);
         }
     }
-
-    // ---- the overlay and the Wayland seam ----
 
     fn wayland(&mut self, cmd: WaylandCmd) {
         if self.sink.is_none() {
@@ -1666,7 +1542,6 @@ impl Core {
         }
     }
 
-    /// Whether the last overlay command showed it.
     fn overlay_visible(&self) -> bool {
         matches!(self.overlay, Some(Some(_)))
     }
@@ -1751,7 +1626,6 @@ impl Core {
         if current == Some(&desired) {
             return;
         }
-        // Level changes alone are sent at most every 50 ms.
         let level_only = match (current, &desired) {
             (Some(Some(OverlayState::Recording { .. })), Some(OverlayState::Recording { .. })) => true,
             (Some(Some(OverlayState::Offline { reason: a, .. })), Some(OverlayState::Offline { reason: b, .. })) => {
@@ -1766,8 +1640,6 @@ impl Core {
         self.overlay_at = Instant::now();
         self.wayland(WaylandCmd::Overlay(desired));
     }
-
-    // ---- time ----
 
     fn next_deadline(&self) -> Option<Instant> {
         let mut deadlines = Vec::new();
@@ -1816,8 +1688,6 @@ impl Core {
         }
     }
 
-    /// Moves everything along that can move: hands the connection to the next session, runs the
-    /// upload windows, delivers results in order, and updates the overlay.
     fn pump(&mut self) {
         let now = Instant::now();
         if let Some(mut client) = self.usable_client()

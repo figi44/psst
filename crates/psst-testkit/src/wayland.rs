@@ -1,7 +1,3 @@
-//! In-process Wayland clients for tests, standing in for apps, clipboard managers, a physical
-//! keyboard and a screenshot tool. Each connects to a sandbox's socket by path, never through
-//! this process's `WAYLAND_DISPLAY`.
-
 use std::{
     collections::BTreeMap,
     io::{Read, Write},
@@ -48,9 +44,10 @@ use wayland_protocols_wlr::screencopy::v1::client::{
 
 use crate::Sandbox;
 
-/// The plain-text types, in the order apps prefer them.
+/// In the order apps prefer them.
 pub const TEXT_MIMES: [&str; 5] = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING", "TEXT"];
 
+/// By path, never through this process's `WAYLAND_DISPLAY`, which may be the live session's.
 fn connect(socket: &Path) -> (Connection, GlobalList, EventQueue<Client>) {
     let stream = UnixStream::connect(socket).unwrap_or_else(|e| panic!("connect to {}: {e}", socket.display()));
     let conn = Connection::from_socket(stream).expect("a Wayland connection");
@@ -58,7 +55,6 @@ fn connect(socket: &Path) -> (Connection, GlobalList, EventQueue<Client>) {
     (conn, globals, queue)
 }
 
-/// State for the helpers' connections.
 #[derive(Default)]
 struct Client {
     selection: Option<Option<ExtDataControlOfferV1>>,
@@ -76,17 +72,11 @@ struct Frame {
     failed: bool,
 }
 
-/// The types an offer announced.
 #[derive(Default)]
 struct OfferTypes(std::sync::Mutex<Vec<String>>);
 
-/// What a source serves, per type.
 struct Served(BTreeMap<String, Arc<Vec<u8>>>);
 
-// ---------------------------------------------------------------------- clipboard
-
-/// A client that owns the clipboard with the given representations, as an app does after a copy.
-/// It keeps serving until something replaces it and stops when dropped.
 pub struct ClipboardOwner {
     stop: Arc<AtomicBool>,
     replaced: Arc<AtomicBool>,
@@ -94,12 +84,10 @@ pub struct ClipboardOwner {
 }
 
 impl ClipboardOwner {
-    /// Owns the clipboard with `items` (type, content); returns once the selection is set.
     pub fn new(sandbox: &Sandbox, items: &[(&str, &[u8])]) -> Self {
         Self::slow(sandbox, items, Duration::ZERO)
     }
 
-    /// Like [`ClipboardOwner::new`], but answers every read only after `delay`.
     pub fn slow(sandbox: &Sandbox, items: &[(&str, &[u8])], delay: Duration) -> Self {
         let socket = sandbox.wayland_socket().to_path_buf();
         let served: BTreeMap<String, Arc<Vec<u8>>> =
@@ -134,7 +122,6 @@ impl ClipboardOwner {
         Self { stop, replaced, thread: Some(thread) }
     }
 
-    /// Whether another client has taken the clipboard since.
     pub fn replaced(&self) -> bool {
         self.replaced.load(Ordering::Acquire)
     }
@@ -149,7 +136,6 @@ impl Drop for ClipboardOwner {
     }
 }
 
-/// Dispatches events for up to `timeout`.
 fn dispatch_for(conn: &Connection, queue: &mut EventQueue<Client>, st: &mut Client, timeout: Duration) {
     queue.dispatch_pending(st).expect("dispatch");
     conn.flush().expect("flush");
@@ -163,29 +149,23 @@ fn dispatch_for(conn: &Connection, queue: &mut EventQueue<Client>, st: &mut Clie
     queue.dispatch_pending(st).expect("dispatch");
 }
 
-/// The clipboard as a clipboard manager sees it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Selection {
-    /// The types offered, in order.
     pub mimes: Vec<String>,
-    /// Every type's content.
     pub data: BTreeMap<String, Vec<u8>>,
 }
 
 impl Selection {
-    /// The content of the first plain-text type offered, if any.
     pub fn text(&self) -> Option<String> {
         TEXT_MIMES.iter().find_map(|m| self.data.get(*m)).map(|d| String::from_utf8_lossy(d).into_owned())
     }
 
-    /// Whether it offers text under all five plain-text types, the same under each.
     pub fn text_under_all_types(&self) -> bool {
         let first = self.data.get(TEXT_MIMES[0]);
         TEXT_MIMES.iter().all(|m| self.data.get(*m).is_some_and(|d| Some(d) == first))
     }
 }
 
-/// Reads the whole clipboard (every type). `None` if it's empty.
 pub fn read_clipboard(sandbox: &Sandbox) -> Option<Selection> {
     let (conn, globals, mut queue) = connect(sandbox.wayland_socket());
     let qh = queue.handle();
@@ -213,9 +193,6 @@ pub fn read_clipboard(sandbox: &Sandbox) -> Option<Selection> {
     Some(Selection { mimes, data })
 }
 
-// ---------------------------------------------------------------------- keys
-
-/// evdev key codes for [`HostKeyboard`].
 pub mod keys {
     pub const KEY_2: u32 = 3;
     pub const KEY_A: u32 = 30;
@@ -241,8 +218,8 @@ xkb_symbols "psst-host" {
 };
 "#;
 
-/// "Physical" keys: a virtual keyboard on the sandbox's headless sway. The nested niri's window
-/// receives the raw evdev codes and applies niri's own layout, as with a real keyboard.
+/// On the host sway, so the nested niri's window gets raw evdev codes and applies niri's own
+/// layout, as with a real keyboard.
 pub struct HostKeyboard {
     _conn: Connection,
     queue: EventQueue<Client>,
@@ -300,9 +277,6 @@ impl Drop for HostKeyboard {
     }
 }
 
-// ---------------------------------------------------------------------- screenshots
-
-/// A screenshot: straight RGBA, row by row from the top.
 #[derive(Debug, Clone)]
 pub struct Screenshot {
     pub width: u32,
@@ -317,11 +291,8 @@ impl Screenshot {
     }
 }
 
-/// Captures the compositor's (first) output with wlr-screencopy.
-///
-/// niri 26.04's nested (winit) output hands out frames upside down without setting the
-/// `y_invert` flag; for nested niri they're turned the right way up here. (The overlay tests run
-/// on headless sway too, which captures correctly, so a fix in niri shows up as a failing test.)
+/// niri 26.04's nested (winit) output hands out frames upside down without setting `y_invert`, so
+/// they're flipped here. Headless sway captures correctly, so a fix in niri fails the overlay tests.
 pub fn screenshot(sandbox: &Sandbox) -> Screenshot {
     let (_conn, globals, mut queue) = connect(sandbox.wayland_socket());
     let qh = queue.handle();
@@ -358,7 +329,7 @@ pub fn screenshot(sandbox: &Sandbox) -> Screenshot {
         let row = if flip { height - 1 - row } else { row };
         let line = &raw[row as usize * stride as usize..][..width as usize * 4];
         for px in line.as_chunks::<4>().0 {
-            // (A|X)RGB8888 and (A|X)BGR8888, little-endian.
+            // wl_shm formats are little-endian.
             let [r, g, b] = match format {
                 wl_shm::Format::Argb8888 | wl_shm::Format::Xrgb8888 => [px[2], px[1], px[0]],
                 wl_shm::Format::Abgr8888 | wl_shm::Format::Xbgr8888 => [px[0], px[1], px[2]],
@@ -369,8 +340,6 @@ pub fn screenshot(sandbox: &Sandbox) -> Screenshot {
     }
     Screenshot { width, height, rgba }
 }
-
-// ---------------------------------------------------------------------- dispatch
 
 impl Dispatch<ExtDataControlDeviceV1, ()> for Client {
     fn event(

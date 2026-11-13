@@ -1,5 +1,3 @@
-"""A stand-in for Whisper's tokenizer."""
-
 from __future__ import annotations
 
 import re
@@ -9,12 +7,9 @@ _PIECES = re.compile(r"""'s|'t|'re|'ve|'m|'ll|'d| ?[^\W\d_]+| ?\d+| ?[^\s\w]+|\s
 
 
 def fake_encode(text: str) -> list[int]:
-    """A stand-in for Whisper's byte-level BPE: GPT-2's pre-tokenizer, then one token per 4 bytes
-    of each piece.
-
-    Like the real tokenizer, a leading space can change the count (``" abcd"`` is two tokens,
-    ``"abcd"`` one), non-ASCII text costs more, and appending text never removes tokens.
-    """
+    """One token per 4 bytes of each piece. Like the real tokenizer, a leading space can change the
+    count (``" abcd"`` is two tokens, ``"abcd"`` one), non-ASCII text costs more, and appending text
+    never removes tokens."""
     ids = []
     for piece in _PIECES.findall(text):
         data = piece.encode()

@@ -1,17 +1,7 @@
 """Render the synthetic eval clips with Piper and write evals/cases.jsonl.
 
-Run through scripts/synth-evals.sh, which provides Piper, Python and flac from the pinned nixpkgs.
-
-What it does:
-- Reads evals/sentences/en.txt and checks it against evals/dictionary.toml and the eval set's rules (check_rules).
-- Downloads the Piper voices (pinned commit, checked by sha256) into the psst cache.
-- Renders every entry with one voice, plus a few silence and noise cases, as 16 kHz mono FLAC in evals/clips/.
-- Rewrites the synthetic lines of evals/cases.jsonl, and keeps any other line.
-
-Determinism: Piper adds random noise inside the ONNX model. Each segment seeds onnxruntime from the clip id before
-its session is created, so the same inputs give byte-identical audio. Each clip carries a PSST_SYNTH tag (a hash of
-everything that went into it); a clip whose tag matches is left alone, and its cases.jsonl line (with any engine
-outputs added later) is kept as it is.
+Piper adds random noise inside its ONNX model, so each segment seeds onnxruntime from the clip id: the same inputs
+give byte-identical audio.
 """
 
 from __future__ import annotations
@@ -42,7 +32,7 @@ RENDER_VERSION = 1
 PIPER_VOICES_REPO = "rhasspy/piper-voices"
 PIPER_VOICES_REV = "e7229f7d33a10e145e109b886d661984201ac3c4"
 
-# model stem -> (path in the voices repo, sha256 of .onnx, sha256 of .onnx.json). Licences are in evals/SOURCES.md.
+# Licences are in evals/SOURCES.md.
 MODELS = {
     "en_US-ljspeech-high": (
         "en/en_US/ljspeech/high",
@@ -61,7 +51,6 @@ MODELS = {
     ),
 }
 
-# voice tag (part of the clip id) -> (model stem, length_scale).
 VOICES = {
     "lj": ("en_US-ljspeech-high", 1.0),
     "norman": ("en_US-norman-medium", 1.0),
@@ -69,11 +58,11 @@ VOICES = {
 }
 EN_VOICES = ["lj", "norman", "cori"]
 
-LEAD_IN_S = 0.3  # silence before speech, as if the recording started a moment before speaking
-TAIL_S = 0.5  # silence after speech
-LONG_TAIL_S = 4.0  # the silent tail of long must-pass clips
-SENTENCE_GAP_S = 0.2  # between sentences inside one segment
-PEAK = 10 ** (-1 / 20)  # normalise speech to -1 dBFS peak
+LEAD_IN_S = 0.3
+TAIL_S = 0.5
+LONG_TAIL_S = 4.0
+SENTENCE_GAP_S = 0.2
+PEAK = 10 ** (-1 / 20)
 
 ENTRY_ID = re.compile(r"^(en)-(?:(long|short)-)?(\d+)$")
 MARK = re.compile(r"\[\[([^\[\]|{}]+?)(?:\|([^\[\]|{}]+?))?\]\]")
@@ -88,10 +77,10 @@ class InputError(Exception):
 class Entry:
     id: str
     lang: str
-    kind: str  # "regular", "long" or "short"
+    kind: str
     number: int
-    text: str  # with markup
-    source_line: str  # file:line, for errors
+    text: str
+    source_line: str
 
     @property
     def reference(self) -> str:
@@ -102,7 +91,6 @@ class Entry:
         return list(dict.fromkeys(m.group(1) for m in MARK.finditer(self.text)))
 
     def spoken_segments(self) -> list[tuple[str, float]]:
-        """(text for Piper, pause after it in seconds) per segment."""
         spoken = MARK.sub(lambda m: m.group(2) or m.group(1), self.text)
         parts = PAUSE.split(spoken)
         texts, pauses = parts[0::2], [float(p) for p in parts[1::2]] + [0.0]
@@ -117,7 +105,7 @@ class Clip:
     reference: str
     terms: list[str]
     must_pass: bool
-    voice: str | None = None  # None for noise cases
+    voice: str | None = None
     segments: list[tuple[str, float]] = field(default_factory=list)
     noise: str | None = None
     noise_seconds: float = 0.0
@@ -189,21 +177,14 @@ def check_entries(entries: list[Entry], dictionary: dict[str, str]) -> None:
                 raise InputError(f"{e.source_line}: {e.id}: [[{term}]] isn't valid for {e.lang}")
 
 
-# --- the eval set's rules -------------------------------------------------------------------------------------------
-
 WORDS_FILE = Path("sentences") / "words.txt"
 WORD = re.compile(r"[^\W\d_]+(?:['’-][^\W\d_]+)*")
-SHORT_WORDS, LONG_WORDS = 8, 20  # regular sentences up to SHORT_WORDS words are short, from LONG_WORDS on long
-MIN_PER_LENGTH = 5  # regular sentences of each length in each split
-MIN_PLAIN = 0.25  # the share of regular sentences without terms in each split
+SHORT_WORDS, LONG_WORDS = 8, 20
+MIN_PER_LENGTH = 5
+MIN_PLAIN = 0.25
 
 
 def lowercase_words(stress: Path) -> set[str]:
-    """Words the stress sentences write in lowercase in mid-sentence more often than capitalised.
-
-    The common-word list is casefolded and holds names too ("microsoft"); a common word counts as ordinary only if it's
-    also in here.
-    """
     lower: dict[str, int] = {}
     upper: dict[str, int] = {}
     lines = stress.read_text(encoding="utf-8").splitlines() if stress.exists() else []
@@ -223,17 +204,11 @@ def lowercase_words(stress: Path) -> set[str]:
 
 
 def read_words(path: Path) -> set[str]:
-    """The words in words.txt: whitespace-separated, after any `#` comment lines."""
     lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
     return {word for line in lines if not line.startswith("#") for word in line.split()}
 
 
 def unknown_words(e: Entry, common: set[str], allowed: set[str]) -> list[str]:
-    """Words outside [[Term]] marks that are neither common words nor in words.txt.
-
-    A word with a capital needs words.txt to list it that way, unless it's capitalised only because it starts a
-    sentence. A possessive counts as its word, and a hyphenated word as its parts.
-    """
     vocabulary = common | {w.casefold() for w in allowed}
 
     def known(word: str) -> bool:
@@ -249,6 +224,7 @@ def unknown_words(e: Entry, common: set[str], allowed: set[str]) -> list[str]:
         pos = m.end()
         word = m.group().replace("’", "'")
         if word != "⟦⟧":
+            # A capitalised word can be a name, so words.txt must list it capitalised.
             capital_ok = (word == word.lower() or (initial and word[1:] == word[1:].lower())
                           or word in allowed or re.sub(r"'s$", "", word) in allowed)
             if not (known(word) and capital_ok):
@@ -258,7 +234,6 @@ def unknown_words(e: Entry, common: set[str], allowed: set[str]) -> list[str]:
 
 
 def position(reference: str, start: int, end: int) -> str:
-    """Where a term occurrence sits in its sentence: start, middle or end."""
     before = reference[:start].rstrip(" \"'‘“")
     if not before or before[-1] in ".!?":
         return "start"
@@ -269,20 +244,10 @@ def position(reference: str, start: int, end: int) -> str:
 
 
 def check_rules(entries: list[Entry], evals: Path) -> list[str]:
-    """The eval set's rules, beyond well-formed entries:
-
-    - Vocabulary: every word outside [[Term]] marks is listed in sentences/words.txt, or is one of the 5,000 most
-      common English words that the stress sentences mostly write in lowercase (names are among the common words), and
-      nothing outside the marks has a digit. A product or company name can't slip into the sentences without a
-      reviewer reading it in words.txt.
-    - Speech: a term is spoken as the probe spoke it (terms.toml's `spoken`, or its spelling).
-    - Splits: every term the sentences use occurs in both the tune and the holdout split.
-    - Classes: every term the sentences use has a class in terms.toml, and each class has at least its minimum of
-      distinct terms (eval_terms.CLASSES), occurring at the start, in the middle and at the end of a sentence.
-    - Each split's regular sentences: at least MIN_PLAIN of them without terms, and MIN_PER_LENGTH of each length.
-    """
     problems = []
+    # The common-word list holds names too: only the words the stress sentences mostly write in lowercase count.
     common = eval_terms.common_words() & lowercase_words(evals / "stress" / "en.txt")
+    # Any other word must be in words.txt, so no product or company name gets in without a reviewer reading it there.
     allowed = read_words(evals / WORDS_FILE)
     for e in entries:
         if re.search(r"\d", PAUSE.sub("", MARK.sub("", e.text))):
@@ -338,7 +303,6 @@ def check_rules(entries: list[Entry], evals: Path) -> list[str]:
 
 
 def load_dictionary(path: Path) -> dict[str, str]:
-    """Term text -> its `languages`: "any" or one language code."""
     terms = tomllib.loads(path.read_text(encoding="utf-8"))["terms"]
     return {t["text"]: t.get("languages", "any") for t in terms}
 
@@ -347,7 +311,7 @@ def voice_for(e: Entry) -> str:
     return EN_VOICES[(e.number - 1) % len(EN_VOICES)]
 
 
-# Silence and noise cases: the guard must leave them empty. (id suffix, kind, seconds)
+# The guard must leave these empty.
 NOISE_CASES = {
     "en": [("silence", "silence", 5.0), ("roomtone", "roomtone", 8.0), ("fan", "fan", 6.0),
            ("white", "white", 4.0), ("hum", "hum", 6.0), ("typing", "typing", 6.0)],
@@ -370,9 +334,6 @@ def plan_clips(entries: list[Entry], noise: bool = True) -> list[Clip]:
                 terms=[], must_pass=True, noise=kind, noise_seconds=seconds,
             ))
     return clips
-
-
-# --- audio ----------------------------------------------------------------------------------------------------------
 
 
 def fetch_voice(cache: Path, model: str) -> Path:
@@ -451,18 +412,18 @@ def render_noise(clip: Clip) -> np.ndarray:
     n = int(clip.noise_seconds * SR)
     t = np.arange(n) / SR
     match clip.noise:
-        case "silence":  # digital silence
+        case "silence":
             return np.zeros(n, dtype=np.float32)
-        case "roomtone":  # a quiet room through a laptop mic
+        case "roomtone":
             return dbfs(pink(rng, n), -58)
-        case "fan":  # a desk fan close by
+        case "fan":
             return dbfs(pink(rng, n), -32)
-        case "white":  # broadband hiss, loud
+        case "white":
             return dbfs(rng.standard_normal(n).astype(np.float32), -30)
-        case "hum":  # 50 Hz mains hum with harmonics, over room tone
+        case "hum":
             hum = sum(np.sin(2 * np.pi * 50 * k * t) / k for k in (1, 2, 3, 5)).astype(np.float32)
             return dbfs(hum, -36) + dbfs(pink(rng, n), -58)
-        case "typing":  # keyboard clicks, about six per second, over room tone
+        case "typing":
             out = dbfs(pink(rng, n), -58)
             click_len = int(0.012 * SR)
             envelope = np.exp(-np.arange(click_len) / (0.002 * SR)).astype(np.float32)
@@ -497,9 +458,6 @@ def flac_seconds(path: Path) -> float:
     out = subprocess.run(["metaflac", "--show-total-samples", "--show-sample-rate", str(path)],
                          capture_output=True, text=True, check=True).stdout.split()
     return int(out[0]) / int(out[1])
-
-
-# --- main -----------------------------------------------------------------------------------------------------------
 
 
 def main() -> int:
@@ -556,8 +514,7 @@ def main() -> int:
             print(f"removing {stale}", file=sys.stderr)
             stale.unlink()
 
-    # cases.jsonl: keep non-synthetic lines, and a synthetic line as it is (engine outputs included) if its clip and fields
-    # are unchanged; everything else is rewritten from the plan.
+    # A synthetic line is kept as it is, with any engine outputs added later, while its clip and fields are unchanged.
     cases_path = evals / "cases.jsonl"
     old = {}
     if cases_path.exists():

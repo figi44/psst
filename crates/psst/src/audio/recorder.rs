@@ -1,6 +1,3 @@
-//! The recorder thread: drains the capture ring, resamples to 16 kHz, writes the WAV from the
-//! first frame, and hands frames to the daemon.
-
 use std::{
     fs::{File, OpenOptions},
     io::{self, Seek, SeekFrom, Write},
@@ -20,26 +17,20 @@ use rubato::{Fft, FixedSync, Indexing, Resampler, audioadapter_buffers::direct::
 
 use super::{AudioSource, Feed, FeedShared, RING_SAMPLES, level};
 
-/// How often the recorder drains the ring while recording.
 const POLL: Duration = Duration::from_millis(10);
-/// Longest wait at stop for the capture callback that holds the last audio.
+/// Longest wait at stop for the capture callback holding the last audio.
 const DRAIN_WAIT: Duration = Duration::from_millis(100);
 
+/// A `Frame` is already in the WAV, and the last one is zero-padded here but not in the WAV.
+/// `Finished` comes after every frame.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RecEvent {
-    /// A 20 ms frame, already written to the WAV, with its level (0…1). The last frame of a
-    /// recording is padded with zeros.
     Frame { frame: Box<AudioFrame>, level: f32 },
-    /// A glitch was filled with silence; the recording is `gapped`.
     Gap,
-    /// Recording stopped for good: the file couldn't be written or the device is gone.
-    /// `samples` real samples are in the WAV.
     Failed { reason: String, samples: u64 },
-    /// Stopped as asked; every frame was sent before this. `samples` real samples are in the WAV.
     Finished { samples: u64, gapped: bool },
 }
 
-/// Controls a running recorder.
 #[derive(Debug)]
 pub struct Recorder {
     stop: Arc<AtomicBool>,
@@ -48,21 +39,19 @@ pub struct Recorder {
 }
 
 impl Recorder {
-    /// Stops after draining the capture and flushing the resampler, then sends `Finished`.
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Release);
         self.thread.unpark();
     }
 
-    /// Stops at once without further events (for `cancel`).
+    /// Stops at once without further events.
     pub fn abort(&self) {
         self.abort.store(true, Ordering::Release);
         self.thread.unpark();
     }
 }
 
-/// Creates `wav` and starts recording into it on a new thread. Events go to `emit`, in order.
-/// The file exists when this returns, so deleting it afterwards always works.
+/// The WAV exists once this returns, so deleting it afterwards always works.
 pub fn start(
     source: Arc<dyn AudioSource>,
     wav: PathBuf,
@@ -106,7 +95,6 @@ fn run(
     let mut input = vec![0.0f32; 8192];
     let mut frames = Vec::new();
 
-    // Moves what the ring holds through the converter and out as frames. `Err` ends recording.
     let mut pump = |ring: &mut rtrb::Consumer<f32>,
                     conv: &mut Converter,
                     wav: &mut WavWriter,
@@ -187,7 +175,6 @@ fn run(
     emit(RecEvent::Finished { samples: wav.samples, gapped });
 }
 
-/// Writes every whole frame in `pending` and emits it; keeps the remainder.
 fn send_frames(pending: &mut Vec<i16>, wav: &mut WavWriter, emit: &dyn Fn(RecEvent)) -> Result<(), String> {
     let whole = pending.len() / FRAME_SAMPLES * FRAME_SAMPLES;
     for frame in pending[..whole].as_chunks::<FRAME_SAMPLES>().0 {
@@ -198,13 +185,10 @@ fn send_frames(pending: &mut Vec<i16>, wav: &mut WavWriter, emit: &dyn Fn(RecEve
     Ok(())
 }
 
-/// Resamples mono `f32` at the capture rate to 16 kHz `i16`.
 struct Converter {
     resampler: Option<Fft<f32>>,
     rate: u32,
-    /// Input waiting for a whole resampler chunk.
     input: Vec<f32>,
-    /// Output samples still to skip: the resampler's delay.
     skip: usize,
     in_total: u64,
     out_total: u64,
@@ -258,7 +242,6 @@ impl Converter {
         }
     }
 
-    /// Flushes the resampler so every input sample has its output, trimmed to the exact length.
     fn finish(&mut self, frames: &mut Vec<i16>) {
         let expected = (self.in_total as u128 * SAMPLE_RATE as u128 / self.rate as u128) as u64;
         let Some(resampler) = &mut self.resampler else { return };
@@ -305,8 +288,7 @@ fn to_i16(sample: f32) -> i16 {
     (sample * 32768.0).round().clamp(-32768.0, 32767.0) as i16
 }
 
-/// A 16 kHz mono s16 WAV written as audio arrives. The header's sizes are filled in at the end;
-/// readers take the length from the file size anyway.
+/// The header's sizes are only filled in at the end; readers take the length from the file size.
 struct WavWriter {
     file: File,
     samples: u64,
@@ -363,7 +345,6 @@ mod tests {
 
     use super::*;
 
-    /// A source that pushes a fixed signal at `rate` in one go, optionally failing afterwards.
     struct Scripted {
         rate: u32,
         samples: Vec<f32>,
@@ -426,7 +407,6 @@ mod tests {
 
     #[test]
     fn other_rates_are_resampled_to_the_exact_length_with_the_tail_kept() {
-        // One second of a 440 Hz tone at 48 kHz, loud until the very end.
         let signal: Vec<f32> =
             (0..48_000).map(|i| (i as f32 * 440.0 * std::f32::consts::TAU / 48_000.0).sin() * 0.5).collect();
         let (events, _wav, _dir) =
@@ -456,7 +436,7 @@ mod tests {
         assert_eq!(psst_client::read_wav_info(&wav).unwrap().samples, total);
     }
 
-    /// A source that delivers 16 kHz buffers captured at the given times (µs), as cpal does.
+    /// 16 kHz buffers with their capture times in µs.
     struct Timestamped(Vec<(u64, Vec<f32>)>);
 
     impl AudioSource for Timestamped {
@@ -472,7 +452,7 @@ mod tests {
 
     #[test]
     fn a_gap_in_the_capture_timestamps_becomes_silence_and_the_recording_is_gapped() {
-        // Two 20 ms buffers, then one that starts 64 ms after the second ended, without an xrun.
+        // The third buffer starts 64 ms after the second ended.
         let source = Timestamped(vec![(0, vec![0.25; 320]), (20_000, vec![0.25; 320]), (104_000, vec![0.5; 320])]);
         let (events, wav, _dir) = record(source, Duration::from_millis(50));
         assert!(events.contains(&RecEvent::Gap));

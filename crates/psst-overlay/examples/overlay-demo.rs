@@ -1,13 +1,3 @@
-//! Cycles the overlay through every state in an offscreen nested niri, through the real Wayland
-//! thread, and saves what the screen shows for each state.
-//!
-//! ```sh
-//! cargo run -p psst-overlay --example overlay-demo -- [--out DIR] [--hold-ms N]
-//! ```
-//!
-//! Screenshots go to `DIR` (default `target/overlay-demo`), one PNG per state, cropped to the
-//! bottom of the screen. The sandbox never opens a window on the desktop.
-
 use std::{
     path::PathBuf,
     sync::mpsc,
@@ -61,7 +51,7 @@ fn main() {
         let shown_at = Instant::now();
         let mut first = true;
         while shown_at.elapsed() < hold {
-            // The recording states get a level about 25 times a second, like the daemon sends.
+            // About 25 levels a second, like the daemon sends.
             let t = start.elapsed().as_secs_f32();
             let level = (0.5 + 0.5 * (t * 7.0).sin() * (t * 1.3).cos()).powi(2) * 0.4;
             let state = match &state {

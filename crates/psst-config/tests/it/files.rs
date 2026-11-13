@@ -59,7 +59,7 @@ fn web_url_is_an_http_origin() {
 }
 
 #[test]
-fn server_model_section_as_in_the_plan() {
+fn a_full_server_model_section_parses() {
     let config = ServerConfig::from_toml_str(
         r#"
         load_deadline_s = 90
@@ -98,12 +98,11 @@ fn server_rejects_settings_that_cannot_work() {
     invalid::<ServerConfig>("[limits]\nmax_active_sessions = 0", "limits");
     invalid::<ServerConfig>("listen = [\"desktop:7341\"]", "listen");
     invalid::<ServerConfig>("[model.options]\npath = \"parallel\"", "parallel");
-    // The other decoding paths are gone.
     invalid::<ServerConfig>("[model.options]\npath = \"sequential\"", "sequential");
     invalid::<ServerConfig>("[model.options]\npath = \"auto\"", "auto");
 }
 
-const PLAN_PROFILES: &str = r#"
+const PROFILES: &str = r#"
 [profiles.default]
 language = "en"
 prompt_style = "I'm updating the NixOS config. Claude Code and t3code run fine."
@@ -121,7 +120,7 @@ cs = ["ehm", "eee"]
 
 #[test]
 fn profiles_resolve_with_their_languages_fillers() {
-    let file = ProfilesFile::from_toml_str(PLAN_PROFILES).unwrap();
+    let file = ProfilesFile::from_toml_str(PROFILES).unwrap();
     let czech = file.resolve("czech").unwrap();
     assert_eq!(czech.name, "czech");
     assert_eq!(czech.language, "cs");
@@ -164,7 +163,7 @@ fn a_long_prompt_style_is_a_warning_not_an_error() {
     let warnings = file.warnings();
     assert_eq!(warnings.len(), 1);
     assert!(warnings[0].contains("profiles.default.prompt_style"), "{warnings:?}");
-    assert!(ProfilesFile::from_toml_str(PLAN_PROFILES).unwrap().warnings().is_empty());
+    assert!(ProfilesFile::from_toml_str(PROFILES).unwrap().warnings().is_empty());
 }
 
 #[test]
@@ -172,7 +171,7 @@ fn the_apis_profile_has_the_files_keys_and_defaults() {
     use psst_proto::api::Profile as ApiProfile;
 
     assert_eq!(ProfileSpec::try_from(ApiProfile::default()).unwrap(), ProfileSpec::default());
-    let czech = ProfilesFile::from_toml_str(PLAN_PROFILES).unwrap().profiles["czech"].clone();
+    let czech = ProfilesFile::from_toml_str(PROFILES).unwrap().profiles["czech"].clone();
     let api = ApiProfile::from(&czech);
     assert_eq!(
         serde_json::to_value(&api).unwrap(),
@@ -319,7 +318,7 @@ fn server_files_load_from_a_directory_with_defaults_for_missing_files() {
     let dir = tempfile::tempdir().unwrap();
     assert_eq!(ServerFiles::load(dir.path()).unwrap(), ServerFiles::default());
 
-    fs::write(dir.path().join("profiles.toml"), PLAN_PROFILES).unwrap();
+    fs::write(dir.path().join("profiles.toml"), PROFILES).unwrap();
     let files = ServerFiles::load(dir.path()).unwrap();
     assert!(files.profiles.resolve("czech").is_some());
     assert_eq!(files.server, ServerConfig::default());

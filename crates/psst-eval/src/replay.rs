@@ -1,5 +1,3 @@
-//! Replay: every case's recorded traces through `psst_pipeline::run`.
-
 use anyhow::Context;
 use psst_pipeline::{PipelineOptions, run};
 
@@ -10,15 +8,12 @@ use crate::{
     stress,
 };
 
-/// The outcome of replaying an eval set.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Replay {
     pub baseline: Baseline,
-    /// Cases without traces yet, which the audio eval still has to record.
     pub unrecorded: Vec<String>,
 }
 
-/// Replays every case that has traces, and runs the stress test, into a baseline.
 pub fn replay(set: &EvalSet) -> anyhow::Result<Replay> {
     let mut results = Vec::new();
     let mut unrecorded = Vec::new();

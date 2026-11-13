@@ -1,5 +1,4 @@
-//! What `Dictionary::fuzzy_matches` reports. The rules themselves are tested through the
-//! pipeline, in `psst-pipeline/tests/it/fuzzy.rs`.
+//! The matching rules are tested through the pipeline, in `psst-pipeline/tests/it/fuzzy.rs`.
 
 use std::ops::Range;
 
@@ -11,7 +10,6 @@ fn dictionary(texts: &[&str]) -> Dictionary {
     Dictionary::from_file(&DictionaryFile::from_toml_str(&toml).unwrap()).unwrap()
 }
 
-/// The text's whitespace-separated tokens, all available, all with probability `prob`.
 fn tokens(text: &str, prob: Option<f32>) -> Vec<FuzzyToken> {
     let mut tokens = Vec::new();
     let mut start = None;
@@ -28,7 +26,6 @@ fn tokens(text: &str, prob: Option<f32>) -> Vec<FuzzyToken> {
     tokens
 }
 
-/// Each match as (replaced text, its tokens, term, score).
 fn found<'t>(dict: &Dictionary, text: &'t str, tokens: &[FuzzyToken]) -> Vec<(&'t str, Range<usize>, String, f32)> {
     dict.fuzzy_matches(text, tokens, "en")
         .into_iter()

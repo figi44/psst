@@ -1,24 +1,12 @@
-"""Streams for faster-whisper: a live recording decoded while it's still coming in (the
-"Streams" section of the ``psst-engine-proto`` crate docs).
+"""``close`` is the same batched-pipeline call over the whole recording that ``transcribe`` makes,
+with three pure steps answered from caches filled while the audio came in: Silero's probabilities
+(its state runs from window to window, so only the last, zero-padded window is new at ``close``),
+and each chunk's decoder output and word alignment, keyed by the chunk's features. A chunk that
+changes after all has different features and is decoded again.
 
-``close`` answers as ``transcribe`` would for the whole recording, because it is the same call:
-faster-whisper's batched pipeline over the whole recording. Three of the pure steps inside it are
-answered from what was computed while the recording came in:
-
-- **The speech detector's probabilities.** Silero carries its state from window to window, so the
-  probabilities of a recording's first windows don't depend on what follows; they're computed as
-  the audio arrives, and only the last, zero-padded window is new at ``close``.
-- **Each chunk's decoder output**, keyed by the chunk's features.
-- **Each chunk's word alignment**, keyed by its features, tokens and length.
-
-While recording, the pipeline runs over the audio so far whenever a chunk can no longer change:
-once the next chunk has begun, or once the last speech segment has closed and its padding fits in
-the audio so far. Its result is thrown away, but the chunks it decoded stay cached. A chunk that
-changes after all (the speaker went on) has different features, and is simply decoded again.
-
-A recording of one chunk (up to 30 s of speech) gets exactly ``transcribe``'s answer. With more
-chunks, those decoded ahead were decoded on their own instead of in one batch, which can move
-word timings and probabilities slightly, as another ``batch_size`` does.
+One chunk (up to 30 s of speech) gets exactly ``transcribe``'s answer. With more, the chunks decoded
+ahead weren't batched with the rest, which can move word timings and probabilities slightly, as
+another ``batch_size`` does.
 """
 
 from __future__ import annotations
@@ -34,20 +22,15 @@ from faster_whisper.vad import VadOptions, get_speech_timestamps
 
 SAMPLE_RATE = 16_000
 WINDOW = 512
-"""Samples per speech detector window."""
 CONTEXT = 64
-"""Samples of the previous window the detector sees with each window."""
 LOOK_EVERY = 5 * WINDOW
-"""New audio between looks for work: 160 ms."""
 
 _active: _Detector | None = None
-"""The stream whose probabilities faster-whisper's speech detector answers with, while set."""
 _real_get_vad_model: Any = None
 
 
 def _install(model: Any) -> None:
-    """Routes faster-whisper's speech detector and word alignment through the streams' caches.
-    Both pass through unchanged when no stream is being worked on."""
+    """Patches faster-whisper globally; both patches pass through while no stream is active."""
     global _real_get_vad_model
     if _real_get_vad_model is None:
         _real_get_vad_model = fw_vad.get_vad_model
@@ -69,9 +52,6 @@ def _install(model: Any) -> None:
 
 
 class _Detector:
-    """Silero's speech probabilities for a growing recording, as ``SileroVADModel`` computes them for
-    the whole of it."""
-
     def __init__(self) -> None:
         self._session = _real_get_vad_model().session
         self._h = np.zeros((1, 1, 128), dtype=np.float32)
@@ -81,7 +61,6 @@ class _Detector:
         self.windows = 0
 
     def advance(self, audio: np.ndarray) -> None:
-        """Computes the probabilities of ``audio``'s whole windows that aren't computed yet."""
         windows = len(audio) // WINDOW
         if windows <= self.windows:
             return
@@ -95,8 +74,7 @@ class _Detector:
         self.windows = windows
 
     def __call__(self, padded: np.ndarray) -> np.ndarray:
-        """What ``SileroVADModel`` answers for ``padded``, the audio so far padded to whole windows
-        by ``get_speech_timestamps``: the cached windows, and the last one computed now."""
+        """``padded`` is the audio so far, which ``get_speech_timestamps`` pads to whole windows."""
         if len(padded) // WINDOW != self.windows + 1:
             raise RuntimeError(f"the detector holds {self.windows} windows, not {len(padded) // WINDOW - 1}")
         last = padded[-WINDOW:].copy()
@@ -108,8 +86,6 @@ class _Detector:
 
 
 class Stream:
-    """One live recording, decoded ahead while it comes in."""
-
     def __init__(self, model: Any, transcribe_args: dict[str, Any]) -> None:
         _install(model)
         self._model = model
@@ -118,7 +94,7 @@ class Stream:
         self._samples = 0
         self._detector = _Detector()
         chunk_length = model.feature_extractor.chunk_length
-        # The batched pipeline's own speech detector options and chunk length.
+        # Must match the batched pipeline's own speech detector options.
         self._vad_options = VadOptions(max_speech_duration_s=chunk_length, min_silence_duration_ms=160)
         self._chunk_samples = chunk_length * SAMPLE_RATE
         self.decoded: dict[bytes, dict[str, Any]] = {}
@@ -127,7 +103,6 @@ class Stream:
         self._closed_ahead = 0
         self._paused_ahead: tuple[tuple[int, int], ...] = ()
         self.stopped = False
-        """Set after decoding ahead failed: the stream no longer looks for work."""
 
     def append(self, samples: Any) -> None:
         new = np.frombuffer(samples, dtype=np.float32)
@@ -140,12 +115,9 @@ class Stream:
         self._samples = end
 
     def has_work(self) -> bool:
-        """Whether enough new audio came in to look for work."""
         return not self.stopped and self._samples - self._looked_at >= LOOK_EVERY
 
     def work(self) -> bool:
-        """Decodes ahead the chunks of the audio so far that can no longer change, if any
-        aren't yet; whether it did."""
         self._looked_at = self._samples
         audio = self._audio[: self._samples]
         self._detector.advance(audio)
@@ -167,7 +139,6 @@ class Stream:
         return True
 
     def close(self) -> tuple[list[Any], Any, int, int]:
-        """The transcription of the whole recording: segments, info, chunks, and chunks reused."""
         audio = self._audio[: self._samples]
         self._detector.advance(audio)
         return self._run(audio)
@@ -193,7 +164,7 @@ class Stream:
 
 
 def _chunks(segments: list[dict[str, int]], max_samples: int) -> list[list[dict[str, int]]]:
-    """The speech segments of each chunk, as ``faster_whisper.vad.collect_chunks`` groups them."""
+    """Mirrors how ``faster_whisper.vad.collect_chunks`` groups segments."""
     groups: list[list[dict[str, int]]] = []
     current: list[dict[str, int]] = []
     length = 0
@@ -210,8 +181,6 @@ def _chunks(segments: list[dict[str, int]], max_samples: int) -> list[list[dict[
 
 
 class _CachingPipeline(BatchedInferencePipeline):
-    """The batched pipeline, decoding only the chunks the stream hasn't decoded yet."""
-
     def __init__(self, model: Any, stream: Stream) -> None:
         super().__init__(model)
         self._stream = stream
@@ -234,7 +203,7 @@ class _CachingPipeline(BatchedInferencePipeline):
 
 
 class _Batch:
-    """A batch's encoder output, where only the chunks decoded now have one."""
+    """Passed on as the encoder output, which only the chunks decoded now have."""
 
     def __init__(
         self, model: Any, stream: Stream, keys: list[bytes], missing: list[int], encoder_output: Any, features: np.ndarray

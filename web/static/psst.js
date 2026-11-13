@@ -1,6 +1,4 @@
-// The web UI's enhancements. Every page works without this file: it adds picking words in a
-// dictation, live hints in the fix form, closing the menu and side panels, and the profile's
-// token count. Handlers sit on `document`, so they keep working when htmx swaps the page.
+// Every page works without this file. Handlers sit on `document`, so they survive htmx swapping the page.
 (function () {
   "use strict";
   document.documentElement.classList.add("js");
@@ -14,14 +12,10 @@
   var tidy = function (s) { return String(s).replace(/\s+/g, " ").replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}+#]+$/gu, ""); };
   var fine = function () { return matchMedia("(pointer: fine)").matches; };
 
-  // ---------- History: picking words ----------
-  // A pick is a range of a dictation's children (words, gaps, dotted words): {text, a, b, anchor}.
   var pick = null;
   var kids = function (text) { return Array.prototype.slice.call(text.children); };
   var isWord = function (el) { return el && el.classList.contains("w"); };
 
-  // The next word from index `i` in direction `dir`. With `phrase`, never past a sentence end or
-  // a word just fixed.
   function neighbour(text, i, dir, phrase) {
     var all = kids(text);
     for (var j = i + dir; j >= 0 && j < all.length; j += dir) {
@@ -40,7 +34,6 @@
     kids(text).slice(a, b + 1).forEach(function (el) { s += el.firstChild.textContent; });
     return tidy(s);
   }
-  // The dotted word a pick is, when it's exactly one.
   function dotted(text, a, b) {
     var el = kids(text)[a];
     return a === b && el && el.classList.contains("fx") ? el : null;
@@ -64,7 +57,6 @@
     var want = norm(word);
     return $$("#known-words option").map(function (o) { return o.value; }).filter(function (v) { return norm(v) === want; })[0];
   }
-  // The message under "Write it as": what pressing the main button does.
   function hint(form) {
     var msg = $(".fix-msg", form), heard = form.heard.value.trim(), written = form.written.value.trim();
     var fx = pick && pick.form === form ? dotted(pick.text, pick.a, pick.b) : null;
@@ -79,7 +71,6 @@
     form.written.removeAttribute("aria-invalid");
   }
 
-  // Shows a pick in its dictation's form.
   function fill(keepWritten) {
     var text = pick.text, row = text.closest("[data-row]"), box = $(".fixbox", row), form = $("form.fix", box);
     pick.form = form;
@@ -129,7 +120,6 @@
 
   document.addEventListener("click", function (ev) {
     var t = ev.target;
-    // The menu closes when you click elsewhere.
     var menu = $("details.menu[open]");
     if (menu && !t.closest("details.menu")) menu.open = false;
 
@@ -267,7 +257,6 @@
     t.focus();
   });
 
-  // After a fix is saved, its confirmation comes into view.
   function arrive() {
     var id = location.hash.slice(1);
     var row = id && document.getElementById(id);
@@ -282,7 +271,6 @@
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", arrive);
   else arrive();
 
-  // ---------- Profiles: the prompt style's size ----------
   function tokens(area) {
     var n = Math.ceil(new TextEncoder().encode(area.value).length / 4), limit = +area.dataset.countTokens;
     var box = document.getElementById(area.dataset.tokensOut);

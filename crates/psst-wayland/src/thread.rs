@@ -1,6 +1,3 @@
-//! The Wayland thread: one calloop loop, one connection (made lazily, remade after a loss), the
-//! clipboard glue around [`Machine`], and the paste sequence.
-
 use std::collections::HashMap;
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
@@ -27,13 +24,10 @@ use crate::dc::{Bytes, DcDevice, DcHandler, DcManager, DcOffer, DcSource, Proto,
 use crate::overlay::{Globals as SurfaceGlobals, Overlay};
 use crate::{Chord, DataControl, Options, WaylandCmd, WaylandEvent, keymap};
 
-/// A snapshot keeps at most this much.
 const READ_CAP: usize = 10 * 1024 * 1024;
-/// A snapshot read gives up after this long.
 const READ_TIMEOUT: Duration = Duration::from_secs(2);
-/// Serving our selection to a reader that never reads gives up after this long.
+/// For a reader that never reads.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
-/// A paste or copy the compositor never confirms fails after this long (plus its delay).
 const JOB_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) enum Msg {
@@ -79,20 +73,17 @@ enum JobKind {
     Copy,
 }
 
-/// A paste or copy accepted from the daemon and not finished yet.
 struct Job {
     kind: JobKind,
     /// Armed when the operation starts, not while it waits its turn.
     watchdog: Option<RegistrationToken>,
 }
 
-/// An in-flight pipe transfer: the fd source and its timeout.
 struct Io {
     source: RegistrationToken,
     timer: RegistrationToken,
 }
 
-/// Lets calloop poll the connection's socket.
 struct ConnFd(wayland_client::backend::Backend);
 
 impl AsFd for ConnFd {
@@ -101,7 +92,6 @@ impl AsFd for ConnFd {
     }
 }
 
-/// Everything that lives as long as one connection.
 pub(crate) struct Wl {
     pub(crate) conn: Connection,
     /// `None` only while its events are being dispatched.
@@ -114,7 +104,6 @@ pub(crate) struct Wl {
     offers: HashMap<OfferKey, DcOffer>,
     current_offer: Option<OfferKey>,
     next_offer: OfferKey,
-    /// The source psst set last, and what it serves.
     latest: Option<(DcSource, OwnKind)>,
 }
 
@@ -161,7 +150,6 @@ impl State {
         (self.on_event)(event);
     }
 
-    /// Runs `f` once after `delay`.
     pub(crate) fn after(&self, delay: Duration, f: impl FnOnce(&mut State) + 'static) -> RegistrationToken {
         let mut f = Some(f);
         self.lh
@@ -174,9 +162,6 @@ impl State {
             .expect("calloop accepts timers")
     }
 
-    // ------------------------------------------------------------------ connection
-
-    /// Connects if there's no connection.
     pub(crate) fn ensure_connected(&mut self) -> Result<(), String> {
         if self.wl.is_some() {
             return Ok(());
@@ -301,8 +286,6 @@ impl State {
         }
     }
 
-    /// After every round of the event loop: drop a broken connection, or handle anything still
-    /// queued and send what this round produced.
     fn after_dispatch(&mut self) {
         if let Some(wl) = self.wl.as_mut()
             && let Some(mut queue) = wl.queue.take()
@@ -337,8 +320,6 @@ impl State {
         }
     }
 
-    /// Forgets the connection and everything tied to it, fails what was in progress, and
-    /// reports `Disconnected`. The next command connects again.
     fn disconnect(&mut self, reason: &str) {
         let Some(wl) = self.wl.take() else { return };
         log::warn!("psst-wayland: lost the Wayland connection: {reason}");
@@ -359,8 +340,6 @@ impl State {
         }
         self.emit(WaylandEvent::Disconnected);
     }
-
-    // ------------------------------------------------------------------ commands
 
     fn on_cmd(&mut self, cmd: WaylandCmd) {
         match cmd {
@@ -387,7 +366,6 @@ impl State {
         }
     }
 
-    /// Connected, with data control (and a virtual keyboard to paste).
     fn clipboard_ready(&mut self, paste: bool) -> Result<(), String> {
         self.ensure_connected()?;
         let wl = self.wl.as_ref().expect("connected");
@@ -408,7 +386,6 @@ impl State {
         Ok(())
     }
 
-    /// Fails the job if the compositor doesn't confirm it in time.
     fn arm_watchdog(&mut self, generation: Gen) {
         let Some(job) = self.jobs.get(&generation) else { return };
         let timeout = match job.kind {
@@ -426,8 +403,6 @@ impl State {
             job.watchdog = Some(token);
         }
     }
-
-    // ------------------------------------------------------------------ clipboard
 
     fn feed(&mut self, input: Input) {
         for action in self.machine.handle(input) {
@@ -633,7 +608,6 @@ fn set_nonblocking(fd: &OwnedFd) {
     }
 }
 
-/// CLOCK_MONOTONIC in milliseconds, for key event timestamps.
 fn now_ms() -> u32 {
     let t = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
     (t.tv_sec as u64 * 1000 + t.tv_nsec as u64 / 1_000_000) as u32
@@ -642,8 +616,8 @@ fn now_ms() -> u32 {
 impl DcHandler for State {
     fn dc_selection(&mut self, _: &Connection, offer: Option<DcOffer>) {
         let Some(wl) = self.wl.as_mut() else { return };
-        // psst's selection: its latest source is still alive. (A compositor cancels the old
-        // source before it announces a new selection.)
+        // Ours if our latest source is still alive: a compositor cancels the old source before it
+        // announces a new selection.
         let ours = wl.latest.as_ref().filter(|(source, _)| source.is_live()).map(|(_, kind)| kind.clone());
         if let Some(old) = wl.current_offer.take()
             && let Some(old) = wl.offers.remove(&old)

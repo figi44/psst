@@ -1,6 +1,3 @@
-//! The daemon's behaviour through its command interface, with the scripted
-//! server, audio replayed from a WAV, and a fake Wayland thread that records what it's asked.
-
 mod follow;
 mod incompatible;
 mod slow_link;
@@ -31,12 +28,10 @@ use psst_wayland::{Chord, OverlayState, WaylandCmd, WaylandEvent};
 
 const WAIT: Duration = Duration::from_secs(10);
 
-/// The Wayland thread's stand-in: records every command and answers pastes and copies.
 #[derive(Clone, Default)]
 struct FakeWayland {
     cmds: Arc<Mutex<Vec<WaylandCmd>>>,
     fail_inserts: Arc<AtomicBool>,
-    /// Delays `OverlayShown`, as the real thread's waits for the frame to be presented.
     shown_after_ms: Arc<AtomicU64>,
 }
 
@@ -122,7 +117,6 @@ impl FakeWayland {
         self.overlays().iter().flatten().any(check)
     }
 
-    /// Whether every paste or copy came after a snapshot with the same generation.
     fn snapshots_precede_inserts(&self) -> bool {
         let cmds = self.cmds.lock().unwrap();
         let mut snapshots = Vec::new();
@@ -143,7 +137,6 @@ impl FakeWayland {
 
 struct Daemon {
     handle: Option<DaemonHandle>,
-    /// The command socket.
     socket: PathBuf,
     wayland: FakeWayland,
     sounds: Arc<AtomicUsize>,
@@ -152,8 +145,6 @@ struct Daemon {
     _dir: Option<tempfile::TempDir>,
 }
 
-/// Starts a daemon against `server` with 3 s of test audio, sounds on (counted), and `tweak`
-/// applied to its config and timing.
 async fn daemon(server: &FakeServer, tweak: impl FnOnce(&mut ClientConfig, &mut Deps)) -> Daemon {
     let dir = tempfile::tempdir().unwrap();
     let mut d = daemon_in(dir.path(), server, tweak).await;
@@ -182,7 +173,6 @@ async fn daemon_in(root: &Path, server: &FakeServer, tweak: impl FnOnce(&mut Cli
     let paths = Paths { state_dir: root.join("state"), socket: root.join("runtime/daemon.sock") };
     let socket = paths.socket.clone();
     let handle = daemon::spawn(cfg, paths, deps).await.unwrap();
-    // Let the start-up connection settle.
     wait_until(|| server.connections() > 0).await;
     Daemon {
         handle: Some(handle),
@@ -219,7 +209,6 @@ impl Daemon {
         }
     }
 
-    /// Records for `ms` and stops; returns the session id.
     async fn dictate(&self, ms: u64) -> SessionId {
         let started = self.toggle().await;
         assert!(started.ok, "{started:?}");
@@ -264,10 +253,8 @@ async fn a_dictation_streams_live_and_is_pasted_then_forgotten() {
     let samples = seen.stop_samples.unwrap() as usize;
     assert!(samples >= 6_000, "{samples}");
     assert_eq!(&seen.audio[..samples], &d.audio[..samples], "the server got the microphone's audio in order");
-    // Delivered: the recording is gone, last.json has the text.
     assert!(d.store.list().is_empty());
     assert_eq!(d.store.read_last().unwrap().text, "Push the fix. ");
-    // Timings are reported.
     wait_until(|| server.reports().iter().any(|r| r.session_id == id)).await;
     let timings = server.reports()[0].timings;
     assert!(timings.stop_to_dispatch_ms.is_some() && timings.toggle_to_first_frame_ms.is_some(), "{timings:?}");
@@ -291,8 +278,8 @@ async fn toggle_to_overlay_is_timed_only_when_the_toggle_shows_the_overlay() {
     d.idle().await;
     wait_until(|| d.wayland.overlays().last() == Some(&None)).await;
 
-    // `paste-last` brings the overlay up, and the toggle comes before it's presented: that
-    // `OverlayShown` belongs to `paste-last`, not to the toggle.
+    // `paste-last` brings the overlay up and the toggle comes before it's presented: that
+    // `OverlayShown` belongs to `paste-last`.
     assert!(d.run(Request::PasteLast { session: None }).await.ok);
     let second = d.dictate(500).await;
     d.idle().await;
@@ -313,7 +300,6 @@ async fn toggling_while_finishing_records_again_at_once_and_pastes_in_order() {
     let d = daemon(&server, |_, _| {}).await;
 
     let first = d.dictate(300).await;
-    // The first is still being transcribed: this starts the next recording right away.
     let second = d.dictate(300).await;
     assert_ne!(first, second);
     d.idle().await;
@@ -338,8 +324,7 @@ async fn a_recording_that_waited_for_the_connection_streams_its_early_frames_fir
     let d = daemon(&server, |_, _| {}).await;
 
     d.dictate(200).await;
-    // Recording while the first is transcribed: its `start` waits for the first's `final`,
-    // then it goes live with the frames captured meanwhile.
+    // Its `start` waits for the first's `final`, then goes live with the frames captured meanwhile.
     let second = d.dictate(900).await;
     d.idle().await;
 
@@ -681,8 +666,7 @@ async fn the_recording_limit_warns_and_stops() {
     assert!(d.wayland.showed(|s| matches!(s, OverlayState::LimitWarning { .. })));
     assert_eq!(d.wayland.inserted(), vec![paste("limited ")]);
     let samples = server.session(id).unwrap().stop_samples.unwrap();
-    // It stops at the 1 s limit, then drains what was already captured, which on a loaded
-    // machine can be a few frames; the server allows 5 s past the limit.
+    // Draining after the 1 s limit can add a few frames on a loaded machine; the server allows 5 s.
     assert!((16_000..24_000).contains(&samples), "stopped at the limit: {samples}");
     d.stop().await;
 }

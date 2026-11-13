@@ -1,5 +1,3 @@
-//! Loading, identity, the conflict checks, and bias order.
-
 use psst_config::{ConfigFile, DictionaryFile, TermLanguages};
 use psst_dict::{Dictionary, Error, term_id};
 
@@ -91,17 +89,14 @@ fn two_terms_with_one_identity_are_rejected() {
 #[test]
 fn a_spelling_two_terms_claim_in_a_shared_language_is_rejected() {
     let cases = [
-        // One term's alias is another term's text, ignoring case.
         (
             "[[terms]]\ntext = \"Hyprland\"\n[[terms]]\ntext = \"Hypr\"\nsounds_like = [\"HYPRLAND\"]",
             "terms `Hyprland` and `Hypr` both claim the spelling `HYPRLAND` in every language",
         ),
-        // Two terms share an alias.
         (
             "[[terms]]\ntext = \"NixOS\"\nsounds_like = [\"nix os\"]\n[[terms]]\ntext = \"Nix\"\nsounds_like = [\"Nix OS\"]",
             "terms `NixOS` and `Nix` both claim the spelling `Nix OS` in every language",
         ),
-        // A term for every language shares its spelling with one for `en`.
         (
             "[[terms]]\ntext = \"Kubernetes\"\nsounds_like = [\"cube nettie\"]\n[[terms]]\ntext = \"Cube Net\"\nlanguages = \"en\"\nsounds_like = [\"cube nettie\"]",
             "terms `Kubernetes` and `Cube Net` both claim the spelling `cube nettie` in `en` sessions",

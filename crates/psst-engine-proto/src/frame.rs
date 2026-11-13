@@ -1,23 +1,17 @@
-//! Raw frames: `[header_len: u32 LE][payload_len: u32 LE][header][payload]`.
-//!
 //! A frame over a limit, or a stream that ends inside a frame, means the stream is corrupt: the
 //! server restarts the engine, and an engine exits.
 
 use std::io::{self, Read, Write};
 
-/// Length of the prefix that precedes every frame.
 pub const PREFIX_LEN: usize = 8;
 
-/// Largest header either side accepts: 1 MiB.
 pub const MAX_HEADER_BYTES: u32 = 1 << 20;
 
-/// Payload allowance on top of the audio itself: 1 MiB.
 pub const PAYLOAD_SLACK_BYTES: u64 = 1 << 20;
 
-/// Bytes per second of payload audio: 16,000 `f32` samples.
 pub const AUDIO_BYTES_PER_SECOND: u64 = 64_000;
 
-/// Size limits a reader enforces before allocating anything.
+/// Enforced before allocating anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameLimits {
     pub max_header: u32,
@@ -25,8 +19,6 @@ pub struct FrameLimits {
 }
 
 impl FrameLimits {
-    /// Limits for an engine that accepts recordings of up to `max_audio_s` seconds: a 1 MiB
-    /// header, and a payload of `max_audio_s × 64,000` bytes plus 1 MiB.
     pub fn for_max_audio_s(max_audio_s: u32) -> Self {
         let max_payload = u64::from(max_audio_s) * AUDIO_BYTES_PER_SECOND + PAYLOAD_SLACK_BYTES;
         Self { max_header: MAX_HEADER_BYTES, max_payload: max_payload.min(u64::from(u32::MAX)) as u32 }
@@ -34,13 +26,12 @@ impl FrameLimits {
 }
 
 impl Default for FrameLimits {
-    /// The limits before an engine's `hello` is known: 1 MiB each.
+    /// Before an engine's `hello` is known.
     fn default() -> Self {
         Self::for_max_audio_s(0)
     }
 }
 
-/// One frame as read from the stream.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RawFrame {
     pub header: Vec<u8>,
@@ -90,7 +81,6 @@ fn truncated(err: io::Error) -> FrameError {
     }
 }
 
-/// Reads one frame. Returns `Ok(None)` at a clean end of stream (between frames).
 pub fn read_frame<R: Read + ?Sized>(reader: &mut R, limits: &FrameLimits) -> Result<Option<RawFrame>, FrameError> {
     let mut prefix = [0; PREFIX_LEN];
     let mut filled = 0;
@@ -110,7 +100,6 @@ pub fn read_frame<R: Read + ?Sized>(reader: &mut R, limits: &FrameLimits) -> Res
     Ok(Some(frame))
 }
 
-/// Writes one frame and flushes.
 pub fn write_frame<W: Write + ?Sized>(writer: &mut W, header: &[u8], payload: &[u8]) -> Result<(), FrameError> {
     let prefix = prefix(header, payload)?;
     writer.write_all(&prefix)?;
@@ -120,7 +109,7 @@ pub fn write_frame<W: Write + ?Sized>(writer: &mut W, header: &[u8], payload: &[
     Ok(())
 }
 
-/// [`read_frame`] for tokio readers. Not cancel-safe: run it in a task that owns the reader.
+/// Not cancel-safe: run it in a task that owns the reader.
 pub async fn read_frame_async<R: tokio::io::AsyncRead + Unpin + ?Sized>(
     reader: &mut R,
     limits: &FrameLimits,
@@ -143,7 +132,6 @@ pub async fn read_frame_async<R: tokio::io::AsyncRead + Unpin + ?Sized>(
     Ok(Some(frame))
 }
 
-/// [`write_frame`] for tokio writers.
 pub async fn write_frame_async<W: tokio::io::AsyncWrite + Unpin + ?Sized>(
     writer: &mut W,
     header: &[u8],

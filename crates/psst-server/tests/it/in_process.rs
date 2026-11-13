@@ -1,6 +1,3 @@
-//! `serve_in_process`, as `psst-eval` runs the server: it serves on its socket, restarts a loaded
-//! engine after the machine wakes up, and shuts down cleanly.
-
 use std::{
     fs,
     path::Path,

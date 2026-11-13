@@ -1,7 +1,5 @@
-//! The tasks that own one WebSocket connection. The actor routes what the server sends to the
-//! active session, decides what to send, and watches for `progress` silence; a reader task and a
-//! writer task do the socket I/O, so a stalled socket never stops the watchdog, `cancel` or
-//! `close`.
+//! Separate reader and writer tasks do the socket I/O, so a stalled socket never stops the
+//! actor's `progress` watchdog, `cancel` or `close`.
 
 use std::{
     collections::VecDeque,
@@ -34,23 +32,16 @@ use crate::{
     codec::Encoder,
 };
 
-/// Messages written before one flush.
 const WRITE_BATCH: usize = 50;
-/// Audio frames handed to the writer and not yet written: 1 s. Further frames wait in the
-/// session's buffer, so uploads keep their backpressure.
+/// Capped so that further frames wait in the session's buffer, and uploads keep their backpressure.
 const IN_FLIGHT: usize = 50;
-/// How long queued messages may take to drain once the connection is no longer needed.
 const DRAIN_GRACE: Duration = Duration::from_secs(30);
-/// How long the writer may take to finish after the connection was lost or closed.
 const CLOSE_GRACE: Duration = Duration::from_secs(1);
-/// Round trips [`Client::round_trip`] looks back over.
 const ROUND_TRIPS: usize = 4;
 
 pub(crate) enum Cmd {
     Start(Box<NewSession>),
     Cancel(SessionId),
-    /// The upload task couldn't read its file: end the session with this error and cancel it on
-    /// the server.
     Fail(SessionId, String),
     Report(ReportMsg),
     Ping(oneshot::Sender<()>),
@@ -71,12 +62,9 @@ pub(crate) enum Outgoing {
     Stop(u64),
 }
 
-/// State the handles read without asking the task.
 pub(crate) struct Shared {
     last_received: Mutex<Instant>,
-    /// The last [`ROUND_TRIPS`] round trips measured, oldest first.
     round_trips: Mutex<VecDeque<Duration>>,
-    /// `Some(reason)` once the connection has closed.
     pub closed: watch::Sender<Option<String>>,
 }
 
@@ -106,7 +94,6 @@ impl Shared {
     }
 }
 
-/// A Unix or TCP stream.
 enum Transport {
     Unix(UnixStream),
     Tcp(TcpStream),
@@ -253,15 +240,12 @@ fn text(msg: &ClientMsg) -> Message {
     Message::text(serde_json::to_string(msg).expect("client messages serialise"))
 }
 
-/// What the writer task writes, in order.
 enum Out {
     Msg(Message),
-    /// An encoded audio frame and its place among the frames in flight, freed once it's written.
+    /// The permit is released once the frame is written.
     Frame(Vec<u8>, OwnedSemaphorePermit),
 }
 
-/// Writes messages in order, flushing after each batch. Ends when the actor drops its sender
-/// (then it closes the WebSocket) or a write fails (then it tells the actor).
 async fn write_loop(
     mut sink: SplitSink<Ws, Message>,
     mut rx: mpsc::UnboundedReceiver<Out>,
@@ -302,17 +286,14 @@ enum Incoming {
 struct Active {
     id: SessionId,
     events: mpsc::UnboundedSender<SessionEvent>,
-    /// Audio still to send; `None` once `stop` went out, or the session needs no (more) audio.
     frames: Option<mpsc::Receiver<Outgoing>>,
     encoder: Encoder,
-    /// Whether `ready` arrived with `need_audio`, so `frames` may be sent.
     streaming: bool,
     ready: Option<watch::Sender<Option<bool>>>,
     got_ready: bool,
     /// The session already ended for its owner (cancelled, or failed locally); the slot stays
     /// taken until the server's terminal message.
     ended: bool,
-    /// When the server was last heard from for this session (or when `start` went out).
     last_heard: Instant,
 }
 
@@ -326,7 +307,6 @@ struct Actor {
     active: Option<Active>,
     queued: VecDeque<NewSession>,
     pings: Vec<oneshot::Sender<()>>,
-    /// When the ping that's still unanswered went out.
     ping_sent: Option<Instant>,
     shared: Arc<Shared>,
     /// An `error` without a session id, kept as the reason if the connection then closes.
@@ -396,7 +376,6 @@ impl Actor {
         self.active.as_ref().is_some_and(|a| a.frames.is_some())
     }
 
-    /// Ends the active and queued sessions with `Lost`.
     fn lose_all(&mut self, reason: LostReason) {
         if let Some(active) = self.active.take()
             && !active.ended
@@ -408,7 +387,6 @@ impl Actor {
         }
     }
 
-    /// Queues a message for the writer. A failed write comes back as `Incoming::Closed`.
     fn write(&mut self, msg: Message) -> Flow {
         match self.writer.send(Out::Msg(msg)) {
             Ok(()) => Flow::Continue,
@@ -466,8 +444,6 @@ impl Actor {
         self.write(text(&start))
     }
 
-    /// Cancels a session: on the server if its `start` went out, locally if it's still queued.
-    /// With `failure`, the owner sees that error instead of `Cancelled`.
     fn cancel(&mut self, id: SessionId, failure: Option<String>) -> Flow {
         let ending = |failure: Option<String>| match failure {
             Some(message) => SessionEvent::Error(ErrorMsg::new(Some(id), ErrorCode::Internal, message)),
@@ -590,7 +566,6 @@ impl Actor {
                 Out::Msg(text(&ClientMsg::Stop(StopMsg { session_id: active.id, samples })))
             }
             None => {
-                // Every sender is gone without `stop`: nothing more will come.
                 active.frames = None;
                 return Flow::Continue;
             }
@@ -602,8 +577,7 @@ impl Actor {
     }
 }
 
-/// The active session's next piece of audio, once it may be sent and the writer has room for
-/// it. Pending otherwise. Cancel-safe: a permit taken without a frame is simply released.
+/// Cancel-safe: a permit taken without a frame is simply released.
 async fn next_outgoing(
     active: &mut Option<Active>,
     permits: &Arc<Semaphore>,

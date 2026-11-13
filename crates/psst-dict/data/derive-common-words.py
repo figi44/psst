@@ -9,18 +9,8 @@ and rewrites common-words/<lang>.txt next to this script, and evals/stress/<lang
 languages in STRESS_WORDS.
 evals/SOURCES.md records the same files and commit.
 
-Sentences are split in two halves by a hash of their text: split A feeds the lists, and split B
-the stress test, so the two never share a sentence. A sentence is one line, stripped and
-NFC-normalised; duplicates count once. Its split is A when the first byte of the SHA-256 of its
-UTF-8 text is even, and B when it's odd.
-
-Word forms are runs of letters, joined by inner apostrophes (`don't`), after NFC, case folding and
-mapping typographic apostrophes to `'`. Digits, hyphens and other punctuation separate words. The
-list holds the 5,000 most frequent forms, by count and then by code point order.
-
-The stress sentences are split B's sentences in the order of their SHA-256 (hex), taken until the
-language has STRESS_WORDS whitespace-separated words, leaving out any that starts with `#` (a
-comment in evals/stress/).
+Split A of the sentences feeds the lists and split B the stress test, so the two never share a
+sentence.
 """
 
 import hashlib
@@ -34,11 +24,10 @@ from pathlib import Path
 COMMIT = "3cf5dd0f81555dced52fa5a1b85f3956cdfe0c76"
 BASE = f"https://raw.githubusercontent.com/common-voice/common-voice/{COMMIT}/server/data"
 SIZE = 5000
-# Words per language in evals/stress/; the eval set is English only.
+# The eval set is English only.
 STRESS_WORDS = {"en": 30_000}
 
-# Every file in server/data/en at COMMIT but its LICENSE; for Czech, sentence-collector.txt and
-# wiki.cs.txt only (never europarl-v7-cs.txt). Each with its SHA-256 at COMMIT.
+# Every file in server/data/en at COMMIT but its LICENSE; for Czech, never europarl-v7-cs.txt.
 SOURCES = {
     "en": {
         "DNGros.txt": "d21c9183327c2a21fabef0add2f366ea4e63d19e823e3728b7ea1a2465fd9673",

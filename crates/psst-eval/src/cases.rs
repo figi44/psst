@@ -1,5 +1,3 @@
-//! The eval set on disk: `cases.jsonl`, and the config snapshots in `evals/`.
-
 use std::{
     collections::BTreeSet,
     fmt, fs, io,
@@ -13,11 +11,9 @@ use psst_dict::Dictionary;
 use psst_proto::EngineTrace;
 use serde::{Deserialize, Serialize};
 
-/// Where a clip's voice comes from. Metrics are reported per source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
-    /// Piper text-to-speech (`scripts/synth-evals.sh`).
     Synthetic,
 }
 
@@ -46,7 +42,6 @@ impl fmt::Display for Split {
     }
 }
 
-/// One line of `cases.jsonl`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Case {
@@ -55,24 +50,20 @@ pub struct Case {
     pub lang: String,
     pub source: Source,
     pub split: Split,
-    /// What was said, in its exact spelling.
     pub reference: String,
-    /// Dictionary terms that occur in `reference`.
     #[serde(default)]
     pub terms: Vec<String>,
-    /// Gated on any change of its output against main's baseline.
+    /// Any change of its output fails the gate, even an improvement.
     #[serde(default)]
     pub must_pass: bool,
-    /// The engine's trace for a normal dictation, recorded by `psst-eval audio`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine_output: Option<EngineTrace>,
-    /// The engine's trace with `eval.bias = false`: no prompt at all.
+    /// Recorded with `eval.bias = false`: no prompt at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine_output_raw: Option<EngineTrace>,
 }
 
 impl Case {
-    /// Both traces, once the audio eval has recorded them. Exactly one of them is an error.
     pub fn traces(&self) -> anyhow::Result<Option<(&EngineTrace, &EngineTrace)>> {
         match (&self.engine_output, &self.engine_output_raw) {
             (Some(output), Some(raw)) => Ok(Some((output, raw))),
@@ -82,7 +73,6 @@ impl Case {
     }
 }
 
-/// Reads `cases.jsonl`. A missing file is an empty set; blank lines are skipped.
 pub fn read_cases(path: &Path) -> anyhow::Result<Vec<Case>> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
@@ -104,7 +94,6 @@ pub fn read_cases(path: &Path) -> anyhow::Result<Vec<Case>> {
     Ok(cases)
 }
 
-/// Writes `cases.jsonl`, one case per line, replacing the file atomically.
 pub fn write_cases(path: &Path, cases: &[Case]) -> anyhow::Result<()> {
     let mut text = String::new();
     for case in cases {
@@ -125,11 +114,9 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Everything in an `evals/` directory that replay and the audio eval read.
 #[derive(Debug, Clone)]
 pub struct EvalSet {
     pub dir: PathBuf,
-    /// `server.toml`, `profiles.toml` and `dictionary.toml`, as the eval server reads them.
     pub files: ServerFiles,
     pub dictionary: Dictionary,
     pub cases: Vec<Case>,
@@ -139,8 +126,6 @@ impl EvalSet {
     pub const CASES: &'static str = "cases.jsonl";
     pub const BASELINE: &'static str = "baseline.json";
 
-    /// Loads the set. Missing config files take their defaults, and a missing `cases.jsonl` is
-    /// an empty set, so the tooling works before the eval set lands.
     pub fn load(dir: &Path) -> anyhow::Result<Self> {
         ensure!(dir.is_dir(), "{} is not a directory", dir.display());
         let files = ServerFiles::load(dir)?;
@@ -162,14 +147,11 @@ impl EvalSet {
         self.dir.join("clips").join(format!("{id}.flac"))
     }
 
-    /// The profile a case in `lang` is dictated with; see [`profile_for`].
     pub fn profile_for(&self, lang: &str) -> anyhow::Result<Profile> {
         profile_for(&self.files.profiles, lang)
     }
 }
 
-/// The profile a case in `lang` is dictated with: `default` when it's in that language,
-/// otherwise the one profile that is. `evals/profiles.toml` has one profile per language.
 pub fn profile_for(profiles: &ProfilesFile, lang: &str) -> anyhow::Result<Profile> {
     if let Some(default) = profiles.resolve(psst_config::DEFAULT_PROFILE).filter(|p| p.language == lang) {
         return Ok(default);

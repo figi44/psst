@@ -1,6 +1,3 @@
-//! A stand-in for a browser at the web UI, over plain HTTP/1.1 on TCP: it keeps the session cookie
-//! and sends `Origin` with its posts, as a browser on the UI's own pages does.
-
 use std::net::SocketAddr;
 
 use psst_client::api::{ApiClient, Method};
@@ -14,7 +11,6 @@ use tokio::{
     net::TcpStream,
 };
 
-/// A complete HTTP response.
 #[derive(Debug)]
 pub struct Response {
     pub status: u16,
@@ -31,7 +27,6 @@ impl Response {
         serde_json::from_str(&self.body).unwrap_or_else(|err| panic!("not JSON ({err}): {}", self.body))
     }
 
-    /// The value of the `name` field of the first form input on the page called `field`.
     pub fn input_value(&self, field: &str) -> Option<String> {
         let start = self.body.find(&format!("name=\"{field}\" value=\""))? + field.len() + 15;
         let end = start + self.body[start..].find('"')?;
@@ -39,7 +34,6 @@ impl Response {
     }
 }
 
-/// One HTTP exchange: `headers` as given, plus `Host`, `Content-Length` and `Connection: close`.
 pub async fn request(
     addr: SocketAddr,
     method: &str,
@@ -88,7 +82,6 @@ fn dechunk(mut body: &str) -> String {
     out
 }
 
-/// `application/x-www-form-urlencoded`.
 pub fn form(fields: &[(&str, &str)]) -> String {
     fields
         .iter()
@@ -97,12 +90,10 @@ pub fn form(fields: &[(&str, &str)]) -> String {
         .join("&")
 }
 
-/// A login link, asked for at `endpoint` (with `token` over TCP).
 pub async fn login_link(endpoint: Endpoint, token: Option<Token>) -> LoginLink {
     ApiClient::new(endpoint, token).call(Method::Post, routes::LOGIN_LINK, None::<&()>).await.expect("a login link")
 }
 
-/// A browser at `addr`, its own origin, and its session cookie once it has one.
 pub struct Browser {
     pub addr: SocketAddr,
     pub cookie: Option<String>,
@@ -125,26 +116,22 @@ impl Browser {
         request(self.addr, "GET", path, &self.cookie_header(), None).await
     }
 
-    /// Posts a form from the UI's own pages.
     pub async fn post(&self, path: &str, fields: &[(&str, &str)]) -> Response {
         self.post_with(path, &[("Origin", self.origin())], fields).await
     }
 
-    /// Posts a form with `headers` (and the cookie) only.
     pub async fn post_with(&self, path: &str, headers: &[(&str, String)], fields: &[(&str, &str)]) -> Response {
         let mut all = self.cookie_header();
         all.extend(headers.iter().cloned());
         request(self.addr, "POST", path, &all, Some(("application/x-www-form-urlencoded", form(fields)))).await
     }
 
-    /// Sends JSON from the UI's own origin, as a script on its pages would.
     pub async fn json(&self, method: &str, path: &str, body: &Value) -> Response {
         let mut headers = self.cookie_header();
         headers.push(("Origin", self.origin()));
         request(self.addr, method, path, &headers, Some(("application/json", body.to_string()))).await
     }
 
-    /// Opens a login link and submits its form, as the page's script does; keeps the cookie.
     pub async fn log_in(&mut self, link: &LoginLink) -> Response {
         let path = link.url.split_once("/login").map(|(_, rest)| format!("/login{rest}")).expect("a /login link");
         let page = self.get(&path).await;

@@ -1,5 +1,3 @@
-"""Shared helpers for the engine benchmarks: eval cases, test audio, bias, metrics, VRAM sampling."""
-
 from __future__ import annotations
 
 import json
@@ -18,11 +16,8 @@ import numpy as np
 SR = 16000
 REPO = Path(__file__).resolve().parents[2]
 EVALS = REPO / "evals"
-MAX_BIAS_TOKENS = 223  # style and terms together, prompt or hotwords
+MAX_BIAS_TOKENS = 223
 MODEL = "large-v3-turbo"
-
-
-# --- eval cases and audio -------------------------------------------------------------------------------------------
 
 
 @dataclass
@@ -59,15 +54,13 @@ def load_cases(source: str = "synthetic") -> list[Case]:
 
 @dataclass
 class Composite:
-    """Test audio built by concatenating eval clips, padded with silence to an exact length."""
-
     name: str
     lang: str
     audio: np.ndarray = field(repr=False)
     reference: str
     terms: list[str]
-    parts: list[tuple[str, float]]  # (case id, start in seconds)
-    # term occurrences per part start, so recall can be split at the first 30 s window
+    parts: list[tuple[str, float]]
+    # So recall can be split at the first 30 s window.
     occurrences: list[tuple[str, float]] = field(default_factory=list)
 
 
@@ -75,7 +68,6 @@ GAP_S = 0.6
 
 
 def composite(name: str, pool: list[Case], target_s: float) -> Composite:
-    """Greedy fill: take clips from `pool` in order while they fit, then pad to exactly `target_s`."""
     pieces, parts, refs, occ = [], [], [], []
     t = 0.0
     for c in pool:
@@ -97,7 +89,6 @@ def composite(name: str, pool: list[Case], target_s: float) -> Composite:
 
 
 def duration_composites(cases: list[Case], targets=(2, 5, 15, 30, 60, 180)) -> dict[int, Composite]:
-    """English test audio of the given lengths: long dictations first, then ordinary sentences."""
     en = [c for c in cases if c.lang == "en" and not c.is_noise]
     longs = [c for c in en if "-long-" in c.id]
     regular = [c for c in en if "-long-" not in c.id]
@@ -109,15 +100,11 @@ def duration_composites(cases: list[Case], targets=(2, 5, 15, 30, 60, 180)) -> d
 
 
 def term_composites(cases: list[Case]) -> list[Composite]:
-    """60 and 180 s of English sentences with terms: terms after the first 30 s window."""
     out = []
     for lang, target in (("en", 60), ("en", 180)):
         pool = [c for c in cases if c.lang == lang and c.terms and "-long-" not in c.id and "-short-" not in c.id]
         out.append(composite(f"{lang}-terms-{target}s", pool, target))
     return out
-
-
-# --- bias ----------------------------------------------------------------------------------------
 
 
 def load_profiles() -> dict:
@@ -134,7 +121,7 @@ def fillers_for(lang: str) -> list[str]:
 
 
 def bias_terms(lang: str) -> list[str]:
-    """Dictionary::bias_terms: valid for the language, pinned first, then the rest, each alphabetical."""
+    """Mirrors ``Dictionary::bias_terms``."""
     terms = tomllib.loads((EVALS / "dictionary.toml").read_text(encoding="utf-8"))["terms"]
     valid = [t for t in terms if t.get("languages", "any") in ("any", lang)]
     key = lambda t: (t["text"].casefold(), t["text"])  # noqa: E731
@@ -152,16 +139,12 @@ class Bias:
 
 
 def build_bias(tokenizer, lang: str, path: str, terms_as: str | None) -> Bias:
-    """terms_as None: no bias at all. Otherwise style plus as many terms as fit in 223 tokens.
-
-    Tokens are counted as each path encodes them: the sequential path adds a leading space to the prompt, the batched
-    path doesn't, and both add one to hotwords.
-    """
     if terms_as is None:
         return Bias(None, None, 0, 0)
     style = style_for(lang)
     terms = bias_terms(lang)
 
+    # The sequential path adds a leading space to the prompt, the batched path doesn't; both add one to hotwords.
     def prompt_tokens(prompt: str) -> int:
         return len(tokenizer.encode(" " + prompt.strip() if path == "sequential" else prompt))
 
@@ -178,8 +161,6 @@ def build_bias(tokenizer, lang: str, path: str, terms_as: str | None) -> Bias:
     raise ValueError("style alone is over the budget")
 
 
-# --- metrics ---------------------------------------------------------------------------------------------
-
 _BOUNDARY = r"\s.,;:!?()\[\]{}\"'"
 
 
@@ -192,7 +173,6 @@ def count_term(text: str, term: str, ignore_case: bool = False) -> int:
 
 
 def normalize(text: str, lang: str) -> list[str]:
-    """NFC, lowercase, punctuation stripped except apostrophes and hyphens inside words, fillers removed."""
     text = unicodedata.normalize("NFC", text).lower().replace("’", "'")
     text = "".join(ch if ch.isalnum() or ch in "'-" or ch.isspace() else " " for ch in text)
     text = re.sub(r"(?<!\w)['-]+|['-]+(?!\w)", " ", text)
@@ -216,7 +196,6 @@ def wer_counts(reference: str, output: str, lang: str) -> tuple[int, int]:
 
 
 def term_hits(reference: str, output: str, terms: list[str]) -> tuple[int, int]:
-    """(occurrences found with the exact spelling, occurrences in the reference)."""
     found = total = 0
     for term in terms:
         n = count_term(reference, term)
@@ -226,7 +205,6 @@ def term_hits(reference: str, output: str, terms: list[str]) -> tuple[int, int]:
 
 
 def leaks(reference: str, output: str, lang: str, bias_terms_used: list[str]) -> list[str]:
-    """Bias terms in the output that the reference doesn't have, and echoes of the style sentence (4+ words)."""
     found = [t for t in bias_terms_used
              if count_term(output, t, ignore_case=True) > count_term(reference, t, ignore_case=True)]
     style, out, ref = (" ".join(normalize(x, lang)) for x in (style_for(lang), output, reference))
@@ -237,9 +215,6 @@ def leaks(reference: str, output: str, lang: str, bias_terms_used: list[str]) ->
             found.append(f"style: {gram}")
             break
     return found
-
-
-# --- running ---------------------------------------------------------------------------------------------------------
 
 
 def load_model():
@@ -279,8 +254,6 @@ def transcribe(model, batched, audio: np.ndarray, *, lang: str, path: str, bias:
 
 
 class VramSampler:
-    """Peak GPU memory of this process (and of the whole GPU), sampled from nvidia-smi every 20 ms."""
-
     def __init__(self):
         self.pid = os.getpid()
         self.process_peak = 0

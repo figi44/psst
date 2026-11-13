@@ -1,10 +1,3 @@
-"""The engine's request loop, independent of the model behind it.
-
-A reader thread queues the frames as they arrive, so that between requests the main thread can do
-the background work a model offers: a model with streams decodes what it can while a live
-recording is still coming in. All model calls happen on the main thread.
-"""
-
 from __future__ import annotations
 
 import queue
@@ -31,26 +24,22 @@ from .protocol import (
 SAMPLE_RATE = 16_000
 
 ProgressFn = Callable[[str, "int | None", "int | None"], None]
-"""Reports load progress: ``(phase, bytes, total)`` with phase ``download`` or ``load``."""
 
 
 class OutOfMemory(Exception):
-    """The GPU ran out of memory. The engine replies ``oom`` and keeps running."""
+    pass
 
 
 class Fatal(Exception):
-    """The engine can't go on, for example after a CUDA error other than running out of memory.
-
-    It exits without replying, so the server sees a crash, restarts it and retries.
-    """
+    """Exits without replying, so the server sees a crash, restarts the engine and retries."""
 
 
 class LoadFailed(Exception):
-    """Loading or downloading the model failed. The engine replies ``load_failed``."""
+    pass
 
 
 class InvalidRequest(Exception):
-    """A known request type with missing or invalid fields."""
+    pass
 
 
 @dataclass(frozen=True)
@@ -77,59 +66,36 @@ class TranscribeRequest:
 
 @dataclass
 class Transcription:
-    """What a model returns for one request."""
-
     result: dict[str, Any]
-    """An ``EngineResult``: ``{language, speech_ms?, segments: [...]}``."""
     path: str
-    """Decoding path actually taken."""
     options: dict[str, Any]
-    """Effective options."""
     prompt: str
-    """Prompt and hotwords actually used."""
     prompt_tokens: int = 0
     bias_terms_used: int = 0
     prompt_truncated: bool = False
     chunks: int = 0
-    """For a stream: the chunks of up to 30 s the recording was decoded in…"""
     chunks_reused: int = 0
-    """…and how many of them were decoded before ``close``."""
+    """Chunks decoded before ``close``, while the audio was still coming in."""
 
 
 class Model(Protocol):
-    def load(self, request: LoadRequest, progress: ProgressFn) -> str:
-        """Loads the model and returns its resolved revision. Raises ``LoadFailed``."""
-        ...
+    def load(self, request: LoadRequest, progress: ProgressFn) -> str: ...
 
-    def transcribe(self, request: TranscribeRequest, samples: array) -> Transcription:
-        """Transcribes one recording.
-
-        Raises ``InvalidRequest`` for bad options, ``OutOfMemory`` when the GPU runs out of memory,
-        and ``Fatal`` when the engine must exit. Any other error is answered with ``internal``.
-        """
-        ...
+    def transcribe(self, request: TranscribeRequest, samples: array) -> Transcription: ...
 
 
 class StreamingModel(Model, Protocol):
-    """A model that works on streams while their audio comes in. The engine buffers the streams of
-    models without these methods, and transcribes them at ``close``."""
-
-    def open_stream(self, request: TranscribeRequest) -> None:
-        """Starts a stream. Raises ``InvalidRequest`` as ``transcribe`` would."""
-        ...
+    def open_stream(self, request: TranscribeRequest) -> None: ...
 
     def append_stream(self, stream_id: int, samples: array) -> None: ...
 
     def close_stream(self, stream_id: int) -> Transcription:
-        """The stream's transcription, exactly as ``transcribe`` gives it for the whole recording;
-        raises as ``transcribe`` does. The stream is gone afterwards."""
+        """Must equal what ``transcribe`` gives for the whole recording."""
         ...
 
     def discard_stream(self, stream_id: int) -> None: ...
 
-    def background(self) -> bool:
-        """Does one piece of the streams' work, if there is any; whether it did."""
-        ...
+    def background(self) -> bool: ...
 
 
 @dataclass
@@ -137,7 +103,6 @@ class _Stream:
     request: TranscribeRequest
     samples: int = 0
     buffer: array | None = None
-    """The audio so far, for a model without streams; ``None`` when the model has the stream."""
 
 
 def _field(message: dict[str, Any], name: str, kind: type | tuple[type, ...], *, optional: bool = False) -> Any:
@@ -166,7 +131,6 @@ def _is_shutdown(header: bytes) -> bool:
 
 
 def parse_stream_id(message: dict[str, Any]) -> int:
-    """The ``id`` of an ``append``, ``close`` or ``discard``."""
     return _field(message, "id", int)
 
 
@@ -186,8 +150,6 @@ def parse_transcribe(message: dict[str, Any]) -> TranscribeRequest:
 
 @dataclass
 class Engine:
-    """Serves one server: says hello, then answers requests until ``shutdown`` or end of input."""
-
     model: Model
     out: BinaryIO
     name: str = "faster-whisper"
@@ -200,7 +162,6 @@ class Engine:
     _streams: dict[int, _Stream] = field(default_factory=dict, init=False, repr=False)
 
     def serve(self, inp: BinaryIO) -> None:
-        """Raises ``CorruptStream`` if the input is corrupt, and ``Fatal`` if the engine must exit."""
         self._send(
             {
                 "type": "hello",
@@ -217,14 +178,15 @@ class Engine:
             try:
                 while (frame := read_frame(inp, max_payload)) is not None:
                     frames.put(frame)
-                    # Stop reading: a thread blocked in a read of stdin, which the server keeps
-                    # open, would make the interpreter abort at exit.
+                    # A thread blocked reading stdin, which the server keeps open, makes the
+                    # interpreter abort at exit.
                     if _is_shutdown(frame.header):
                         return
                 frames.put(None)
             except BaseException as err:  # noqa: BLE001 - handed to the main thread
                 frames.put(err)
 
+        # Only frames go through the reader; every model call stays on this thread.
         threading.Thread(target=read, name="psst-engine-reader", daemon=True).start()
         while True:
             try:
@@ -358,7 +320,6 @@ class Engine:
             self.model.discard_stream(stream_id)  # type: ignore[attr-defined]
 
     def _answer(self, request_id: int, transcribe: Callable[[], Transcription], *, stream: bool = False) -> None:
-        """Runs a transcription and replies with its ``result`` or ``error``."""
         started = self.clock()
         try:
             transcription = transcribe()

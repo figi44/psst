@@ -5,28 +5,25 @@ use serde::{Deserialize, Serialize};
 
 use crate::ConfigFile;
 
-/// `dictionary.toml`. Reloads on SIGHUP. Conflicts between terms are checked by `psst-dict`.
+/// Reloads on SIGHUP. Conflicts between terms are checked by `psst-dict`, not here.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DictionaryFile {
     pub terms: Vec<TermSpec>,
 }
 
-/// One `[[terms]]` entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TermSpec {
-    /// The exact spelling to produce.
     pub text: String,
-    /// Other spellings the engine produces for it.
+    /// Spellings the engine produces for it, not pronunciations.
     #[serde(default)]
     pub sounds_like: Vec<String>,
     #[serde(default)]
     pub languages: TermLanguages,
-    /// Fuzzy matching, for English sessions.
+    /// Only English sessions have fuzzy matching.
     #[serde(default = "yes")]
     pub fuzzy: bool,
-    /// Always offered to the engine first.
     #[serde(default)]
     pub pin: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -38,7 +35,6 @@ fn yes() -> bool {
 }
 
 impl TermSpec {
-    /// A term with every other key at its default.
     pub fn new(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
@@ -51,7 +47,7 @@ impl TermSpec {
     }
 }
 
-/// The API's form of a term (`/api/dictionary`) has the same keys and defaults.
+/// The API's term (`/api/dictionary`) has the file's keys and defaults.
 impl From<Term> for TermSpec {
     fn from(term: Term) -> Self {
         Self {
@@ -78,7 +74,7 @@ impl From<&TermSpec> for Term {
     }
 }
 
-/// The session languages a term applies to: `"any"`, or one language code.
+/// `"any"` or a single language code, not a list.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(from = "String", into = "String")]
 pub enum TermLanguages {

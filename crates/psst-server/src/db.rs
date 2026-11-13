@@ -1,7 +1,3 @@
-//! The server's SQLite database (`<state dir>/psst.db`, WAL): devices, history, the dictionary's
-//! database layer, profiles stored over `profiles.toml`, and small pieces of state such as a
-//! deliberate unload.
-//!
 //! Every statement is short, so callers run them inline under one connection mutex.
 
 use std::{
@@ -49,7 +45,6 @@ CREATE TABLE IF NOT EXISTS state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
--- The dictionary's database layer: one entry per term identity.
 CREATE TABLE IF NOT EXISTS dictionary_terms (
     id TEXT PRIMARY KEY,
     -- The term (an API `Term` as JSON), which adds it or replaces the file's; NULL hides the file's.
@@ -66,15 +61,11 @@ CREATE TABLE IF NOT EXISTS dictionary_never (
     created_ms INTEGER NOT NULL,
     UNIQUE (term, span_key)
 );
--- Whole profiles by name, each replacing profiles.toml's profile with that name or adding one
---.
 CREATE TABLE IF NOT EXISTS profiles (
     name TEXT PRIMARY KEY,
-    -- An API `Profile` as JSON.
     profile TEXT NOT NULL,
     updated_ms INTEGER NOT NULL
 );
--- The web UI's browser sessions, by the SHA-256 of their cookie.
 CREATE TABLE IF NOT EXISTS web_sessions (
     token_hash TEXT PRIMARY KEY,
     -- Who asked for the login link: `local:<user>`, or a paired device's id.
@@ -85,7 +76,6 @@ CREATE TABLE IF NOT EXISTS web_sessions (
 CREATE INDEX IF NOT EXISTS web_sessions_device ON web_sessions (device);
 ";
 
-/// Key in `state` holding the boot id of a deliberate unload.
 pub const UNLOADED_BOOT_ID: &str = "unloaded_boot_id";
 
 #[derive(Debug, Clone)]
@@ -93,22 +83,18 @@ pub struct Db {
     conn: Arc<Mutex<Connection>>,
 }
 
-/// A paired device found by its token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TokenDevice {
     pub id: String,
     pub name: String,
 }
 
-/// A session's history row, as `start` needs it.
 #[derive(Debug, Clone)]
 pub struct StoredSession {
     pub id: HistoryId,
-    /// Present once the session finished.
     pub finished: Option<(Final, ServerTimings)>,
 }
 
-/// A never rule as stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredNever {
     pub id: NeverRuleId,
@@ -122,7 +108,6 @@ pub struct StoredNever {
 pub enum Revoke {
     Revoked,
     NotFound,
-    /// Local devices are allowed by `local_users`, not by a token.
     Local,
 }
 
@@ -133,7 +118,7 @@ fn now_ms() -> i64 {
 const HISTORY_COLUMNS: &str =
     "SELECT id, session_id, device, profile, created_ms, model, revision, final, server_timings, client_timings";
 
-/// A [`HISTORY_COLUMNS`] row.
+/// Reads columns by index: keep it in step with [`HISTORY_COLUMNS`].
 fn history_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryRow> {
     let session_id: String = row.get(1)?;
     Ok(HistoryRow {
@@ -163,7 +148,6 @@ fn parse<T: serde::de::DeserializeOwned>(text: Option<String>) -> Option<T> {
 }
 
 impl Db {
-    /// Opens (or creates) the database at `path`.
     pub fn open(path: &Path) -> Result<Db> {
         let conn = Connection::open(path).with_context(|| format!("cannot open {}", path.display()))?;
         conn.busy_timeout(Duration::from_secs(5))?;
@@ -180,7 +164,6 @@ impl Db {
         self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Records a local user's device, `local:<user>`, as seen now.
     pub fn touch_local(&self, user: &str) -> Result<()> {
         self.conn().execute(
             "INSERT INTO devices (id, name, kind, created_ms, last_seen_ms) VALUES (?1, ?2, 'local', ?3, ?3)
@@ -190,7 +173,6 @@ impl Db {
         Ok(())
     }
 
-    /// Adds a paired device and returns its new id.
     pub fn add_token_device(&self, name: &str, token_hash: &str) -> Result<String> {
         let conn = self.conn();
         loop {
@@ -210,7 +192,6 @@ impl Db {
         }
     }
 
-    /// The device holding this token, unless it was revoked.
     pub fn device_by_token(&self, token_hash: &str) -> Result<Option<TokenDevice>> {
         Ok(self
             .conn()
@@ -222,7 +203,6 @@ impl Db {
             .optional()?)
     }
 
-    /// Whether the device exists and isn't revoked.
     pub fn device_active(&self, id: &str) -> Result<bool> {
         Ok(self
             .conn()
@@ -236,7 +216,6 @@ impl Db {
         Ok(())
     }
 
-    /// Devices that aren't revoked, oldest first.
     pub fn devices(&self) -> Result<Vec<Device>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
@@ -272,7 +251,6 @@ impl Db {
         }
     }
 
-    /// The history row of (device, session), if there is one.
     pub fn session(&self, device: &str, session_id: SessionId) -> Result<Option<StoredSession>> {
         Ok(self
             .conn()
@@ -289,7 +267,6 @@ impl Db {
             .optional()?)
     }
 
-    /// Creates the history row of (device, session), or returns the existing one's id.
     pub fn start_session(&self, device: &str, session_id: SessionId, profile: &str) -> Result<HistoryId> {
         let id: i64 = self.conn().query_row(
             "INSERT INTO history (device, session_id, profile, created_ms) VALUES (?1, ?2, ?3, ?4)
@@ -316,7 +293,6 @@ impl Db {
         Ok(())
     }
 
-    /// Stores a client's timings on its own session's row; anything else is ignored.
     pub fn report(&self, device: &str, session_id: SessionId, id: HistoryId, timings: &ClientTimings) -> Result<bool> {
         let updated = self.conn().execute(
             "UPDATE history SET client_timings = ?4 WHERE id = ?1 AND device = ?2 AND session_id = ?3",
@@ -325,7 +301,6 @@ impl Db {
         Ok(updated > 0)
     }
 
-    /// The newest `limit` rows, newest first.
     pub fn history(&self, limit: u32) -> Result<Vec<HistoryRow>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!("{HISTORY_COLUMNS} FROM history ORDER BY id DESC LIMIT ?1"))?;
@@ -333,14 +308,12 @@ impl Db {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// One history row, if it's still kept.
     pub fn history_row(&self, id: HistoryId) -> Result<Option<HistoryRow>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!("{HISTORY_COLUMNS} FROM history WHERE id = ?1"))?;
         Ok(stmt.query_row(params![id as i64], history_row).optional()?)
     }
 
-    /// Timings of every finished session.
     pub fn timings(&self) -> Result<Vec<(ServerTimings, Option<ClientTimings>)>> {
         let conn = self.conn();
         let mut stmt =
@@ -355,7 +328,6 @@ impl Db {
         Ok(out)
     }
 
-    /// Deletes history rows created more than `days` days ago.
     pub fn prune_history(&self, days: u32) -> Result<usize> {
         let cutoff = now_ms() - i64::from(days) * 86_400_000;
         Ok(self.conn().execute("DELETE FROM history WHERE created_ms < ?1", params![cutoff])?)
@@ -381,8 +353,6 @@ impl Db {
         Ok(())
     }
 
-    /// The dictionary's database layer, by identity. An entry that can't be read is logged and
-    /// left out.
     pub fn dictionary_terms(&self) -> Result<std::collections::BTreeMap<TermId, LayerTerm>> {
         let conn = self.conn();
         let mut stmt = conn.prepare("SELECT id, term, saved FROM dictionary_terms")?;
@@ -407,8 +377,6 @@ impl Db {
         Ok(terms)
     }
 
-    /// Stores each identity's new entry, replacing any it had, or deletes its entry for `None`;
-    /// all of them, or none.
     pub fn store_dictionary_terms(&self, terms: &[(TermId, Option<LayerTerm>)]) -> Result<()> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
@@ -435,7 +403,6 @@ impl Db {
         Ok(())
     }
 
-    /// Every never rule, oldest first.
     pub fn never_rules(&self) -> Result<Vec<StoredNever>> {
         let conn = self.conn();
         let mut stmt = conn.prepare("SELECT id, term, span, span_key, created_ms FROM dictionary_never ORDER BY id")?;
@@ -443,7 +410,6 @@ impl Db {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// Adds a never rule, or returns the one with the same term and span key.
     pub fn add_never_rule(&self, term: &str, span: &str, span_key: &str) -> Result<(StoredNever, bool)> {
         let conn = self.conn();
         let added = conn.execute(
@@ -459,14 +425,12 @@ impl Db {
         Ok((rule, added))
     }
 
-    /// Deletes a never rule; false if there's none with this id.
     pub fn delete_never_rule(&self, id: NeverRuleId) -> Result<bool> {
         Ok(self.conn().execute("DELETE FROM dictionary_never WHERE id = ?1", params![id as i64])? > 0)
     }
 }
 
 impl Db {
-    /// The stored profiles by name; one that can't be read comes with the reason.
     pub fn profiles(&self) -> Result<Vec<(String, std::result::Result<Profile, String>)>> {
         let conn = self.conn();
         let mut stmt = conn.prepare("SELECT name, profile FROM profiles ORDER BY name")?;
@@ -479,7 +443,6 @@ impl Db {
         Ok(profiles)
     }
 
-    /// Stores a profile, replacing the one stored under its name.
     pub fn put_profile(&self, name: &str, profile: &Profile) -> Result<()> {
         self.conn().execute(
             "INSERT INTO profiles (name, profile, updated_ms) VALUES (?1, ?2, ?3)
@@ -489,7 +452,6 @@ impl Db {
         Ok(())
     }
 
-    /// Starts a browser session for `device`, until `expires`.
     pub fn add_web_session(&self, token_hash: &str, device: &str, expires: Timestamp) -> Result<()> {
         self.conn().execute(
             "INSERT INTO web_sessions (token_hash, device, created_ms, expires_ms) VALUES (?1, ?2, ?3, ?4)",
@@ -498,7 +460,6 @@ impl Db {
         Ok(())
     }
 
-    /// The device of the browser session with this cookie, unless it has expired.
     pub fn web_session(&self, token_hash: &str) -> Result<Option<DeviceId>> {
         Ok(self
             .conn()
@@ -510,18 +471,15 @@ impl Db {
             .optional()?)
     }
 
-    /// Ends a browser session.
     pub fn delete_web_session(&self, token_hash: &str) -> Result<()> {
         self.conn().execute("DELETE FROM web_sessions WHERE token_hash = ?1", params![token_hash])?;
         Ok(())
     }
 
-    /// Deletes expired browser sessions.
     pub fn prune_web_sessions(&self) -> Result<usize> {
         Ok(self.conn().execute("DELETE FROM web_sessions WHERE expires_ms <= ?1", params![now_ms()])?)
     }
 
-    /// Deletes a stored profile; false if there's none by this name.
     pub fn delete_profile(&self, name: &str) -> Result<bool> {
         Ok(self.conn().execute("DELETE FROM profiles WHERE name = ?1", params![name])? > 0)
     }

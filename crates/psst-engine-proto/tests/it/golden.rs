@@ -1,11 +1,6 @@
-//! Golden frames, the engine contract checked in both directions without a GPU.
-//!
-//! - `engines/faster-whisper/tests/golden/from-engine/`: written by the Python engine's pytest
-//!   (its real request loop with a stub model); decoded here.
-//! - `engines/faster-whisper/tests/golden/to-engine/`: written here; decoded by pytest.
-//!
-//! Tests regenerate their files. CI fails if the regenerated files differ from the committed
-//! ones, so a contract change shows up as a diff of these files in the pull request.
+//! `golden/from-engine/` is written by the Python engine's pytest and decoded here;
+//! `golden/to-engine/` is written here and decoded by pytest. CI fails if regenerating them
+//! changes the committed files.
 
 use std::{fs, io::Cursor, path::PathBuf};
 

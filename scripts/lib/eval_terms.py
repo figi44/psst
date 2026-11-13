@@ -1,30 +1,7 @@
 """Invent the eval set's dictionary terms, probe them with Whisper, and write evals/dictionary.toml.
 
-Every term in the eval set is invented, or for the `real` class a real place or science name, so the eval set names
-no product or company. Each class is a way a term can go wrong in dictation (CLASSES). The steps:
-
-1. `generate` writes evals/terms.toml: seeded candidates for every class, more than its quota, leaving out common
-   English words (crates/psst-dict/data/common-words/en.txt). It keeps what later steps recorded for candidates it
-   generates again.
-2. `probe <dir>` writes a throwaway eval set to <dir>/evals: every candidate in the same plain sentence. Render it,
-   record its traces, and read them back:
-
-       scripts/synth-evals.sh --evals <dir>/evals --probe
-       scripts/gpu-session.sh nix develop .#gpu --command \\
-           cargo run --release -p psst-eval -- audio --evals <dir>/evals
-       python3 -I scripts/lib/eval_terms.py heard <dir>
-
-   `heard` records whether Whisper spelled each candidate exactly without a prompt, but not what it wrote instead:
-   a mishearing can be an existing name. A class keeps the candidates Whisper gets wrong, so each one exercises the
-   dictionary; `real` keeps the ones it gets right, which the dictionary must leave
-   alone. A candidate that turns out to be an existing name, or that Whisper hears as one, goes into REVIEW_DROPS
-   by hand, and `generate` leaves it out of terms.toml.
-3. `dictionary` writes evals/dictionary.toml: psst and the first kept candidates of each class, up to its quota. With
-   recorded traces in evals/cases.jsonl, it also mines each term's sounds_like from the tune split's traces, never the
-   holdout split's, so holdout measures the dictionary on errors it wasn't tuned on. Run it again after the audio
-   eval; sounds_like isn't part of the engine request, so the traces stay valid.
-
-It needs only Python's standard library: `python3 -I scripts/lib/eval_terms.py <command>`.
+Every term is invented, or for the `real` class a real place or science name, so the eval set names no product or
+company. Standard library only: it runs as `python3 -I scripts/lib/eval_terms.py <command>`.
 """
 
 from __future__ import annotations
@@ -59,17 +36,12 @@ CLASSES: dict[str, tuple[int, int, str]] = {
     "real": (8, 4, "a real place or science name Whisper already knows: the dictionary must not break it"),
 }
 
-# Candidates generated per class: about twice the quota, and fixed, so changing a quota doesn't change the
-# candidates. `real` takes every name in REAL.
+# About twice each quota, and fixed, so changing a quota doesn't change the candidates.
 CANDIDATES = {"coinage": 50, "soundalike": 22, "letters": 18, "alnum": 18, "camel": 26, "joined": 22, "hyphen": 18,
               "multiword": 18}
 
-# Reviewed by hand, and listed by the start of the SHA-256 of their casefolded text (review_key), so the names among
-# them stay out of the repository:
-# - REVIEW_DROPS: candidates that turned out to be an existing name, or that Whisper hears as one. `generate` leaves
-#   them out.
-# - NOT_SOUNDS_LIKE: spellings Whisper wrote for a term that are ordinary words, phrases or names the common-word list
-#   doesn't have. As sounds_like they would rewrite ordinary text.
+# Candidates that are an existing name, or that Whisper hears as one. Reviewed by hand, and listed by review_key so the
+# names among them stay out of the repository.
 REVIEW_DROPS = {
     "02c493fa64f7", "042c2aa74f18", "07e6321345cc", "0a1b411b4a64", "0a96f93b12ec", "0de55ccc9f3e",
     "11203b441725", "14dd8d20de8b", "15ac8b27ba38", "1e4e67ef798e", "21241bc1e4c4", "2a1cd59ad5ea",
@@ -81,16 +53,16 @@ REVIEW_DROPS = {
     "d8a0c1bc63f2", "de3458e199df", "e97812e7e56b", "ecd3f6f72c50", "ee66b247b7b3", "ef21b87f17e1",
     "ef3a41c5eff2", "f2b46dec00e8", "fa9973f2ff88", "fd9538d3adc6",
 }
+# Spellings Whisper wrote that are ordinary words, phrases or names the common-word list lacks: as sounds_like they
+# would rewrite ordinary text. Listed by review_key, like REVIEW_DROPS.
 NOT_SOUNDS_LIKE = {
     "0ab77abc5d93", "17840323ea59", "20fc93d6831d", "3169d53fe6bd", "3ce608fa5903", "4b948dc47e33",
     "4c1c69e423bc", "5adf4c73a0f6", "688cff831436", "6ec46bceb6f2", "92bc4f68b7fb", "c25668db5133",
     "ff4d55529fa5",
 }
 
-# The sentence every candidate is probed in: plain, so nothing around the term helps or hurts.
+# Plain, so nothing around the term helps or hurts.
 CARRIER = "Please add {} to the list."
-
-# --- candidates -----------------------------------------------------------------------------------------------------
 
 ONSETS = ["b", "br", "bl", "d", "dr", "f", "fl", "fr", "g", "gr", "gl", "h", "j", "k", "kr", "kl", "l", "m", "n",
           "p", "pr", "pl", "qu", "r", "s", "sk", "sl", "sn", "st", "t", "tr", "v", "w", "z"]
@@ -100,7 +72,6 @@ ENDINGS = ["ly", "ix", "o", "a", "ex", "ium", "ora", "et", "yn", "is", "ar", "en
 LIGHT_ONSETS = ["b", "d", "f", "g", "k", "l", "m", "n", "p", "r", "s", "t", "v", "z"]
 LIGHT_CODAS = ["", "", "n", "r", "l", "x"]
 
-# Ordinary words to respell, and respellings that keep the sound.
 SOUNDALIKE_SOURCES = ["lantern", "harbor", "cobalt", "falcon", "willow", "ember", "beacon", "thistle", "quarry",
                       "ripple", "timber", "marble", "kettle", "cinder", "copper", "juniper", "quiver", "compass",
                       "pepper", "carpet", "candle", "pebble", "saddle", "cactus", "comet", "cotton", "ladder",
@@ -124,7 +95,7 @@ FIRST_WORDS = ["Harbor", "Ember", "Willow", "Granite", "Lantern", "Meadow", "Ced
                "Juniper", "Kestrel"]
 SECOND_WORDS = ["Desk", "Ledger", "Atlas", "Board", "Station", "Keeper", "Works", "Almanac", "Relay", "Compass"]
 
-# Real names Whisper should already know: places and stars, nothing anyone sells.
+# Names Whisper already knows, and nothing anyone sells.
 REAL = ["Reykjavik", "Ljubljana", "Tbilisi", "Thessaloniki", "Kilimanjaro", "Okavango", "Svalbard", "Lofoten",
         "Cappadocia", "Aldebaran", "Ouagadougou", "Kathmandu", "Yerevan", "Antananarivo", "Nunavut",
         "Galapagos", "Arabidopsis"]
@@ -134,8 +105,8 @@ REAL = ["Reykjavik", "Ljubljana", "Tbilisi", "Thessaloniki", "Kilimanjaro", "Oka
 class Term:
     text: str
     cls: str
-    spoken: str = ""  # what text-to-speech reads, when the spelling alone misleads it
-    status: str = "new"  # new, kept, or "dropped: <why>"
+    spoken: str = ""
+    status: str = "new"
 
 
 def nfc(text: str) -> str:
@@ -148,7 +119,7 @@ def common_words() -> set[str]:
 
 
 def generate() -> list[Term]:
-    """Every class's candidates, in a fixed order: the same on every run."""
+    """The same candidates, in the same order, on every run."""
     common = common_words()
     taken: set[str] = set()
     out = [Term("psst", "project", "p s s t")]
@@ -252,9 +223,6 @@ def review_key(text: str) -> str:
     return hashlib.sha256(text.casefold().encode()).hexdigest()[:12]
 
 
-# --- terms.toml -----------------------------------------------------------------------------------------------------
-
-
 def toml_str(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
@@ -299,9 +267,6 @@ def cmd_generate() -> int:
     return 0
 
 
-# --- the probe ------------------------------------------------------------------------------------------------------
-
-
 def write_dictionary_texts(path: Path, texts: list[str]) -> None:
     path.write_text("".join(f"[[terms]]\ntext = {toml_str(t)}\n\n" for t in texts), encoding="utf-8")
 
@@ -337,7 +302,7 @@ def is_boundary(c: str) -> bool:
 
 
 def term_spans(text: str, term: str) -> list[tuple[int, int]]:
-    """Where `term` occurs in `text` with its exact spelling, as psst-eval's text::count_term counts it."""
+    """Mirrors psst-eval's ``text::count_term``."""
     spans: list[tuple[int, int]] = []
     start = 0
     while term and (pos := text.find(term, start)) != -1:
@@ -370,6 +335,7 @@ def cmd_heard(dir: Path) -> int:
             missing += 1
             continue
         raw = trace_text(case["engine_output_raw"])
+        # Only whether Whisper got it right, never what it wrote instead: a mishearing can be an existing name.
         right = bool(term_spans(raw, nfc(t.text)))
         if t.cls == "project":
             t.status = "kept"
@@ -387,11 +353,7 @@ def cmd_heard(dir: Path) -> int:
     return 0
 
 
-# --- the dictionary -------------------------------------------------------------------------------------------------
-
-
 def select(terms: list[Term]) -> list[Term]:
-    """The first kept candidates of each class, up to its quota."""
     chosen = []
     for cls, (quota, _, _) in CLASSES.items():
         kept = [t for t in terms if t.cls == cls and t.status == "kept"][:quota]
@@ -406,12 +368,11 @@ WORD = re.compile(r"[\w]+(?:['’-][\w]+)*")
 
 
 def words(text: str) -> list[tuple[str, int, int]]:
-    """Normalised words with their spans, roughly as psst-eval's text::normalise splits them."""
+    """Roughly as psst-eval's ``text::normalise`` splits words."""
     return [(m.group().casefold().replace("’", "'"), m.start(), m.end()) for m in WORD.finditer(text)]
 
 
 def align(ref: list[str], hyp: list[str]) -> list[tuple[int | None, int | None]]:
-    """Levenshtein alignment as (reference index, hypothesis index) pairs, None for a gap."""
     n, m = len(ref), len(hyp)
     cost = [[0] * (m + 1) for _ in range(n + 1)]
     for i in range(n + 1):
@@ -437,7 +398,6 @@ def align(ref: list[str], hyp: list[str]) -> list[tuple[int | None, int | None]]
 
 
 def heard_as(reference: str, text: str, term: str) -> list[str]:
-    """What `text` has where `reference` has `term`, once per occurrence that it doesn't spell exactly."""
     ref_words, hyp_words = words(reference), words(text)
     pairs = align([w for w, _, _ in ref_words], [w for w, _, _ in hyp_words])
     out = []
@@ -459,10 +419,10 @@ def heard_as(reference: str, text: str, term: str) -> list[str]:
 
 
 def mine(chosen: list[Term], cases: list[dict]) -> dict[str, list[str]]:
-    """sounds_like per term from the tune split's traces, leaving out spellings that would rewrite ordinary text.
+    """From the tune split only, so holdout measures the dictionary on errors it wasn't tuned on.
 
-    A soundalike gets none: Whisper writes the ordinary word it sounds like, which must stay as it is. A leading
-    article is dropped, and a spelling made only of common words is left out: it's ordinary text.
+    A soundalike gets none: Whisper writes the ordinary word it sounds like, which must stay as it is. Spellings that
+    are ordinary text are left out: as sounds_like they would rewrite it.
     """
     common = common_words()
     stress_path = EVALS / "stress" / "en.txt"

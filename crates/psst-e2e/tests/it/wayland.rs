@@ -1,11 +1,3 @@
-//! The Wayland thread end to end, in the offscreen sandbox: pasting into a real
-//! app (`psst-paste-target`), the clipboard it sees during and after the restore window, the
-//! overlay on screen, keyboard layouts, and the paste latency.
-//!
-//! Each test starts its own nested niri inside headless sway (`psst_testkit::nested_niri`); none
-//! of them can reach the live session. The restore delay is shortened to 1.5 s, or 300 ms where
-//! nothing should come back; the desktop tests check the real 5 s through the daemon.
-
 use crate::support;
 
 use std::{
@@ -28,9 +20,7 @@ const RESTORE: Duration = Duration::from_millis(1500);
 const NO_RESTORE: Duration = Duration::from_millis(300);
 const DICTATED: &str = "Dictated: Příliš žluťoučký kůň úpěl ďábelské ódy — ✓ 42";
 
-// ---------------------------------------------------------------------- helpers
-
-/// The Wayland thread, connected to the sandbox's compositor by path.
+/// Connected by path: this process's `WAYLAND_DISPLAY` may be the live session's.
 struct Paster {
     thread: WaylandThread,
     rx: Receiver<WaylandEvent>,
@@ -66,10 +56,8 @@ impl Paster {
         }
     }
 
-    /// A dictation: snapshot, a short recording, then paste and wait for `Pasted`; returns the
-    /// time from sending `Paste` (the text is ready) to `Pasted` (dispatched). The daemon
-    /// snapshots at `toggle`, so the read has the recording's time; tests of the snapshot's own
-    /// timing send it and paste right after.
+    /// The daemon snapshots at `toggle`, so the read has the recording's time; tests of the
+    /// snapshot's own timing send it and paste right after.
     fn dictate(&self, generation: u64, text: &str, chord: Chord) -> Duration {
         self.send(WaylandCmd::SnapshotClipboard { generation });
         thread::sleep(Duration::from_millis(300));
@@ -108,8 +96,8 @@ fn wait_for_restore(pasted_at: Instant, restore: Duration) {
     thread::sleep(due.saturating_duration_since(Instant::now()));
 }
 
-/// The first probe after the restore is due that `restored` accepts, or the last one 5 s later:
-/// on a loaded machine the restore can land late, and a probe while it lands reads nothing.
+/// Retries for 5 s: on a loaded machine the restore can land late, and a probe while it lands
+/// reads nothing.
 fn probe_restored(app: &mut App, pasted_at: Instant, restore: Duration, restored: impl Fn(&Value) -> bool) -> Value {
     thread::sleep((pasted_at + restore).saturating_duration_since(Instant::now()));
     let give_up = Instant::now() + Duration::from_secs(5);
@@ -122,7 +110,6 @@ fn probe_restored(app: &mut App, pasted_at: Instant, restore: Duration, restored
     }
 }
 
-/// [`probe_restored`] until the app pastes `want`.
 fn probe_restored_text(app: &mut App, pasted_at: Instant, restore: Duration, want: &str) -> Value {
     probe_restored(app, pasted_at, restore, |probe| text(probe) == Some(want))
 }
@@ -144,8 +131,6 @@ fn fnv1a(data: &[u8]) -> String {
     format!("{h:016x}")
 }
 
-// ---------------------------------------------------------------------- the sandbox
-
 #[test]
 fn the_sandbox_is_offscreen_and_isolated() {
     let sandbox = nested_niri();
@@ -155,11 +140,9 @@ fn the_sandbox_is_offscreen_and_isolated() {
         let value = sandbox.var(var).unwrap_or_else(|| panic!("{var} is set"));
         assert!(std::path::Path::new(value).starts_with(sandbox.root.path().canonicalize().unwrap()), "{var}");
     }
-    // niri IPC answers inside the sandbox.
     let out = sandbox.niri_msg(&["--json", "keyboard-layouts"]);
     let layouts: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(layouts["names"].as_array().map(Vec::len), Some(2), "{layouts}");
-    // A client started in the sandbox doesn't see the session's variables.
     let out = sandbox
         .command("sh")
         .args(["-c", "echo \"$WAYLAND_SOCKET|$DISPLAY|$DBUS_SESSION_BUS_ADDRESS\""])
@@ -167,8 +150,6 @@ fn the_sandbox_is_offscreen_and_isolated() {
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "||disabled:");
 }
-
-// ---------------------------------------------------------------------- pasting and restoring
 
 #[test]
 fn pastes_plain_text_and_restores_the_clipboard() {
@@ -301,7 +282,6 @@ fn copy_only_sets_the_clipboard_without_pasting_or_restoring() {
     paster.send(WaylandCmd::Copy { generation: 1, text: "copied, not pasted".into() });
     paster.expect(&WaylandEvent::Copied { generation: 1 }, Duration::from_secs(3));
     let copied_at = Instant::now();
-    // No key press reached the app.
     thread::sleep(Duration::from_millis(300));
     assert!(app.pending().iter().all(|v| v["ev"] != "paste" && v["ev"] != "key"));
     let now = app.probe();
@@ -326,10 +306,6 @@ fn the_wlr_data_control_fallback_pastes_and_restores() {
     assert_text(&probe_restored_text(&mut app, pasted_at, RESTORE, "orig wlr"), "orig wlr");
 }
 
-// ---------------------------------------------------------------------- keyboard layouts
-
-/// For us and cz (QWERTY): a physical key gives the layout's character before and after a paste,
-/// and a paste while Super is physically held reaches the app as plain Ctrl+V.
 #[test]
 fn us_and_cz_layouts_survive_the_paste() {
     let sandbox = nested_niri();
@@ -375,10 +351,6 @@ fn us_and_cz_layouts_survive_the_paste() {
     sandbox.niri_msg(&["action", "switch-layout", "0"]);
 }
 
-// ---------------------------------------------------------------------- timing
-
-/// Text ready (the daemon sends `Paste`) → `Pasted` (dispatched), and → the app has the text.
-/// Reported on stderr; `cargo nextest run -E 'test(paste_timing)' --no-capture` shows it.
 #[test]
 fn paste_timing() {
     let sandbox = nested_niri();
@@ -409,8 +381,6 @@ fn paste_timing() {
     // Generous bounds, for loaded CI machines; the budget is 300–500 ms for the whole stop → paste.
     assert!(d95 < 50.0, "text ready → Pasted p95 {d95:.2} ms");
 }
-
-// ---------------------------------------------------------------------- overlay
 
 #[test]
 fn the_overlay_shows_at_the_bottom_centre_and_goes_away() {
@@ -444,7 +414,6 @@ fn overlay_at_the_bottom_centre(sandbox: &Sandbox) {
     assert!(centre.abs_diff(shot.width / 2) <= 2, "centre {centre} on a {} px wide output", shot.width);
     let bottom_margin = shot.height - 1 - y1;
     assert!((126..=134).contains(&bottom_margin), "{bottom_margin} px above the bottom");
-    // The recording dot: the accent colour, left in the pill.
     let dot = shot.pixel(x0 + h / 2, y0 + h / 2);
     assert!(dot[0] > 200 && dot[1] < 120 && dot[2] < 120, "the recording dot is {dot:?}");
 
@@ -457,8 +426,6 @@ fn overlay_at_the_bottom_centre(sandbox: &Sandbox) {
     paster.expect(&WaylandEvent::OverlayShown, Duration::from_secs(3));
     eprintln!("overlay on {:?}: shown again in {:?}", sandbox.compositor(), sent.elapsed());
 }
-
-// ---------------------------------------------------------------------- connection
 
 #[test]
 fn losing_the_compositor_fails_the_paste_and_reconnects_to_a_new_one() {
@@ -481,7 +448,6 @@ fn losing_the_compositor_fails_the_paste_and_reconnects_to_a_new_one() {
     assert_text(&app.pasted(), "before");
     drop(app);
 
-    // The compositor goes away: Disconnected, and the next paste fails.
     drop(std::mem::replace(&mut first, nested_niri()));
     paster.expect(&WaylandEvent::Disconnected, Duration::from_secs(5));
     std::fs::remove_file(&link).unwrap();
@@ -489,7 +455,6 @@ fn losing_the_compositor_fails_the_paste_and_reconnects_to_a_new_one() {
     let failed = paster.rx.recv_timeout(Duration::from_secs(3)).unwrap();
     assert!(matches!(&failed, WaylandEvent::Failed { generation: 2, .. }), "{failed:?}");
 
-    // A new compositor: the next command connects to it.
     std::os::unix::fs::symlink(first.wayland_socket(), &link).unwrap();
     let app = App::start(&first);
     paster.dictate(3, "after", Chord::CtrlV);

@@ -1,11 +1,3 @@
-//! The dictionary's database layer and the `/api/dictionary` operations.
-//!
-//! [`Layered`] holds `dictionary.toml` (its last valid version), the database's entries and never
-//! rules, and which entries resolution leaves out. It lives in `LiveConfig` behind one mutex, which
-//! every change and every `SIGHUP` reload holds from reading it to swapping the new [`Dictionary`]
-//! in. A change is checked on the dictionary it would give, written to the database, and only then
-//! swapped in; sessions keep the `Arc<Dictionary>` they took at `start`.
-
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use anyhow::{Context, anyhow};
@@ -26,19 +18,15 @@ use crate::{
     state::LiveConfig,
 };
 
-/// `dictionary.toml` with the database layer on top.
 #[derive(Debug)]
 pub struct Layered {
-    /// The last valid `dictionary.toml`.
     file: DictionaryFile,
     terms: BTreeMap<TermId, LayerTerm>,
     never: Vec<StoredNever>,
-    /// Entries the last resolution left out, with the reason.
     skipped: BTreeMap<TermId, String>,
 }
 
 impl Layered {
-    /// Reads the database layer and resolves it on top of `file`, which must be valid.
     pub fn load(file: DictionaryFile, db: &Db) -> anyhow::Result<(Layered, Dictionary)> {
         let mut layered =
             Layered { file, terms: db.dictionary_terms()?, never: db.never_rules()?, skipped: BTreeMap::new() };
@@ -62,7 +50,6 @@ impl Layered {
         Dictionary::resolve(&self.file, &self.layer())
     }
 
-    /// Keeps what `resolved` left out, logs the entries newly left out, and returns its dictionary.
     fn install(&mut self, resolved: Resolved) -> Dictionary {
         for (id, reason) in &resolved.skipped {
             if !self.skipped.contains_key(id) {
@@ -73,8 +60,6 @@ impl Layered {
         resolved.dictionary
     }
 
-    /// Re-reads `dictionary.toml` after `SIGHUP`. A file that fails validation, on its own,
-    /// keeps the previous version.
     pub fn reload(&mut self, file: Result<DictionaryFile, String>) -> Option<Dictionary> {
         let file = match file {
             Ok(file) => file,
@@ -105,7 +90,6 @@ impl Layered {
         self.file.terms.iter().find(|spec| term_id(&spec.text) == id)
     }
 
-    /// One identity's entry as the API shows it, if either layer knows it.
     fn entry(&self, id: &str, file_term: Option<&TermSpec>) -> Option<DictionaryTerm> {
         let problem = self.skipped.get(id).cloned();
         let (layer, term, file) = match (file_term, self.terms.get(id).map(|t| &t.entry)) {
@@ -134,7 +118,6 @@ impl Layered {
         }
     }
 
-    /// `GET /api/dictionary`.
     pub fn view(&self, dictionary: &Dictionary) -> DictionaryView {
         let file_terms: HashMap<TermId, &TermSpec> =
             self.file.terms.iter().map(|spec| (term_id(&spec.text), spec)).collect();
@@ -146,7 +129,6 @@ impl Layered {
         }
     }
 
-    /// `GET /api/dictionary/export`: the database layer as `dictionary.toml`.
     pub fn export(&self) -> String {
         let mut out = format!(
             "# The psst dictionary's database layer, exported by psst-server {}.\n\
@@ -188,12 +170,10 @@ impl Layered {
     }
 }
 
-/// `text` on one comment line.
 fn comment(text: &str) -> String {
     text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
 }
 
-/// One `[[terms]]` table, with the keys at their default left out.
 fn toml_term(spec: &TermSpec) -> String {
     #[derive(Serialize)]
     struct Terms {
@@ -202,16 +182,11 @@ fn toml_term(spec: &TermSpec) -> String {
     toml::to_string(&Terms { terms: [Term::from(spec)] }).expect("terms serialise as TOML")
 }
 
-/// A change to one term identity.
 #[derive(Debug, Clone)]
 pub enum Change {
-    /// `POST /api/dictionary/terms`.
     Add(TermSpec),
-    /// `PUT /api/dictionary/terms/{id}`.
     Replace(TermId, TermSpec),
-    /// `DELETE /api/dictionary/terms/{id}`.
     Remove(TermId),
-    /// `POST /api/dictionary/terms/{id}/reset`.
     Reset(TermId),
 }
 
@@ -223,20 +198,16 @@ fn not_found(message: impl Into<String>) -> ApiErr {
     ApiErr::new(ApiErrorCode::NotFound, message)
 }
 
-/// The checks `dictionary.toml` gets on its own: a non-empty `text` and `sounds_like` entries,
-/// and a language.
 fn check_term(spec: &TermSpec) -> Result<(), ApiErr> {
     DictionaryFile { terms: vec![spec.clone()] }.check().map_err(bad_request)
 }
 
-/// Applies `change`: checks it on the dictionary it would give, stores it and swaps that
-/// dictionary in.
 pub fn change_term(live: &LiveConfig, db: &Db, change: Change) -> Result<TermChange, ApiErr> {
     change_terms(live, db, vec![change])
 }
 
-/// Applies `changes` in order as one: all of them are checked on the dictionary they give
-/// together, and either all are stored or none. The answer is about the last one.
+/// In order, and all or nothing: the changes are checked together and stored together. The answer
+/// is about the last one.
 pub fn change_terms(live: &LiveConfig, db: &Db, changes: Vec<Change>) -> Result<TermChange, ApiErr> {
     let mut layered = live.layered();
     let mut proposed = layered.layer();
@@ -331,7 +302,6 @@ pub fn change_terms(live: &LiveConfig, db: &Db, changes: Vec<Change>) -> Result<
     Ok(TermChange { term, warnings })
 }
 
-/// `POST /api/dictionary/never`.
 pub fn add_never(live: &LiveConfig, db: &Db, term: &str, span: &str) -> Result<ApiNeverRule, ApiErr> {
     let mut layered = live.layered();
     let id = term_id(term);
@@ -351,7 +321,6 @@ pub fn add_never(live: &LiveConfig, db: &Db, term: &str, span: &str) -> Result<A
     Ok(layered.never_rule(&rule, &live.dictionary()))
 }
 
-/// `DELETE /api/dictionary/never/{id}`.
 pub fn remove_never(live: &LiveConfig, db: &Db, id: NeverRuleId) -> Result<(), ApiErr> {
     let mut layered = live.layered();
     if !db.delete_never_rule(id)? {
@@ -363,7 +332,6 @@ pub fn remove_never(live: &LiveConfig, db: &Db, id: NeverRuleId) -> Result<(), A
     Ok(())
 }
 
-/// Resolves the layer again and swaps the result in.
 fn swap(layered: &mut Layered, live: &LiveConfig) -> Result<(), ApiErr> {
     let resolved = layered.resolve().context("the dictionary file stopped resolving")?;
     live.set_dictionary(layered.install(resolved));

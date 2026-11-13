@@ -1,6 +1,3 @@
-//! The engine supervisor: crashes, budgets, `oom`, failure, unload and the load
-//! deadline.
-
 use std::time::{Duration, Instant};
 
 use psst_engine_proto::{

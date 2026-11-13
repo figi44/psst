@@ -1,6 +1,3 @@
-"""The faster-whisper engine, driven through the protocol, with faster-whisper and the Hugging Face
-cache faked where the engine calls them."""
-
 from __future__ import annotations
 
 import io
@@ -21,7 +18,7 @@ STYLE = "I'm updating the NixOS config."
 TERMS = ["Hyprland", "psst", "t3code"]
 PROMPT = "I'm updating the NixOS config. Hyprland, psst, t3code."
 OPTIONS = {"path": "batched", "beam_size": 5, "word_timestamps": True, "vad_filter": True, "terms_as": "prompt", "batch_size": 8}
-"""The defaults in ``psst-config``, as every trace records them."""
+"""The defaults in ``psst-config``."""
 
 
 def transcribe(request_id: int = 1, *, seconds: float = 3.0, style=STYLE, terms=TERMS, language="en", **options):
@@ -36,7 +33,6 @@ def transcribe(request_id: int = 1, *, seconds: float = 3.0, style=STYLE, terms=
 
 
 def run(fake: FakeWhisper, *requests: dict | tuple[dict, bytes]) -> tuple[list[dict[str, Any]], Fatal | None]:
-    """Sends the requests to an engine over faster-whisper; returns its replies, and how it ended."""
     inp = io.BytesIO()
     for request in requests:
         header, payload = request if isinstance(request, tuple) else (request, b"")
@@ -56,7 +52,6 @@ def run(fake: FakeWhisper, *requests: dict | tuple[dict, bytes]) -> tuple[list[d
 
 
 def serve(fake: FakeWhisper, *requests: dict | tuple[dict, bytes]) -> list[dict[str, Any]]:
-    """The engine's replies after hello; it must not end on a fatal error."""
     replies, fatal = run(fake, *requests)
     assert fatal is None
     assert replies[0]["type"] == "hello"
@@ -64,14 +59,10 @@ def serve(fake: FakeWhisper, *requests: dict | tuple[dict, bytes]) -> list[dict[
 
 
 def loaded(fake: FakeWhisper, *requests) -> list[dict[str, Any]]:
-    """Replies to ``requests`` after a successful load of a cached turbo."""
     fake.cached.add(TURBO)
     replies = serve(fake, LOAD, *requests)
     assert replies[1]["type"] == "loaded"
     return replies[2:]
-
-
-# Loading.
 
 
 def test_a_cached_model_loads_without_downloading():
@@ -172,9 +163,6 @@ def test_an_unknown_model_fails_the_load():
     error = serve(FakeWhisper(), {**LOAD, "model": "huge-v9"})[-1]
     assert (error["code"], error["retryable"]) == ("load_failed", False)
     assert "huge-v9" in error["message"] and "large-v3-turbo" in error["message"]
-
-
-# Transcribing.
 
 
 def test_transcribes_on_the_batched_path_with_the_bias_as_the_initial_prompt():

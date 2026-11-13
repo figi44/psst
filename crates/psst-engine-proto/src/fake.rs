@@ -1,10 +1,5 @@
-//! A scripted engine that speaks the real protocol, for tests without a GPU.
-//!
-//! `psst-server __fake-engine <script.json>` runs [`main`]. The script ([`Script`]) decides what
-//! `hello` announces, how `load` goes, and how each `transcribe` is answered. Every request the
-//! engine receives is appended to `<script>.requests.jsonl` ([`request_log_path`]) as a
-//! [`LoggedRequest`]. Every `transcribe` request received consumes the next scripted step, even
-//! one that is then rejected; steps are counted through that log, so they carry on across engine
+//! Every `transcribe` or stream `close` received consumes the next scripted step, even one that is
+//! then rejected. Steps are counted through the request log, so they carry on across engine
 //! restarts: a script of `[exit, result]` crashes once and then succeeds.
 
 use std::{
@@ -28,14 +23,11 @@ use crate::{
     payload_to_samples,
 };
 
-/// The fake engine's behaviour.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Script {
     pub hello: HelloScript,
     pub load: LoadScript,
-    /// Answers to `transcribe`, in order. Once they run out, every request gets
-    /// [`TranscribeStep::default`].
     pub transcribe: Vec<TranscribeStep>,
 }
 
@@ -45,8 +37,6 @@ pub struct HelloScript {
     pub protocol: u32,
     pub bias: bool,
     pub max_audio_s: u32,
-    /// Whether to take streams. A stream's `close` is answered like a `transcribe` of everything
-    /// appended to it, and consumes a step as one does.
     pub stream: bool,
 }
 
@@ -59,9 +49,7 @@ impl Default for HelloScript {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LoadScript {
-    /// Sent first, in order.
     pub progress: Vec<Progress>,
-    /// Then this long a pause, which is also the reported `load_ms`.
     pub delay_ms: u64,
     pub outcome: LoadOutcome,
 }
@@ -69,7 +57,6 @@ pub struct LoadScript {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LoadOutcome {
-    /// Replies `loaded`. The revision defaults to the requested one, else `fake-revision`.
     Loaded {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         revision: Option<String>,
@@ -78,11 +65,9 @@ pub enum LoadOutcome {
         code: EngineErrorCode,
         message: String,
     },
-    /// Exits with this status without replying.
     Exit {
         code: u8,
     },
-    /// Never replies.
     Hang,
 }
 
@@ -92,20 +77,15 @@ impl Default for LoadOutcome {
     }
 }
 
-/// How one `transcribe` is answered.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TranscribeStep {
-    /// Replies `result` with `text` as one segment (after a leading space, as Whisper writes it).
-    /// Empty text gives no segments and `speech_ms = 0`. Words are included when the request's
-    /// `options.word_timestamps` is true.
     Result {
         text: String,
         #[serde(default)]
         delay_ms: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         no_speech_prob: Option<f32>,
-        /// Defaults to the audio's length, or 0 for empty text.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         speech_ms: Option<u32>,
     },
@@ -117,13 +97,11 @@ pub enum TranscribeStep {
         #[serde(default)]
         delay_ms: u64,
     },
-    /// Exits with this status (a crash) without replying.
     Exit {
         code: u8,
         #[serde(default)]
         delay_ms: u64,
     },
-    /// Never replies.
     Hang,
 }
 
@@ -133,23 +111,18 @@ impl Default for TranscribeStep {
     }
 }
 
-/// One line of the request log. Every request is logged except `append`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LoggedRequest {
-    /// The header as received.
     pub header: Value,
-    /// Payload length in samples; for `close`, the samples appended to the stream.
     pub samples: usize,
 }
 
-/// Where requests are logged for the script at `script`.
 pub fn request_log_path(script: &Path) -> PathBuf {
     let mut name = script.file_stem().unwrap_or_default().to_os_string();
     name.push(".requests.jsonl");
     script.with_file_name(name)
 }
 
-/// Reads the request log of the script at `script`; empty if nothing was logged yet.
 pub fn read_request_log(script: &Path) -> io::Result<Vec<LoggedRequest>> {
     let text = match fs::read_to_string(request_log_path(script)) {
         Ok(text) => text,
@@ -159,16 +132,13 @@ pub fn read_request_log(script: &Path) -> io::Result<Vec<LoggedRequest>> {
     text.lines().map(|line| serde_json::from_str(line).map_err(io::Error::other)).collect()
 }
 
-/// How [`run`] ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Exit {
     Shutdown,
     EndOfInput,
-    /// A scripted `exit` step.
     Scripted(u8),
 }
 
-/// Entry point of `psst-server __fake-engine <script.json>`.
 pub fn main(script_path: &Path) -> ExitCode {
     if std::env::var(PROTOCOL_ENV).as_deref() != Ok("1") {
         eprintln!("fake-engine: {PROTOCOL_ENV}=1 is not set; refusing to start");
@@ -195,10 +165,6 @@ pub fn main(script_path: &Path) -> ExitCode {
     }
 }
 
-/// Serves requests from `input` until `shutdown`, the end of input, or a scripted exit.
-///
-/// Requests are appended to `log` when given; without a log, scripted steps are counted from
-/// the start of this run.
 pub fn run(
     script: &Script,
     log: Option<&Path>,
@@ -223,7 +189,6 @@ pub fn run(
 
     let mut loaded: Option<Loaded> = None;
     let mut transcribes_this_run = 0;
-    // Open streams: their `open` and the samples appended so far.
     let mut streams: HashMap<u64, (Transcribe, usize)> = HashMap::new();
     loop {
         let Some(frame) = read_frame(input, &limits)? else {
@@ -338,8 +303,6 @@ pub fn run(
     }
 }
 
-/// Answers a `transcribe`, or a stream's `close`, of `samples` samples with a scripted step: the
-/// reply, or the status of a scripted exit.
 fn answer(step: TranscribeStep, model: &Loaded, request: &Transcribe, samples: usize) -> Result<FromEngine, u8> {
     match step {
         TranscribeStep::Result { text, delay_ms, no_speech_prob, speech_ms } => {
@@ -363,8 +326,7 @@ fn header_type(header: &[u8]) -> Option<String> {
     serde_json::from_slice::<Value>(header).ok()?.get("type")?.as_str().map(str::to_owned)
 }
 
-/// Appends a request to the log and returns how many `transcribe` and `close` requests came
-/// before it.
+/// Returns how many `transcribe` and `close` requests came before this one.
 fn log_request(log: &Path, header: &[u8], samples: usize) -> usize {
     let header =
         serde_json::from_slice(header).unwrap_or_else(|_| Value::String(String::from_utf8_lossy(header).into()));
@@ -440,6 +402,7 @@ impl TranscribeResultScript {
     }
 }
 
+/// Text and words start with a space, as Whisper writes them.
 fn segment(text: &str, audio_ms: u32, no_speech_prob: f32, with_words: bool) -> Segment {
     let words: Vec<&str> = text.split_whitespace().collect();
     let step = audio_ms / words.len().max(1) as u32;

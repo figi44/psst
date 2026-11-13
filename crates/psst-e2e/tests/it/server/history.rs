@@ -1,7 +1,3 @@
-//! The history page as a logged-in browser uses it: dictations with the dictionary's changes
-//! marked, and fixing a word from one (adding it, keeping it as heard, moving a heard spelling
-//! between words, and undoing each).
-
 use std::{fs, time::Duration};
 
 use nix::{
@@ -53,7 +49,6 @@ async fn view(server: &TestServer) -> DictionaryView {
     api(server).call(Method::Get, routes::DICTIONARY, None::<&()>).await.unwrap()
 }
 
-/// The word with this identity: its layer and heard spellings.
 async fn word(server: &TestServer, id: &str) -> Option<(TermLayer, Vec<String>)> {
     view(server).await.terms.into_iter().find(|t| t.id == id).map(|t| (t.layer, t.term.unwrap().sounds_like))
 }
@@ -80,7 +75,6 @@ async fn history_marks_the_dictionarys_changes_and_adds_a_word_from_a_dictation(
     );
     assert!(page.body.contains(&format!("action=\"/history/{id}/fix\"")), "{}", page.body);
 
-    // A new word, confirmed in its dictation, then undone.
     let fixed = browser.post(&format!("/history/{id}/fix"), &[("heard", "next test"), ("written", "nextest")]).await;
     let to = format!("/history?fixed={id}&kind=add&heard=next%20test&written=nextest&created=1#d-{id}");
     see_other(&fixed, &to);
@@ -96,7 +90,6 @@ async fn history_marks_the_dictionarys_changes_and_adds_a_word_from_a_dictation(
     see_other(&browser.post(&format!("/history/{id}/undo"), &undo).await, &format!("/history#d-{id}"));
     assert_eq!(word(&server, "nextest").await, None);
 
-    // A single common word needs a second, deliberate press.
     let common = browser.post(&format!("/history/{id}/fix"), &[("heard", "next"), ("written", "nextest")]).await;
     refused_with(&common, "is a common word");
     assert!(common.body.contains("value=\"anyway\""), "{}", common.body);
@@ -105,7 +98,6 @@ async fn history_marks_the_dictionarys_changes_and_adds_a_word_from_a_dictation(
     assert_eq!(browser.post(&format!("/history/{id}/fix"), &anyway).await.status, 303);
     assert_eq!(word(&server, "nextest").await, Some((TermLayer::Added, vec!["next".to_owned()])));
 
-    // Nothing to write, or a dictation that's gone.
     refused_with(
         &browser.post(&format!("/history/{id}/fix"), &[("heard", "run"), ("written", "")]).await,
         "Type how psst should write it",
@@ -120,7 +112,6 @@ async fn a_dotted_word_is_kept_as_heard_or_its_spelling_moved_to_another_word() 
     let id = newest(&server).await.id;
     let browser = logged_in(&server).await;
 
-    // Keep as heard: a never rule, and the listed spelling gone; undo brings both back.
     let keep = browser
         .post(&format!("/history/{id}/fix"), &[("heard", "Hyprland"), ("written", ""), ("action", "keep")])
         .await;
@@ -136,7 +127,6 @@ async fn a_dotted_word_is_kept_as_heard_or_its_spelling_moved_to_another_word() 
     assert!(view(&server).await.never.is_empty());
     assert_eq!(word(&server, "hyprland").await, Some((TermLayer::File, vec!["hyper land".to_owned()])));
 
-    // Another word for the same heard spelling clashes, and offers to move it.
     let clash = browser.post(&format!("/history/{id}/fix"), &[("heard", "Hyprland"), ("written", "Hyprlang")]).await;
     refused_with(&clash, "Hyprland already catches “hyper land”");
     assert!(clash.body.contains("value=\"move\""), "{}", clash.body);

@@ -1,17 +1,3 @@
-//! The psst server: listeners, sessions, the engine supervisor, the pipeline and the HTTP API.
-//!
-//! [`main`] is the whole `psst-server` program, so the thin binary and `psst-e2e`'s
-//! `psst-server-e2e` run the same code. [`serve_in_process`] runs the server inside another
-//! program (`psst-eval`).
-//!
-//! - `listen`: the Unix socket (from systemd or bound here) and TCP listeners.
-//! - `api`: HTTP routes; `conn`: one client WebSocket; `registry`: the session registry.
-//! - `engine`: the engine supervisor; `db`: SQLite; `auth`: identities, tokens and pairing.
-//! - `dictionary`: the dictionary's database layer and the `/api/dictionary` operations.
-//! - `profiles`: profiles stored over `profiles.toml` and the `/api/profiles` operations.
-//! - `web`: the web UI's pages and the browser login.
-//! - `admin`: the admin subcommands, as thin clients of `/api` over the socket.
-
 mod admin;
 mod api;
 mod auth;
@@ -51,25 +37,18 @@ use crate::{
     state::{AppState, ConnTable, LiveConfig, LocalPolicy},
 };
 
-/// What `psst-server serve` takes on its command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServeConfig {
-    /// Holds `server.toml`, `profiles.toml` and `dictionary.toml`.
     pub config_dir: PathBuf,
-    /// The database.
     pub state_dir: PathBuf,
-    /// Model downloads (`HF_HOME` for the engine).
     pub cache_dir: PathBuf,
-    /// Overrides `server.toml`'s `socket`.
     pub socket: Option<PathBuf>,
 }
 
-/// A running server.
 #[derive(Debug)]
 pub struct ServerHandle {
     socket: PathBuf,
     tcp_addrs: Vec<SocketAddr>,
-    /// Remove the socket file on shutdown (not when systemd owns it).
     owns_socket: bool,
     shutdown: watch::Sender<bool>,
     state: Arc<AppState>,
@@ -78,29 +57,23 @@ pub struct ServerHandle {
 }
 
 impl ServerHandle {
-    /// The Unix socket it listens on.
     pub fn socket(&self) -> &Path {
         &self.socket
     }
 
-    /// The TCP addresses it listens on, with the actual ports.
     pub fn tcp_addrs(&self) -> &[SocketAddr] {
         &self.tcp_addrs
     }
 
-    /// Re-reads `profiles.toml` and `dictionary.toml`, as `SIGHUP` does. A file that fails
-    /// validation keeps its previous version.
     pub fn reload(&self) {
         self.state.live.reload(&self.state.server);
     }
 
-    /// Restarts a loaded engine, as after the machine wakes up. Used by tests.
     #[doc(hidden)]
     pub fn simulate_resume(&self) {
         self.state.engine.resume();
     }
 
-    /// Stops listening, ends sessions and shuts the engine down.
     pub async fn shutdown(self) -> anyhow::Result<()> {
         let _ = self.shutdown.send(true);
         for listener in self.listeners {
@@ -119,15 +92,10 @@ impl ServerHandle {
     }
 }
 
-/// Starts the server inside this process; it runs until [`ServerHandle::shutdown`].
-///
-/// This is the non-systemd mode: it binds `cfg.socket` (or `server.toml`'s), and with empty
-/// `local_users` accepts its own user on it.
 pub async fn serve_in_process(cfg: ServeConfig) -> anyhow::Result<ServerHandle> {
     start(cfg, None).await
 }
 
-/// The current boot's id, which a deliberate unload is stored with.
 fn boot_id() -> String {
     fs::read_to_string("/proc/sys/kernel/random/boot_id").map(|id| id.trim().to_owned()).unwrap_or_default()
 }
@@ -176,7 +144,7 @@ async fn start(cfg: ServeConfig, systemd: Option<std::os::unix::net::UnixListene
         }
         None => {
             let path = cfg.socket.clone().unwrap_or_else(|| server.socket.clone());
-            // Only the server's own user may connect unless other local users are allowed.
+            // 0o666 still admits only `local_users`: each peer is checked by uid.
             let mode = if server.local_users.is_empty() { 0o600 } else { 0o666 };
             let listener =
                 listen::bind_unix(&path, mode).with_context(|| format!("cannot listen on {}", path.display()))?;
@@ -380,7 +348,6 @@ enum DevicesAction {
     Revoke { id: String },
 }
 
-/// The `psst-server` program.
 pub fn main() -> ExitCode {
     let admin = |connection: Connection, action| admin::run(&connection.socket, connection.json, action);
     match Cli::parse().command {

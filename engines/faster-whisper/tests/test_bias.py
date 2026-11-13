@@ -1,9 +1,3 @@
-"""Fitting the profile's style and the dictionary's terms into faster-whisper's 223-token prompt.
-
-With the stand-in tokenizer always, and with Whisper's real tokenizer against faster-whisper's own
-prompt assembly when faster-whisper is installed and a model's tokenizer is in the local cache.
-"""
-
 from __future__ import annotations
 
 import os
@@ -23,7 +17,6 @@ def render(style=STYLE, terms=TERMS, *, terms_as="prompt", budget=bias.BUDGET, e
 
 
 def prompt_cost(text: str, encode=fake_encode) -> int:
-    """Tokens of an initial prompt as faster-whisper's batched path encodes it: without a leading space."""
     return len(encode(text)) if text else 0
 
 
@@ -110,11 +103,7 @@ def test_a_style_of_one_long_word_is_cut_inside_it():
     assert rendered.text == "x" * len(rendered.text) and len(rendered.text) > 30
 
 
-# Whisper's real tokenizer.
-
-
 def whisper_tokenizer():
-    """faster-whisper's tokenizer for a model in the local Hugging Face cache, or skip."""
     pytest.importorskip("faster_whisper")
     from huggingface_hub import try_to_load_from_cache
     from tokenizers import Tokenizer
@@ -134,11 +123,9 @@ def whisper_tokenizer():
 
 
 def chunk_bias(tokenizer, rendered: bias.RenderedBias) -> list[int]:
-    """The bias tokens faster-whisper 1.2.1's batched path puts before <|startoftranscript|> in
-    every chunk."""
     from faster_whisper import WhisperModel
 
-    # BatchedInferencePipeline.generate_segment_batched
+    # As faster-whisper 1.2.1's BatchedInferencePipeline.generate_segment_batched does it.
     previous = [] if rendered.initial_prompt is None else tokenizer.encode(rendered.initial_prompt)
     prompt = WhisperModel.get_prompt(
         SimpleNamespace(max_length=448), tokenizer, previous, without_timestamps=True, hotwords=rendered.hotwords

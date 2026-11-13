@@ -1,10 +1,7 @@
-//! Text handling for the metrics: normalisation, words and exact term occurrences.
-
 use std::ops::Range;
 
 use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
 
-/// The whitespace-separated tokens of `text`, as byte ranges.
 pub fn tokens(text: &str) -> Vec<Range<usize>> {
     let mut tokens = Vec::new();
     let mut start = None;
@@ -24,18 +21,10 @@ pub fn tokens(text: &str) -> Vec<Range<usize>> {
     tokens
 }
 
-/// The normalised words of `text`:
-///
-/// - NFC, then lowercase;
-/// - apostrophes and hyphens are kept only inside words (`’` counts as an apostrophe);
-/// - every other character that isn't a letter, digit or combining mark separates words, so
-///   punctuation and symbols disappear;
-/// - whitespace collapses, and the filler words of the language are removed.
 pub fn normalise(text: &str, fillers: &[String]) -> Vec<String> {
     normalise_tokens(text, fillers).into_iter().map(|(_, word)| word).collect()
 }
 
-/// Like [`normalise`], with the index (into [`tokens`]) of the token each word came from.
 pub fn normalise_tokens(text: &str, fillers: &[String]) -> Vec<(usize, String)> {
     let fillers: Vec<String> = fillers.iter().map(|f| fold(f)).collect();
     let mut words = Vec::new();
@@ -79,10 +68,9 @@ fn token_words(token: &str) -> Vec<String> {
     words
 }
 
-/// How often `term` occurs in `text` with its exact spelling: case-sensitive, before
-/// normalisation (only NFC applies to both). An occurrence starts and ends at the text's edge,
-/// whitespace or punctuation (`. , ; : ! ? ( ) [ ] { } " '`, typographic quotes and dashes), so
-/// `C` doesn't occur in `C++` or `C#`, and `Kubernetes` occurs in `Kubernetes's`.
+/// Case-sensitive and before normalisation, since term recall scores the exact spelling.
+/// `'` is a boundary but `+` and `#` aren't, so `Kubernetes` occurs in `Kubernetes's` and `C`
+/// doesn't occur in `C++` or `C#`.
 pub fn count_term(text: &str, term: &str) -> usize {
     let text: String = text.nfc().collect();
     let term: String = term.nfc().collect();

@@ -1,5 +1,3 @@
-//! The hallucination guard.
-
 use crate::support;
 
 use support::*;

@@ -1,10 +1,3 @@
-//! The regression gate: the pull request's replay against main's `baseline.json`, on
-//! the case ids present in both, and the absolute floors.
-//!
-//! Going past a tolerance on purpose needs the `baseline-change` label on the pull request,
-//! which only a maintainer applies. The label never waives stale traces, an inconsistent baseline, or
-//! the floors.
-
 use std::{collections::BTreeMap, fs, path::Path};
 
 use anyhow::Context;
@@ -16,42 +9,28 @@ use crate::{
     metrics::Counts,
 };
 
-/// The label that lets a pull request go past the tolerances. Agents never apply it.
+/// Waives regressions only, never stale traces, an inconsistent baseline or the floors.
 pub const BASELINE_CHANGE_LABEL: &str = "baseline-change";
 
-/// Largest allowed drop of term recall, in percentage points.
 pub const TERM_RECALL_DROP: f64 = 0.5;
-/// Largest allowed rise of false corrections per 1,000 output words.
 pub const FALSE_CORRECTIONS_RISE: f64 = 0.2;
-/// Largest allowed rise of WER, in percentage points.
 pub const WER_RISE: f64 = 0.2;
 
-/// Whether the absolute floors fail the gate. They're computed and printed either way;
-/// `--floors` enforces them while this is off.
 pub const FLOORS_ENFORCED: bool = false;
-/// Most false corrections per 1,000 words a floor allows.
 pub const FLOOR_FALSE_CORRECTIONS: f64 = 2.0;
-/// The share of raw's term errors the dictionary has to remove.
 pub const FLOOR_TERM_ERROR_REDUCTION: f64 = 0.5;
-/// Most WER a floor allows above raw, in percentage points.
 pub const FLOOR_WER_ABOVE_RAW: f64 = 0.2;
 
 const EPSILON: f64 = 1e-9;
 
-/// The pull request's cases against main's.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Comparison {
-    /// Cases present in both.
     pub common: usize,
-    /// Cases only in the pull request; they get the consistency check and the floors.
     pub new: Vec<String>,
-    /// Cases only on main.
     pub removed: Vec<String>,
     pub regressions: Vec<String>,
 }
 
-/// Compares the cases present in both baselines: any change of a must-pass case's output, and
-/// the tolerances per source, language and split.
 pub fn compare_cases(main: &Baseline, pr: &Baseline) -> Comparison {
     let mut comparison = Comparison::default();
     let mut pairs: Vec<(&CaseResult, &CaseResult)> = Vec::new();
@@ -113,8 +92,6 @@ fn tolerance_failures(what: &str, before: &Counts, after: &Counts) -> Vec<String
     failures
 }
 
-/// Compares the stress test per language present in both: false corrections may rise by at
-/// most [`FALSE_CORRECTIONS_RISE`] per 1,000 words.
 pub fn compare_stress(main: &[StressResult], pr: &[StressResult]) -> Vec<String> {
     let mut failures = Vec::new();
     for after in pr {
@@ -131,8 +108,6 @@ pub fn compare_stress(main: &[StressResult], pr: &[StressResult]) -> Vec<String>
     failures
 }
 
-/// Acceptance as absolute floors, on the held-out half per source and language,
-/// compared with raw.
 pub fn case_floors(pr: &Baseline) -> Vec<String> {
     let holdout = pr.cases.iter().filter(|c| c.split == Split::Holdout);
     let mut failures = Vec::new();
@@ -165,7 +140,6 @@ pub fn case_floors(pr: &Baseline) -> Vec<String> {
     failures
 }
 
-/// The stress floor: at most [`FLOOR_FALSE_CORRECTIONS`] per 1,000 words in every language.
 pub fn stress_floors(stress: &[StressResult]) -> Vec<String> {
     stress
         .iter()
@@ -181,8 +155,6 @@ pub fn stress_floors(stress: &[StressResult]) -> Vec<String> {
         .collect()
 }
 
-/// Whether the pull request in a GitHub Actions event payload (`$GITHUB_EVENT_PATH`) carries
-/// [`BASELINE_CHANGE_LABEL`]. Events without a pull request carry no labels.
 pub fn has_baseline_change_label(event: &Path) -> anyhow::Result<bool> {
     let text = fs::read_to_string(event).with_context(|| format!("cannot read {}", event.display()))?;
     let event: Value =

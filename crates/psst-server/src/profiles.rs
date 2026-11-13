@@ -1,13 +1,3 @@
-//! Profiles stored in the database over `profiles.toml`, and the `/api/profiles`
-//! operations.
-//!
-//! The database holds whole profiles by name: each replaces the file's profile with that name, or
-//! adds one. Nothing else in the files can be changed this way. [`ProfileLayers`] holds
-//! `profiles.toml` (its last valid version) and the database's profiles. It lives in `LiveConfig`
-//! behind one mutex, which a change and a `SIGHUP` reload hold from reading it until the profiles
-//! sessions use are swapped, so they happen one at a time. Sessions resolve their profile at
-//! `start`, so a change reaches the next session without touching the engine.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use psst_config::{ConfigFile, ProfileSpec, ProfilesFile};
@@ -16,18 +6,13 @@ use serde::Serialize;
 
 use crate::{api::ApiErr, db::Db, state::LiveConfig};
 
-/// `profiles.toml` with the database's profiles on top.
 #[derive(Debug)]
 pub struct ProfileLayers {
-    /// The last valid `profiles.toml`.
     file: ProfilesFile,
-    /// The database's profiles, by name.
     stored: BTreeMap<String, ProfileSpec>,
 }
 
 impl ProfileLayers {
-    /// Reads the database's profiles and puts them on top of `file`, which must be valid. A stored
-    /// profile that can't be read or fails the checks is logged and left out.
     pub fn load(file: ProfilesFile, db: &Db) -> anyhow::Result<(ProfileLayers, ProfilesFile)> {
         let mut layers = ProfileLayers { file, stored: BTreeMap::new() };
         for (name, stored) in db.profiles()? {
@@ -47,14 +32,12 @@ impl ProfileLayers {
         Ok((layers, effective))
     }
 
-    /// The profiles sessions use: the file's, with the database's in their place.
     pub fn effective(&self) -> ProfilesFile {
         let mut profiles = self.file.clone();
         profiles.profiles.extend(self.stored.iter().map(|(name, spec)| (name.clone(), spec.clone())));
         profiles
     }
 
-    /// Takes a new valid `profiles.toml` after `SIGHUP`; the database's profiles stay on top.
     pub fn reload(&mut self, file: ProfilesFile) -> ProfilesFile {
         self.file = file;
         self.effective()
@@ -70,7 +53,6 @@ impl ProfileLayers {
         Some(ProfileEntry { name: name.to_owned(), layer, profile: ApiProfile::from(profile), file })
     }
 
-    /// `GET /api/profiles`.
     pub fn view(&self) -> ProfilesView {
         let names: BTreeSet<&String> = self.file.profiles.keys().chain(self.stored.keys()).collect();
         ProfilesView {
@@ -79,8 +61,6 @@ impl ProfileLayers {
         }
     }
 
-    /// `GET /api/profiles/export`: `profiles.toml` as sessions see it, each of the database's
-    /// profiles marked by a comment.
     pub fn export(&self) -> String {
         #[derive(Serialize)]
         struct Profiles<'a> {
@@ -119,8 +99,6 @@ impl ProfileLayers {
     }
 }
 
-/// Stores `profile` under `name` (or, with `None`, deletes the database's version) after checking
-/// it as `check-config` checks the file, and swaps the result in for new sessions.
 pub fn change(live: &LiveConfig, db: &Db, name: &str, profile: Option<ApiProfile>) -> Result<ProfileChange, ApiErr> {
     let bad_request = |message: String| ApiErr::new(ApiErrorCode::BadRequest, message);
     let mut layers = live.profile_layers();

@@ -1,8 +1,5 @@
-"""faster-whisper 1.2.1 behind the engine's ``Model`` interface.
-
-faster-whisper, huggingface_hub and numpy are imported at the first ``load``, after the engine has
-claimed stdout and said hello. ``Backend`` is everything used from them.
-"""
+"""faster-whisper, huggingface_hub and numpy are imported only at the first ``load``, after the
+engine has claimed stdout."""
 
 from __future__ import annotations
 
@@ -31,19 +28,16 @@ from .engine import (
 SAMPLE_RATE = 16_000
 
 PATH = "batched"
-"""The one decoding path: faster-whisper's ``BatchedInferencePipeline``, which the engine benchmarks
-chose for every length."""
+"""``BatchedInferencePipeline``: the engine benchmarks chose it for every length."""
 
 DEFAULT_BATCH_SIZE = 8
-"""Batch size when ``options.batch_size`` is unset, as in ``psst-config``."""
 
 RECOVERY_RUNS = 2
-"""Throwaway runs after the GPU ran out of memory, until one works (``FasterWhisperModel._recover``)."""
 
 
 @dataclass(frozen=True)
 class Options:
-    """``transcribe.options``, from ``[model.options]``, with the defaults in ``psst-config``."""
+    """Defaults match ``[model.options]`` in ``psst-config``."""
 
     path: str = PATH
     beam_size: int = 5
@@ -54,8 +48,6 @@ class Options:
 
 
 def parse_options(raw: Mapping[str, Any]) -> Options:
-    """Validates ``transcribe.options``, ignoring keys it doesn't know. Raises ``InvalidRequest``."""
-
     def get(name: str, valid: Callable[[Any], bool], expected: str) -> Any:
         value = raw.get(name)
         if value is None:
@@ -89,11 +81,8 @@ _GPU_MARKERS = ("cuda", "cublas", "cudnn", "cufft", "curand", "cusparse", "nccl"
 
 
 def gpu_error(err: BaseException) -> str | None:
-    """``"oom"`` for a GPU out-of-memory error, ``"gpu"`` for any other CUDA error, else ``None``.
-
-    CTranslate2 raises both as ``RuntimeError``, with messages such as ``CUDA failed with error out
-    of memory`` or ``cuBLAS failed with status CUBLAS_STATUS_ALLOC_FAILED``.
-    """
+    """CTranslate2 raises GPU errors as ``RuntimeError``, with messages such as ``CUDA failed with
+    error out of memory`` or ``cuBLAS failed with status CUBLAS_STATUS_ALLOC_FAILED``."""
     if not isinstance(err, RuntimeError):
         return None
     text = str(err).lower()
@@ -106,25 +95,14 @@ def gpu_error(err: BaseException) -> str | None:
 
 @dataclass(frozen=True)
 class Backend:
-    """What the model uses from faster-whisper, huggingface_hub and numpy."""
-
     whisper_model: Callable[..., Any]
-    """``faster_whisper.WhisperModel``."""
     batched_pipeline: Callable[[Any], Any]
-    """``faster_whisper.BatchedInferencePipeline``."""
     snapshot: Callable[..., str]
-    """``hub.snapshot``: a model's snapshot directory, from the cache or downloaded."""
     aliases: Mapping[str, str]
-    """Model names faster-whisper resolves to Hub repositories."""
     languages: Collection[str]
-    """Language codes Whisper knows."""
     audio: Callable[[array], Any]
-    """Turns f32 samples into what ``transcribe`` takes."""
     warm_up: Callable[[Any], None]
-    """Runs a loaded model once, so the first dictation doesn't pay for CUDA's one-off setup."""
     stream: Callable[[Any, dict[str, Any]], Any] | None = None
-    """``stream.Stream``: a live recording decoded ahead, given the model and the arguments of
-    the pipeline's ``transcribe``. ``None``: streams are transcribed whole at ``close``."""
 
     @classmethod
     def faster_whisper(cls) -> Backend:
@@ -148,10 +126,8 @@ class Backend:
 
 
 def _warm_up(model: Any) -> None:
-    """One second of silence through the encoder and decoder, without VAD (which would skip both).
-
-    On the RTX 3060 Ti this moves about 300 ms from turbo's first request into its load.
-    """
+    """Without VAD, which would skip the encoder and decoder. Moves about 300 ms of CUDA's one-off
+    setup from turbo's first request into its load."""
     import numpy
 
     silence = numpy.zeros(SAMPLE_RATE, dtype=numpy.float32)
@@ -170,7 +146,6 @@ class _Stream:
     options: Options
     rendered: bias.RenderedBias
     live: Any
-    """The backend's stream, or ``None`` to transcribe ``buffer`` at ``close``."""
     buffer: array
 
 
@@ -181,7 +156,6 @@ class FasterWhisperModel:
         self._streams: dict[int, _Stream] = {}
 
     def load(self, request: LoadRequest, progress: ProgressFn) -> str:
-        """Loads from the local cache, or downloads once if the model is missing or fails to load."""
         self._release()
         backend = self._get_backend()
         try:
@@ -260,12 +234,12 @@ class FasterWhisperModel:
         self._streams.pop(stream_id, None)
 
     def background(self) -> bool:
-        """Decodes ahead for one stream with new audio, the longest-waiting first."""
         for stream_id, stream in self._streams.items():
             if stream.live is not None and stream.live.has_work():
                 break
         else:
             return False
+        # To the back of the dict, so the longest-waiting stream goes first next time.
         del self._streams[stream_id]
         self._streams[stream_id] = stream
         try:
@@ -285,7 +259,6 @@ class FasterWhisperModel:
     def _prepare(
         self, request: TranscribeRequest
     ) -> tuple[Backend, Any, Options, bias.RenderedBias, dict[str, Any]]:
-        """Checks a request and turns it into the pipeline's ``transcribe`` arguments."""
         backend, model = self._backend, self._model
         if backend is None or model is None:
             raise RuntimeError("transcribe before a successful load")
@@ -311,7 +284,6 @@ class FasterWhisperModel:
         return backend, model, options, rendered, args
 
     def _on_gpu(self, work: Callable[[], Any]) -> Any:
-        """Runs ``work``, turning GPU errors into ``OutOfMemory`` or ``Fatal``."""
         try:
             return work()
         except RuntimeError as err:
@@ -324,14 +296,9 @@ class FasterWhisperModel:
             raise
 
     def _recover(self, backend: Backend, model: Any, oom: RuntimeError) -> None:
-        """Makes sure the model can run again after the GPU ran out of memory, so that the server's
-        retry (with ``batch_size = 1``) doesn't fail for this run's sake.
-
-        After CTranslate2 runs out of memory, its next call fails with ``cudaErrorInvalidDevice``
-        and the one after works. The warm-up's second of silence is
-        that next call: it runs until it works, at most ``RECOVERY_RUNS`` times. Raises ``Fatal``
-        when none works, so the engine exits as for any other CUDA error.
-        """
+        """After CTranslate2 runs out of memory, its next call fails with ``cudaErrorInvalidDevice``
+        and the one after works. Throwaway warm-ups take those calls, so the server's retry (with
+        ``batch_size = 1``) doesn't fail for this run's sake."""
         failures = []
         for _ in range(RECOVERY_RUNS):
             try:
@@ -351,11 +318,10 @@ class FasterWhisperModel:
         return self._backend
 
     def _open(self, backend: Backend, snapshot: str, request: LoadRequest) -> str:
-        """Loads a snapshot directory, warms the model up, and returns the snapshot's revision (the
-        commit it's named after)."""
         model = backend.whisper_model(snapshot, device=request.device, compute_type=request.compute_type)
         backend.warm_up(model)
         self._model = model
+        # A snapshot directory is named after its commit.
         return os.path.basename(os.path.normpath(snapshot))
 
     def _release(self) -> None:

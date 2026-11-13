@@ -1,5 +1,3 @@
-//! The exact-spelling matcher and the common-word lists.
-
 use psst_config::{ConfigFile, DictionaryFile};
 use psst_dict::{Dictionary, Outcome, common_words, is_common_word};
 
@@ -7,7 +5,6 @@ fn dictionary(toml: &str) -> Dictionary {
     Dictionary::from_file(&DictionaryFile::from_toml_str(toml).unwrap()).unwrap()
 }
 
-/// Each match as (matched text, term, outcome).
 fn matches<'t>(dict: &Dictionary, text: &'t str, lang: &str) -> Vec<(&'t str, String, Outcome)> {
     dict.exact_matches(text, lang, |_| true)
         .into_iter()

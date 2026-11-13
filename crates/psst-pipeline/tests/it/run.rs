@@ -1,5 +1,3 @@
-//! `raw_text`, assembly, edits and options.
-
 use crate::support;
 
 use psst_config::ProfilesFile;
@@ -68,8 +66,6 @@ fn no_segments_or_only_blank_ones_give_empty_text() {
 
 #[test]
 fn the_text_is_never_rebuilt_from_word_items() {
-    // Word items split at punctuation ("3" + ".14"), or disagree with the segment text: either
-    // way the segment text is what comes out.
     let word = |text: &str, prob| Word { text: text.into(), start_ms: 0, end_ms: 0, prob };
     for words in [
         vec![word(" Pi", 0.9), word(" is", 0.9), word(" 3", 0.9), word(".14.", 0.2)],

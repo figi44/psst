@@ -1,6 +1,3 @@
-//! Capture from the real default microphone through cpal (PipeWire when it's running). Needs a
-//! microphone, so it only runs when asked: `cargo nextest run -p psst --run-ignored only`.
-
 use std::{
     sync::{Arc, mpsc},
     time::{Duration, Instant},

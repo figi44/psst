@@ -1,8 +1,3 @@
-"""Tables (Markdown) from the records scripts/bench/engine.py wrote.
-
-  python report.py <results dir>
-"""
-
 from __future__ import annotations
 
 import json
@@ -45,7 +40,7 @@ def table(header: list[str], rows: list[list]) -> str:
 
 
 def bias_terms_by(records) -> dict:
-    """(lang, path) -> the terms in the full prompt, for leak checks of every bias setting."""
+    """The full prompt's terms, for the leak checks of every bias setting."""
     return {(r["lang"], r["path"]): r["terms"] for r in records
             if r["kind"] == "bias" and r["terms_as"] == "prompt"}
 

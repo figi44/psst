@@ -1,8 +1,3 @@
-//! The profiles page (plan 6.8): every profile as a list, and a side panel for one (`?profile=`)
-//! or a new one (`?new`): language, prompt style and clean-up rules, with the rules' order and
-//! profiles.toml's version under Advanced; reset for the database's versions, and the export.
-//! Every change goes through the same function as `/api/profiles`.
-
 use std::{
     collections::{BTreeSet, HashMap},
     sync::Arc,
@@ -29,13 +24,10 @@ type AppRef = Arc<AppState>;
 
 #[derive(Debug, Default, Deserialize)]
 pub struct PageQuery {
-    /// The profile whose panel is open.
     profile: Option<String>,
-    /// Any value opens the panel for a new profile.
     new: Option<String>,
 }
 
-/// What each clean-up rule is called on the page, and what it does.
 fn describe(rule: &str) -> (&'static str, &'static str) {
     match rule {
         "fillers" => ("Remove fillers", "Removes filler words like um and uh."),
@@ -50,16 +42,13 @@ fn describe(rule: &str) -> (&'static str, &'static str) {
     }
 }
 
-/// A profile's form, as entered.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProfileForm {
-    /// Only in the form that adds a profile.
     name: String,
     language: String,
     prompt_style: String,
-    /// Every rule id, in the order they run: the profile's rules first, then the others.
+    /// The order the rules run in, switched-off ones included.
     order: Vec<String>,
-    /// The rules switched on.
     on: BTreeSet<String>,
 }
 
@@ -82,8 +71,6 @@ impl ProfileForm {
         }
     }
 
-    /// The fields as posted: `name`, `language`, `prompt_style`, `order` (rule ids separated by
-    /// commas or spaces) and a `rule_<id>` checkbox for each rule switched on.
     fn from_fields(fields: &HashMap<String, String>) -> ProfileForm {
         let get = |key: &str| fields.get(key).cloned().unwrap_or_default();
         let mut order: Vec<String> = get("order")
@@ -105,7 +92,7 @@ impl ProfileForm {
         ProfileForm { name: get("name"), language: get("language"), prompt_style: get("prompt_style"), order, on }
     }
 
-    /// The profile as entered: the style exactly as written, since it's the start of the prompt.
+    /// The style isn't trimmed: it's the start of the prompt, exactly as written.
     fn profile(&self) -> Profile {
         Profile {
             language: self.language.trim().to_owned(),
@@ -114,7 +101,6 @@ impl ProfileForm {
         }
     }
 
-    /// What the template needs: the fields, each rule with its name and switch, and the size.
     fn view(&self) -> Value {
         let rules: Vec<Value> = self
             .order
@@ -141,9 +127,8 @@ impl ProfileForm {
 struct Outcome {
     status: Option<StatusCode>,
     error: Option<String>,
-    /// A profile's name, or `new`; none for the top of the page.
+    /// A profile's name or `new`; `None` puts the error at the top of the page.
     error_for: Option<String>,
-    /// The values entered in the form the error is about.
     form: Option<ProfileForm>,
 }
 
@@ -254,7 +239,6 @@ fn bad_form(state: &AppState, viewer: &Viewer, err: FormRejection) -> Response {
     )
 }
 
-/// `GET /profiles?profile=&new=`.
 pub async fn show(
     viewer: Viewer,
     State(state): State<AppRef>,
@@ -264,7 +248,6 @@ pub async fn show(
     page(&state, &viewer, &query, Outcome::default())
 }
 
-/// `POST /profiles/{name}`: saves a profile over profiles.toml's.
 pub async fn save(
     viewer: Viewer,
     State(state): State<AppRef>,
@@ -281,7 +264,6 @@ pub async fn save(
     }
 }
 
-/// `POST /profiles`: adds a profile under a name that isn't in use.
 pub async fn add(
     viewer: Viewer,
     State(state): State<AppRef>,
@@ -309,7 +291,6 @@ pub async fn add(
     }
 }
 
-/// `POST /profiles/{name}/reset`: back to profiles.toml's version, or gone if it has none.
 pub async fn reset(viewer: Viewer, State(state): State<AppRef>, Path(name): Path<String>) -> Response {
     match profiles::change(&state.live, &state.db, &name, None) {
         Ok(_) => back(),
@@ -317,7 +298,6 @@ pub async fn reset(viewer: Viewer, State(state): State<AppRef>, Path(name): Path
     }
 }
 
-/// `GET /profiles.toml`: the export, as a download.
 pub async fn export(_: Viewer, State(state): State<AppRef>) -> Response {
     download("profiles.toml", state.live.profile_layers().export())
 }

@@ -1,5 +1,3 @@
-//! Audio as Opus on `/v1/client`: the server decodes each packet into the PCM it transcribes.
-
 use psst_client::{AudioCodec, AudioFrame, OpusSettings, SessionEvent, StartOpts, upload_file};
 use psst_engine_proto::fake::{HelloScript, Script};
 use psst_proto::{

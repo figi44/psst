@@ -1,13 +1,4 @@
-//! The four config files and their single implementation.
-//!
-//! | File | Type | Read by |
-//! |---|---|---|
-//! | `server.toml` | [`ServerConfig`] | server |
-//! | `profiles.toml` | [`ProfilesFile`], resolved into [`Profile`]s | server, eval |
-//! | `dictionary.toml` | [`DictionaryFile`] | server, eval |
-//! | `client.toml` | [`ClientConfig`] | client |
-//!
-//! Every key has a default, so a missing file or key means its default. Unknown keys are errors.
+//! A missing file or key means its default. Unknown keys are errors.
 
 mod client;
 mod dictionary;
@@ -41,7 +32,6 @@ pub enum ConfigError {
     Invalid { file: String, message: String },
 }
 
-/// Something allowed but probably unintended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Warning {
     pub file: String,
@@ -54,33 +44,26 @@ impl fmt::Display for Warning {
     }
 }
 
-/// One of the four files.
 pub trait ConfigFile: Default + Serialize + DeserializeOwned {
-    /// The file's name, for example `server.toml`.
     const FILE_NAME: &'static str;
 
-    /// Rules the types can't express. Returns the reason the file is invalid.
     fn check(&self) -> Result<(), String> {
         Ok(())
     }
 
-    /// Things that are allowed but probably unintended.
     fn warnings(&self) -> Vec<String> {
         Vec::new()
     }
 
-    /// Parses and checks a file's contents.
     fn from_toml_str(text: &str) -> Result<Self, ConfigError> {
         parse(text, Self::FILE_NAME)
     }
 
-    /// Reads, parses and checks a file.
     fn load(path: &Path) -> Result<Self, ConfigError> {
         let text = fs::read_to_string(path).map_err(|source| ConfigError::Io { path: path.into(), source })?;
         parse(&text, &path.display().to_string())
     }
 
-    /// Like [`ConfigFile::load`], but a missing file gives the defaults.
     fn load_or_default(path: &Path) -> Result<Self, ConfigError> {
         match fs::metadata(path) {
             Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
@@ -88,7 +71,6 @@ pub trait ConfigFile: Default + Serialize + DeserializeOwned {
         }
     }
 
-    /// The file as TOML.
     fn to_toml_string(&self) -> String {
         toml::to_string(self).expect("config types always serialise")
     }
@@ -101,7 +83,6 @@ fn parse<T: ConfigFile>(text: &str, file: &str) -> Result<T, ConfigError> {
     Ok(value)
 }
 
-/// The three files the server reads from its config directory.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ServerFiles {
     pub server: ServerConfig,
@@ -110,8 +91,6 @@ pub struct ServerFiles {
 }
 
 impl ServerFiles {
-    /// Loads `server.toml`, `profiles.toml` and `dictionary.toml` from `dir`. A missing file
-    /// gives its defaults.
     pub fn load(dir: &Path) -> Result<Self, ConfigError> {
         Ok(Self {
             server: ServerConfig::load_or_default(&dir.join(ServerConfig::FILE_NAME))?,
@@ -120,7 +99,6 @@ impl ServerFiles {
         })
     }
 
-    /// Writes the three files into `dir`.
     pub fn write(&self, dir: &Path) -> io::Result<()> {
         fs::write(dir.join(ServerConfig::FILE_NAME), self.server.to_toml_string())?;
         fs::write(dir.join(ProfilesFile::FILE_NAME), self.profiles.to_toml_string())?;

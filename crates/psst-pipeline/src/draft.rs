@@ -1,35 +1,25 @@
-//! The text as the stages see it: `raw_text`, its tokens with their
-//! word annotations, and the edits made so far.
-
 use std::ops::Range;
 
 use psst_proto::{Edit, EngineResult, Final, Word};
 
-/// A run of non-whitespace in `raw_text`, with the spacing before it.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Token {
-    /// The current text; empty once removed.
+    /// Empty once removed: `finish` doesn't skip removed tokens.
     pub text: String,
-    /// The current spacing before the token.
     pub space: String,
-    /// The raw span of the token. It grows when a dictionary match merges tokens.
+    /// Grows when a dictionary match merges tokens.
     pub raw: Range<usize>,
-    /// The raw span of the spacing before it.
     pub raw_space: Range<usize>,
-    /// The lowest probability of the engine words it overlaps.
     pub prob: Option<f32>,
-    /// The outermost times of the engine words it overlaps.
     pub start_ms: Option<u32>,
     pub end_ms: Option<u32>,
     pub removed: bool,
-    /// Accepted by the dictionary; rules leave it alone.
     pub protected: bool,
 }
 
-/// A segment with text, and its tokens.
 #[derive(Debug, Clone)]
 pub(crate) struct SegmentTokens {
-    /// Index into `EngineResult::segments`.
+    /// Into `EngineResult::segments`, which also has the segments without text.
     pub index: usize,
     pub tokens: Range<usize>,
 }
@@ -39,14 +29,11 @@ pub(crate) struct Draft {
     pub raw: String,
     pub segments: Vec<SegmentTokens>,
     pub tokens: Vec<Token>,
-    /// Text after the last token (the trailing space).
     pub tail: String,
     pub edits: Vec<Edit>,
 }
 
 impl Draft {
-    /// Steps 1 and 2: `raw_text` is the segment texts, each trimmed, joined with single spaces;
-    /// tokens split it on whitespace and carry the annotations of the words they overlap.
     pub fn new(result: &EngineResult) -> Self {
         let mut raw = String::new();
         let mut segments = Vec::new();
@@ -86,19 +73,16 @@ impl Draft {
         Self { raw, segments, tokens, tail: String::new(), edits: Vec::new() }
     }
 
-    /// Indices of the tokens whose raw span overlaps `range`.
     pub fn overlapping(&self, range: &Range<usize>) -> Range<usize> {
         let start = self.tokens.partition_point(|t| t.raw.end <= range.start);
         let end = start + self.tokens[start..].partition_point(|t| t.raw.start < range.end);
         start..end
     }
 
-    /// Whether any token is left.
     pub fn has_text(&self) -> bool {
         self.tokens.iter().any(|t| !t.removed)
     }
 
-    /// Step 6: the tokens with their spacing.
     pub fn finish(self, language: String) -> Final {
         let mut text = String::with_capacity(self.raw.len() + self.tail.len());
         for token in &self.tokens {
@@ -110,7 +94,6 @@ impl Draft {
     }
 }
 
-/// Byte ranges of the runs of non-whitespace in `text`.
 fn non_whitespace(text: &str) -> impl Iterator<Item = Range<usize>> + '_ {
     let mut start = None;
     text.char_indices().chain(std::iter::once((text.len(), ' '))).filter_map(move |(i, c)| {
@@ -128,10 +111,9 @@ fn non_whitespace(text: &str) -> impl Iterator<Item = Range<usize>> + '_ {
     })
 }
 
-/// Maps a segment's engine words onto its tokens by walking the concatenated word texts against
-/// the tokens, ignoring whitespace. Each token gets the lowest probability and the outermost times
-/// of the words it overlaps, so "3" + ".14" both annotate the token "3.14". If the words don't
-/// spell out exactly the segment's text, its tokens get no annotations.
+/// Whisper's words don't follow whitespace ("3" + ".14" is one token), so the word texts are
+/// walked against the tokens. Words that don't spell out exactly the segment's text annotate
+/// nothing; the text is never rebuilt from words.
 fn annotate(tokens: &mut [Token], words: &[Word]) {
     let mut owner: Vec<usize> = Vec::new();
     let mut chars: Vec<char> = Vec::new();
@@ -192,8 +174,7 @@ mod tests {
         (text.into(), Some(prob), Some(start), Some(end))
     }
 
-    // These annotations are what the confidence gate reads; the final text doesn't depend on
-    // them, so they're checked at the token seam.
+    // The final text doesn't depend on these annotations, so they're checked at the token seam.
     #[test]
     fn a_number_split_into_two_words_annotates_one_token_with_the_weaker_word() {
         let draft = draft(

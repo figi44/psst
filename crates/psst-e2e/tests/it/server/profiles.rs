@@ -1,8 +1,3 @@
-//! Profiles stored in the server's database over `profiles.toml`: whole
-//! profiles by name through `/api/profiles`, checked like `check-config`, reaching new sessions
-//! without an engine restart, and exported with `psst-server profiles export` to fold back into
-//! the file.
-
 use std::{fs, process::Command, time::Duration};
 
 use nix::{
@@ -47,7 +42,6 @@ async fn view(api: &ApiClient) -> ProfilesView {
     api.call(Method::Get, routes::PROFILES, None::<&()>).await.expect("GET /api/profiles")
 }
 
-/// Every profile with its layer and language.
 async fn layers(api: &ApiClient) -> Vec<(String, ProfileLayer, String)> {
     view(api).await.profiles.into_iter().map(|p| (p.name, p.layer, p.profile.language)).collect()
 }
@@ -68,8 +62,6 @@ fn refused<T: std::fmt::Debug>(result: Result<T, ApiCallError>) -> (u16, ApiErro
     }
 }
 
-/// Dictates "fake transcript" with `profile`; the final text and the engine request's language
-/// and prompt style.
 async fn dictate(server: &TestServer, profile: &str) -> (String, String, String) {
     let mut client = Client::connect(server).await;
     let session_id = SessionId::new_v4();
@@ -124,7 +116,6 @@ async fn stored_profiles_reach_new_sessions_and_fold_back_into_the_file() {
     assert_eq!(dictate(&server, "czech").await, ("fake transcript".into(), "cs".into(), "Nový styl.".into()));
     assert_eq!(dictate(&server, "notes").await.2, "Notes, in short sentences.");
 
-    // The export is the file as sessions see it, which the running server reloads.
     let out = Command::new(SERVER)
         .args(["profiles", "export", "--socket"])
         .arg(server.socket())

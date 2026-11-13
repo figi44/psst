@@ -1,11 +1,3 @@
-//! Capture through cpal, with its native PipeWire backend when PipeWire is running.
-//!
-//! It asks for 16 kHz mono `f32`; if the device can't provide that, it captures the device's
-//! default format and downmixes in the callback, and the recorder resamples.
-//!
-//! Gaps are found from the callbacks' capture timestamps ([`GapDetector`]): the one gap seen in
-//! testing came without an xrun.
-
 use std::time::Duration;
 
 use cpal::{
@@ -18,8 +10,6 @@ use tracing::{debug, info, warn};
 use super::{AudioSource, Feed, FeedShared, OpenCapture, gaps::GapDetector};
 
 pub struct CpalSource {
-    /// A capture device's name or id (a PipeWire node name such as
-    /// `alsa_input.usb-…`); the system default when `None`.
     pub device: Option<String>,
 }
 
@@ -69,7 +59,6 @@ fn play(stream: cpal::Stream, sample_rate: u32) -> Result<OpenCapture, String> {
     Ok(OpenCapture { sample_rate, drain_on_stop: true, guard: Box::new(stream) })
 }
 
-/// Samples cpal can hand us, converted to `f32` in −1…1.
 trait ToF32: SizedSample + Send + 'static {
     fn to_f32(self) -> f32;
 }
@@ -98,14 +87,13 @@ impl ToF32 for u16 {
     }
 }
 
-/// Builds the stream, moving `feed` into its callbacks only on success.
+/// Takes `feed` only on success, so a failed build can be retried with another config.
 fn build<T: ToF32>(
     device: &cpal::Device,
     config: StreamConfig,
     feed: &mut Option<Feed>,
 ) -> Result<cpal::Stream, cpal::Error> {
     let channels = config.channels.max(1) as usize;
-    // The callbacks take the feed only once the stream exists; until then it waits here.
     let slot = std::sync::Arc::new(std::sync::Mutex::new(None::<Feed>));
     let error_shared = feed.as_ref().expect("a feed to build with").shared().clone();
     let data_slot = slot.clone();
@@ -133,12 +121,10 @@ fn build<T: ToF32>(
     Ok(stream)
 }
 
-/// What a stream error means for the recording: only a lost device stops it.
 fn on_stream_error(shared: &FeedShared, err: &cpal::Error) {
     match err.kind() {
         ErrorKind::Xrun => shared.glitch(),
-        // RTKit said no, or its burst limit was hit: capture goes on
-        // at normal priority.
+        // RTKit refused, or its burst limit was hit.
         ErrorKind::RealtimeDenied => info!("capturing at normal priority: {err}"),
         ErrorKind::DeviceChanged => debug!("capture: {err}"),
         ErrorKind::DeviceNotAvailable

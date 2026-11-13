@@ -1,6 +1,3 @@
-//! HTTP routes: `/health`, the client WebSocket, pairing, the core `/api`, the
-//! dictionary and the profiles.
-
 use std::{collections::BTreeMap, sync::Arc};
 
 use axum::{
@@ -40,7 +37,6 @@ use crate::{
 
 type AppRef = Arc<AppState>;
 
-/// History rows returned when `limit` is absent, and the most ever returned.
 const HISTORY_DEFAULT: u32 = 20;
 const HISTORY_MAX: u32 = 1000;
 
@@ -75,7 +71,6 @@ pub fn router(state: AppRef) -> Router {
         .with_state(state)
 }
 
-/// An [`ApiError`] under `/api` and `/v1`, a page elsewhere.
 async fn not_found(uri: axum::http::Uri) -> Response {
     if uri.path().starts_with("/api/") || uri.path().starts_with("/v1/") {
         ApiErr::new(ApiErrorCode::NotFound, "no such route").into_response()
@@ -84,7 +79,6 @@ async fn not_found(uri: axum::http::Uri) -> Response {
     }
 }
 
-/// An `/api` error: a status and an [`ApiError`] body.
 #[derive(Debug)]
 pub struct ApiErr(ApiError);
 
@@ -126,7 +120,6 @@ impl IntoResponse for ApiErr {
     }
 }
 
-/// A JSON body whose rejections are [`ApiErr`]s.
 struct Body<T>(T);
 
 impl<T: DeserializeOwned, S: Send + Sync> FromRequest<S> for Body<T> {
@@ -140,7 +133,6 @@ impl<T: DeserializeOwned, S: Send + Sync> FromRequest<S> for Body<T> {
     }
 }
 
-/// A path parameter whose rejections are [`ApiErr`]s.
 struct Id<T>(T);
 
 impl<T: DeserializeOwned + Send, S: Send + Sync> FromRequestParts<S> for Id<T> {
@@ -158,8 +150,6 @@ pub(crate) fn peer(parts: &Parts) -> Peer {
     parts.extensions.get::<ConnectInfo<Peer>>().map(|info| info.0.clone()).unwrap_or(Peer::Unix { uid: None })
 }
 
-/// Who is calling: a local user by peer credentials, or a paired device by its bearer token.
-/// Browser sessions don't count here; see [`authenticate`].
 fn identify(state: &AppState, peer: &Peer, headers: &HeaderMap) -> Result<Identity, Refusal> {
     match peer {
         Peer::Unix { uid } => state.local.identify(*uid),
@@ -181,12 +171,9 @@ fn identify(state: &AppState, peer: &Peer, headers: &HeaderMap) -> Result<Identi
     }
 }
 
-/// How an `/api` or web UI caller was authenticated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Caller {
-    /// A local user over the socket, or a paired device by its token.
     Identity(Identity),
-    /// A browser by its session cookie, on behalf of the device that asked for its login link.
     Browser {
         /// The SHA-256 of the session cookie.
         session: String,
@@ -195,9 +182,6 @@ pub(crate) enum Caller {
     },
 }
 
-/// Authenticates an `/api` or web UI request: over the socket by peer credentials;
-/// over TCP by a device token, or else by a browser session cookie. A cookie-authenticated request
-/// that changes something must come from the web UI's own origin.
 pub(crate) fn authenticate(state: &AppState, parts: &Parts) -> Result<Caller, Refusal> {
     let peer = peer(parts);
     if matches!(peer, Peer::Tcp(_))
@@ -214,7 +198,6 @@ pub(crate) fn authenticate(state: &AppState, parts: &Parts) -> Result<Caller, Re
     identify(state, &peer, &parts.headers).map(Caller::Identity)
 }
 
-/// The value of the session cookie, if the request has one.
 pub(crate) fn session_cookie(headers: &HeaderMap) -> Option<&str> {
     headers
         .get_all(COOKIE)
@@ -225,8 +208,6 @@ pub(crate) fn session_cookie(headers: &HeaderMap) -> Option<&str> {
         .filter(|value| !value.is_empty())
 }
 
-/// The device of a live browser session. A session ends with its 7 days, and when its device is
-/// revoked or its local user is no longer allowed.
 fn browser_session(state: &AppState, session: &str) -> Result<DeviceId, Refusal> {
     let device = match state.db.web_session(session) {
         Ok(Some(device)) => device,
@@ -239,7 +220,6 @@ fn browser_session(state: &AppState, session: &str) -> Result<DeviceId, Refusal>
     if device_allowed(state, &device) { Ok(device) } else { Err(Refusal::Unauthorized) }
 }
 
-/// Whether `device` (`local:<user>` or a paired device's id) is still let in.
 pub(crate) fn device_allowed(state: &AppState, device: &str) -> bool {
     match device.strip_prefix("local:") {
         Some(user) => state.local.allows_user(user),
@@ -250,9 +230,6 @@ pub(crate) fn device_allowed(state: &AppState, device: &str) -> bool {
     }
 }
 
-/// Whether a browser request comes from the web UI's own origin: its `Origin` is `http://` or
-/// `https://` and its `Host` (or `web_url`), or without an `Origin`, `Sec-Fetch-Site` says
-/// `same-origin`.
 pub(crate) fn same_origin(state: &AppState, headers: &HeaderMap) -> bool {
     let header = |name| headers.get(name).and_then(|value: &HeaderValue| value.to_str().ok());
     let Some(origin) = header(ORIGIN) else {
@@ -265,8 +242,7 @@ pub(crate) fn same_origin(state: &AppState, headers: &HeaderMap) -> bool {
     same_host || web_url.is_some_and(|url| url.eq_ignore_ascii_case(origin))
 }
 
-/// An authenticated `/api` caller. Local users are admins; so are paired devices, and
-/// browsers they logged in.
+/// Every authenticated caller is an admin: local users, paired devices and their browsers.
 struct Admin(#[allow(dead_code)] Caller);
 
 impl FromRequestParts<AppRef> for Admin {
@@ -326,8 +302,7 @@ async fn pair_redeem(
     Ok(Json(PairRedeemed { device_id, token: Token::new(token) }))
 }
 
-/// `POST /api/login/link`: over the socket or with a device token, never from a browser session,
-/// so a session can't extend itself.
+/// Never from a browser session, so a session can't extend itself.
 async fn login_link(
     State(state): State<AppRef>,
     ConnectInfo(peer): ConnectInfo<Peer>,
@@ -348,8 +323,6 @@ async fn login_link(
     Ok(Json(LoginLink { url: format!("{base}/login?token={token}"), expires_at }))
 }
 
-/// Where a login link starts: `web_url`; else, over TCP, the address the client reached
-/// the server by; else (over the socket) a TCP listener this machine reaches on loopback.
 fn link_base(state: &AppState, peer: &Peer, headers: &HeaderMap) -> Result<String, ApiErr> {
     if let Some(url) = state.server.web_url.as_deref().and_then(psst_config::web_origin) {
         return Ok(url.to_owned());
@@ -487,7 +460,6 @@ async fn export_dictionary(_: Admin, State(state): State<AppRef>) -> Json<Dictio
     Json(DictionaryExport { toml: state.live.layered().export() })
 }
 
-/// Runs the pipeline on the text as if the engine had transcribed it, without probabilities.
 async fn test_dictionary(
     _: Admin,
     State(state): State<AppRef>,
@@ -539,8 +511,6 @@ async fn reset_profile(
     profiles::change(&state.live, &state.db, &name, None).map(Json)
 }
 
-/// p50/p95 per timing field. `network_estimate_ms` is the client's stop→final minus
-/// the server's.
 pub fn compute_stats(rows: &[(ServerTimings, Option<ClientTimings>)]) -> Stats {
     let mut fields: BTreeMap<String, Vec<u32>> = BTreeMap::new();
     let mut add = |prefix: &str, value: Value| {
@@ -577,7 +547,7 @@ pub fn compute_stats(rows: &[(ServerTimings, Option<ClientTimings>)]) -> Stats {
     Stats { sessions: rows.len() as u64, timings }
 }
 
-/// Nearest-rank percentile of sorted, non-empty values.
+/// Nearest-rank; `sorted` must be non-empty.
 fn percentile(sorted: &[u32], pct: usize) -> u32 {
     let rank = (pct * sorted.len()).div_ceil(100).max(1);
     sorted[rank - 1]

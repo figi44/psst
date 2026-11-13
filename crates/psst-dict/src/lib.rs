@@ -1,21 +1,3 @@
-//! The dictionary: loading, checks, bias terms, the common-word lists, never rules, and
-//! exact and fuzzy matching. Pure; no I/O.
-//!
-//! - [`Dictionary::from_file`] builds the dictionary from `dictionary.toml` and rejects the
-//!   conflicts between terms; [`Dictionary::warnings`] lists what is allowed but probably unintended.
-//!   `psst-server check-config` reports both.
-//! - [`Dictionary::resolve`] puts the server's database [`Layer`] (added, replaced and hidden
-//!   terms, and never rules) on top of the file, deterministically ([`layers`]).
-//! - [`NeverRule`]s veto a term replacing a span ([`Dictionary::vetoes`]), compared by
-//!   [`fuzzy_key`], both in exact and in fuzzy matching. [`Dictionary::with_never_rules`] sets
-//!   them.
-//! - [`Dictionary::bias_terms`] orders a language's terms for the engine (7.2 step 1).
-//! - [`Dictionary::exact_matches`] finds exact spellings in a text (7.2 step 2).
-//! - [`Dictionary::fuzzy_matches`] finds spans that are close to a term, in English (7.2 steps
-//!   3–7).
-//! - [`is_common_word`] and [`common_words`] answer from the 5,000 most frequent word forms of
-//!   English and Czech.
-
 mod common;
 mod exact;
 mod fold;
@@ -41,8 +23,6 @@ pub use never::NeverRule;
 pub enum Error {
     #[error("terms `{first}` and `{second}` have the same identity `{id}`")]
     DuplicateTerm { id: TermId, first: String, second: String },
-    /// One spelling (`text` or `sounds_like`, ignoring case) claimed by two terms that share a
-    /// language.
     #[error("terms `{first}` and `{second}` both claim the spelling `{spelling}` {}", InLanguages(.languages))]
     SpellingConflict { spelling: String, first: String, second: String, languages: TermLanguages },
     #[error("the dictionary is too large to match: {0}")]
@@ -51,7 +31,6 @@ pub enum Error {
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// "in every language" or "in `en` sessions".
 struct InLanguages<'a>(&'a TermLanguages);
 
 impl fmt::Display for InLanguages<'_> {
@@ -63,7 +42,6 @@ impl fmt::Display for InLanguages<'_> {
     }
 }
 
-/// A term ready for matching.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Term {
     pub id: TermId,
@@ -75,13 +53,12 @@ pub struct Term {
     pub notes: Option<String>,
 }
 
-/// The resolved dictionary a session snapshots at `start`.
 #[derive(Debug, Clone, Default)]
 pub struct Dictionary {
     terms: Vec<Term>,
     exact: exact::Matcher,
     fuzzy: fuzzy::Index,
-    /// Active never rules, sorted.
+    /// Sorted: `vetoes` binary-searches it.
     never: Vec<NeverRule>,
 }
 
@@ -93,24 +70,19 @@ impl PartialEq for Dictionary {
 
 impl Eq for Dictionary {}
 
-/// Pinned terms alone shouldn't take more than about this many of the engine's 223 prompt tokens.
+/// Out of the engine's 223 prompt tokens.
 const PINNED_TOKEN_BUDGET: usize = 150;
 
-/// A rough token count for terms in the engine's prompt (`a, b, c.`): UTF-8 bytes / 4, rounded up.
+/// For the terms as the prompt writes them: `a, b, c.`
 fn estimated_tokens(terms: &[&str]) -> usize {
     (terms.join(", ").len() + 1).div_ceil(4)
 }
 
 impl Dictionary {
-    /// Builds the dictionary from the file alone; [`Dictionary::resolve`] adds the database layer.
-    ///
-    /// Rejects two terms with one identity, and a spelling two terms both claim in a language
-    /// they share, including one term's `sounds_like` matching another term's `text`.
     pub fn from_file(file: &DictionaryFile) -> Result<Dictionary> {
         Self::from_specs(&file.terms)
     }
 
-    /// Builds the dictionary from terms in this order, with the checks of [`Dictionary::from_file`].
     fn from_specs<'a>(specs: impl IntoIterator<Item = &'a TermSpec>) -> Result<Dictionary> {
         let specs = specs.into_iter();
         let mut terms: Vec<Term> = Vec::with_capacity(specs.size_hint().0);
@@ -140,22 +112,13 @@ impl Dictionary {
         &self.terms
     }
 
-    /// Terms to bias the engine with for a session in `lang`: pinned terms,
-    /// then the rest, each group alphabetical. The engine drops terms from the end to fit.
+    /// Most important first: the engine drops terms from the end to fit.
     pub fn bias_terms(&self, lang: &str) -> Vec<String> {
         let mut terms: Vec<&Term> = self.terms.iter().filter(|t| t.languages.includes(lang)).collect();
         terms.sort_by(|a, b| b.pin.cmp(&a.pin).then_with(|| a.id.cmp(&b.id)).then_with(|| a.text.cmp(&b.text)));
         terms.into_iter().map(|t| t.text.clone()).collect()
     }
 
-    /// Exact spellings of `lang`'s terms in `text`, in text order and never
-    /// overlapping.
-    ///
-    /// Every term's `text` and `sounds_like` take part, compared ignoring case. A match starts and
-    /// ends at whitespace, the start or end of the text, or one of `. , ; : ! ? ( ) [ ] { } " '`
-    /// (and the typographic quotes `‘ ’ “ ” „` and `…`). Where matches overlap, the leftmost wins,
-    /// then the longest, so "c++" is the term `C++` and never `C`. Never rules and `allow` veto a
-    /// candidate before that choice, so a shorter or later match can take its place.
     pub fn exact_matches(
         &self,
         text: &str,
@@ -166,34 +129,6 @@ impl Dictionary {
             .find(&self.terms, text, lang, |range, term| !self.vetoes(&term.id, &text[range.clone()]) && allow(range))
     }
 
-    /// Spans of `tokens` close to one of the `fuzzy` terms, in text order and
-    /// never overlapping. Only English sessions ([`FUZZY_LANGUAGE`]) have any.
-    ///
-    /// - **Candidates** are 1–4 consecutive available tokens holding only letters, digits, spaces,
-    ///   hyphens and apostrophes, apart from leading and trailing punctuation, so "cube. Nettie"
-    ///   is never one. Their match key must have at least 4 characters, and differ in length from
-    ///   the term's by at most the larger of 2 characters and a quarter of the term key's length.
-    ///   A span of several tokens never starts or ends with one of the 100 most common English
-    ///   words, and one with a possessive (`'s`) before its last token only matches a term with
-    ///   as many.
-    /// - **Suffix forms:** a span is also scored with `'s`, `s'`, `es` or `s` taken off its last
-    ///   token. The best form wins, and the suffix stays in the text: "kubernetes's" becomes
-    ///   "Kubernetes's".
-    /// - **Score:** `levenshtein(span key, term key) / max length`, times 0.3 when their Double
-    ///   Metaphone codes match (primary or alternate) and the distance is at most a third of the
-    ///   longer key. Keys with digits never sound alike.
-    /// - **Confidence:** the lowest `prob` of the span's tokens picks the threshold the score must
-    ///   stay under: 0.08 from 0.85 up, 0.18 from 0.50 (or without a `prob`), 0.25 below 0.50. A
-    ///   single token that is one of the 5,000 most common English words, as written or by its
-    ///   key, is matched only below 0.50, and never to a term that only recases it (a term `Home`
-    ///   leaves "home" alone, as the exact spellings do).
-    /// - **Ambiguity:** when the two best terms for a span score within 0.02 of each other, the
-    ///   span is left alone.
-    /// - **Overlaps:** candidates are taken by score, then the longer span, then the earlier one,
-    ///   skipping any that overlap a match already taken or that a never rule vetoes.
-    ///
-    /// The match replaces [`FuzzyMatch::range`]: the span without its leading and trailing
-    /// punctuation and without a suffix that was put back.
     pub fn fuzzy_matches(&self, text: &str, tokens: &[FuzzyToken], lang: &str) -> Vec<FuzzyMatch<'_>> {
         if lang != FUZZY_LANGUAGE {
             return Vec::new();
@@ -201,9 +136,6 @@ impl Dictionary {
         self.fuzzy.find(&self.terms, text, tokens, |term, span| self.vetoes(&term.id, span))
     }
 
-    /// Things the file allows but probably doesn't intend: a spelling that's a common
-    /// word in a language the term applies to, and pinned terms that alone take more than about
-    /// 150 prompt tokens.
     pub fn warnings(&self) -> Vec<Warning> {
         let mut messages = Vec::new();
         for term in &self.terms {

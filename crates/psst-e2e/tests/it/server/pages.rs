@@ -1,6 +1,3 @@
-//! The web UI's pages at the HTTP level, as a logged-in browser uses them: every
-//! dictionary action through its forms, escaping, and what a page needs to be shown.
-
 use psst_client::api::{ApiClient, Method};
 use psst_config::{ConfigFile, DictionaryFile, ProfilesFile};
 use psst_engine_proto::fake::Script;
@@ -41,7 +38,6 @@ async fn view(server: &TestServer) -> DictionaryView {
     ApiClient::new(server.endpoint(), None).call(Method::Get, routes::DICTIONARY, None::<&()>).await.unwrap()
 }
 
-/// The layer of the term with this identity, if either layer knows it.
 async fn layer(server: &TestServer, id: &str) -> Option<TermLayer> {
     view(server).await.terms.into_iter().find(|t| t.id == id).map(|t| t.layer)
 }
@@ -76,7 +72,6 @@ async fn every_dictionary_action_works_through_the_pages() {
     assert!(listed("Hyprland") && !listed("Kubernetes"), "{}", found.body);
     assert!(found.body.contains("Add “HYPER”"), "a search that isn't a word offers to add it: {}", found.body);
 
-    // Add, and come back to the same search.
     let fields = [
         ("text", "t3code"),
         ("sounds_like", "t3 code, tee three code,"),
@@ -95,7 +90,6 @@ async fn every_dictionary_action_works_through_the_pages() {
     refused_with(&refused, "claim the spelling");
     assert!(refused.body.contains("value=\"Hypr\""), "the entered values are kept");
 
-    // Edit: the panel, a save, a refused rename that changes nothing, and a rename.
     let edit = browser.get("/dictionary?word=HYPRLAND").await;
     assert!(edit.body.contains("action=\"/dictionary/terms/hyprland\""), "{}", edit.body);
     let save = [("text", "Hyprland"), ("sounds_like", "hyper land, hyperland"), ("languages", "any")];
@@ -124,7 +118,6 @@ async fn every_dictionary_action_works_through_the_pages() {
     );
     see_other(&browser.post("/dictionary/terms/wayland/hide", &[]).await, "/dictionary");
 
-    // Hide, reset and remove.
     see_other(&browser.post("/dictionary/terms/go/hide", &[]).await, "/dictionary");
     assert_eq!(layer(&server, "go").await, Some(TermLayer::Hidden));
     refused_with(&browser.post("/dictionary/terms/go/hide", &[]).await, "already hidden");
@@ -135,7 +128,6 @@ async fn every_dictionary_action_works_through_the_pages() {
     see_other(&browser.post("/dictionary/terms/t3code/hide", &[("q", "t3")]).await, "/dictionary?q=t3");
     assert_eq!(layer(&server, "t3code").await, None);
 
-    // Never rules.
     see_other(
         &browser.post("/dictionary/never", &[("term", "Kubernetes"), ("span", "cube nettie")]).await,
         "/dictionary?word=kubernetes",
@@ -147,7 +139,6 @@ async fn every_dictionary_action_works_through_the_pages() {
     see_other(&browser.post(&format!("/dictionary/never/{}/remove", rule.id), &[]).await, "/dictionary");
     assert!(view(&server).await.never.is_empty());
 
-    // Export.
     browser.post("/dictionary/terms", &[("text", "psst"), ("fuzzy", "on")]).await;
     let export = browser.get("/dictionary.toml").await;
     assert_eq!(export.status, 200);
@@ -274,7 +265,6 @@ async fn profiles_are_edited_added_and_reset_through_the_pages() {
     see_other(&browser.post("/profiles/czech", &[("language", "cs"), ("prompt_style", &long)]).await, "/profiles");
     assert!(browser.get("/profiles").await.body.contains("profiles.czech.prompt_style is over about 100 tokens"));
 
-    // Add, with a name the page has to escape.
     let new = [("name", "<b>notes</b>"), ("language", "en"), ("prompt_style", "</textarea><script>x()</script>")];
     see_other(&browser.post("/profiles", &new).await, "/profiles");
     let added = profiles(&server).await.profiles.into_iter().find(|p| p.name == "<b>notes</b>").expect("added");
@@ -287,7 +277,6 @@ async fn profiles_are_edited_added_and_reset_through_the_pages() {
     assert!(panel.body.contains("action=\"/profiles/%3Cb%3Enotes%3C%2Fb%3E/reset\""), "{}", panel.body);
     refused_with(&browser.post("/profiles", &[("name", "default"), ("language", "en")]).await, "already");
 
-    // The export, then reset and remove.
     let export = browser.get("/profiles.toml").await;
     assert_eq!(export.header("content-disposition"), Some("attachment; filename=\"profiles.toml\""));
     let exported = ProfilesFile::from_toml_str(&export.body).unwrap_or_else(|err| panic!("{err}\n{}", export.body));

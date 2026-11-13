@@ -1,5 +1,4 @@
-//! The admin subcommands: thin clients of `/api` over the Unix socket. None of them
-//! touch the database.
+//! Every admin command goes through `/api` over the socket; none opens the database.
 
 use std::{path::Path, process::ExitCode, time::Duration};
 
@@ -13,7 +12,6 @@ use psst_proto::api::{
 };
 use serde::{Serialize, de::DeserializeOwned};
 
-/// What to ask the server.
 #[derive(Debug, Clone)]
 pub enum Action {
     ModelLoad,
@@ -28,7 +26,6 @@ pub enum Action {
     ProfilesExport,
 }
 
-/// Runs one admin command against the server at `socket`.
 pub fn run(socket: &Path, json: bool, action: Action) -> ExitCode {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("a tokio runtime");
     match runtime.block_on(execute(socket, json, action)) {
@@ -160,7 +157,6 @@ async fn execute(socket: &Path, json: bool, action: Action) -> Result<ExitCode> 
     }
 }
 
-/// The model's state in one line, as `model status` prints it and the web UI's header shows it.
 pub(crate) fn describe_model(status: &ModelStatus) -> String {
     let state = match status.state {
         ModelState::Missing => "missing".to_owned(),

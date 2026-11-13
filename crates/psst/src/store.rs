@@ -1,15 +1,3 @@
-//! Recordings, `last.json` and credentials on disk, under `$XDG_STATE_HOME/psst/`.
-//!
-//! - `recordings/<session_id>.wav`: 16 kHz mono s16, written as audio is captured. Its length
-//!   comes from the file size, so a header that was never finalised doesn't matter.
-//! - `recordings/<session_id>.json`: [`Meta`], always written atomically (a temporary file, then
-//!   a rename).
-//! - `last.json`: [`Last`], mode 0600, atomic.
-//!
-//! A recording is created JSON first, then WAV, and deleted WAV first, then JSON. Undelivered
-//! recordings are never deleted automatically: only delivery, an empty final, `cancel` and
-//! `psst discard` remove them.
-
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Write},
@@ -27,21 +15,15 @@ use psst_proto::SessionId;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tracing::warn;
 
-/// `start` refuses to record while the recordings take more than this.
 pub const STORAGE_BUDGET: u64 = 2_000_000_000;
-/// More retained recordings than this is a warning.
 pub const RETAINED_WARNING: usize = 20;
-/// A retained recording older than this is a warning.
 pub const RETAINED_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
 
-/// `<session_id>.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Meta {
     pub profile: String,
     pub started_at: Timestamp,
-    /// Real (unpadded) samples in the WAV.
     pub samples: u64,
-    /// Audio glitches were filled with silence.
     pub gapped: bool,
     pub state: RecState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -53,17 +35,13 @@ pub struct Meta {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecState {
-    /// Being captured (or the daemon died while capturing).
     Recording,
-    /// Captured in full and not yet transcribed.
     Complete,
-    /// Capture stopped early (a write failure or a lost device), or the daemon died.
     Incomplete,
-    /// Transcribed; the text hasn't been delivered.
+    /// Not yet delivered: delivered recordings are deleted.
     Transcribed,
 }
 
-/// `last.json`: the newest delivered-or-deliverable dictation, for `paste-last`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Last {
     pub session_id: SessionId,
@@ -71,23 +49,17 @@ pub struct Last {
     pub text: String,
 }
 
-/// A recording on disk.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Retained {
     pub id: SessionId,
     pub meta: Meta,
-    /// Bytes of the WAV, 0 if it's gone.
     pub wav_bytes: u64,
 }
 
-/// What [`Store::recover`] changed.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Recovery {
-    /// Recordings that were still `recording` and are now `incomplete`.
     pub interrupted: Vec<SessionId>,
-    /// WAV files without metadata that were adopted as `incomplete`.
     pub adopted: Vec<SessionId>,
-    /// `last.json` was updated from this newer transcribed recording.
     pub last_from: Option<SessionId>,
 }
 
@@ -95,12 +67,10 @@ pub struct Recovery {
 pub struct Store {
     state_dir: PathBuf,
     recordings: PathBuf,
-    /// Counts changes to the recordings, shared with clones.
     revision: Arc<AtomicU64>,
 }
 
 impl Store {
-    /// Opens (and creates) `state_dir` and its `recordings/`, both mode 0700.
     pub fn open(state_dir: &Path) -> io::Result<Store> {
         let recordings = state_dir.join("recordings");
         fs::create_dir_all(&recordings)?;
@@ -110,8 +80,6 @@ impl Store {
         Ok(Store { state_dir: state_dir.into(), recordings, revision: Arc::default() })
     }
 
-    /// Changes whenever this store (or a clone) writes or deletes a recording, so a caller can
-    /// tell that [`Store::list`] may differ without reading the directory.
     pub fn revision(&self) -> u64 {
         self.revision.load(Ordering::Relaxed)
     }
@@ -149,7 +117,7 @@ impl Store {
         read_json(&self.meta_path(id))
     }
 
-    /// Deletes a recording: the WAV first, then its metadata.
+    /// The WAV first, so a crash in between can't leave a WAV that `recover` would adopt.
     pub fn delete(&self, id: SessionId) -> io::Result<()> {
         self.changed();
         for path in [self.wav_path(id), self.meta_path(id)] {
@@ -176,7 +144,6 @@ impl Store {
         }
     }
 
-    /// Every recording with readable metadata, oldest first.
     pub fn list(&self) -> Vec<Retained> {
         let mut found = Vec::new();
         let Ok(entries) = fs::read_dir(&self.recordings) else { return found };
@@ -195,20 +162,12 @@ impl Store {
         found
     }
 
-    /// Bytes used by the recordings directory.
     pub fn usage(&self) -> u64 {
         fs::read_dir(&self.recordings)
             .map(|entries| entries.flatten().filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum())
             .unwrap_or(0)
     }
 
-    /// Repairs what a crash may have left, at daemon start. Nothing is sent or
-    /// pasted, and nothing undelivered is deleted.
-    ///
-    /// - Recordings still `recording` become `incomplete`, with `samples` from the WAV.
-    /// - A WAV without metadata is adopted as `incomplete` with `default_profile`.
-    /// - If a `transcribed` recording is newer than `last.json`, `last.json` is updated from it.
-    /// - Leftover temporary files are removed.
     pub fn recover(&self, default_profile: &str) -> io::Result<Recovery> {
         let mut recovery = Recovery::default();
         for dir in [&self.state_dir, &self.recordings] {
@@ -268,7 +227,7 @@ impl Store {
         Ok(recovery)
     }
 
-    /// Warnings about retained recordings: too many, or too old.
+    /// Undelivered recordings are never deleted automatically, only warned about.
     pub fn warnings(&self, retained: &[Retained]) -> Vec<String> {
         let mut warnings = Vec::new();
         if retained.len() > RETAINED_WARNING {
@@ -283,7 +242,6 @@ impl Store {
     }
 }
 
-/// The session id of `<uuid>.<ext>`.
 fn session_file(path: &Path, ext: &str) -> Option<SessionId> {
     if path.extension()? != ext {
         return None;
@@ -291,13 +249,12 @@ fn session_file(path: &Path, ext: &str) -> Option<SessionId> {
     path.file_stem()?.to_str()?.parse().ok()
 }
 
-/// Samples in a WAV, from its size; 0 if it's missing or unreadable.
+/// From the file size, since a crash can leave the header unfinalised.
 pub fn wav_samples(path: &Path) -> u64 {
     psst_client::read_wav_info(path).map_or(0, |info| info.samples)
 }
 
-/// Writes `value` as JSON to a temporary file next to `path` with `mode`, then renames it over
-/// `path`. No fsync: a rename already survives a crash of the daemon.
+/// No fsync: a rename already survives a crash of the daemon.
 pub fn write_json_atomic(path: &Path, value: &impl Serialize, mode: u32) -> io::Result<()> {
     let tmp = path.with_extension("json.tmp");
     let mut file = OpenOptions::new().write(true).create(true).truncate(true).mode(mode).open(&tmp)?;
@@ -312,7 +269,7 @@ pub fn read_json<T: DeserializeOwned>(path: &Path) -> io::Result<T> {
     serde_json::from_slice(&bytes).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
 }
 
-/// fsyncs files and then their directory, logging failures. Called off the critical path.
+/// Blocks on fsync: keep it off the critical path.
 pub fn sync_files(files: &[PathBuf], dir: &Path) {
     for path in files {
         if let Err(err) = File::open(path).and_then(|f| f.sync_all())
@@ -400,7 +357,6 @@ mod tests {
         assert_eq!((last.session_id, last.text.as_str()), (id, "newer text"));
         assert_eq!(fs::metadata(store.last_path()).unwrap().permissions().mode() & 0o777, 0o600);
 
-        // last.json is already newer than every recording: left alone.
         let later = Last {
             session_id: SessionId::new_v4(),
             finalized_at: new + jiff::SignedDuration::from_secs(5),

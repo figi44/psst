@@ -1,7 +1,5 @@
-//! Drawing: the pill, the status well and its icons, the waveform and the labels.
-//!
-//! Shapes are described in logical pixels and scaled to the buffer by one transform. Text is laid
-//! out and rasterised directly at the physical size, so it stays sharp at fractional scales.
+//! Text is rasterised at the physical size rather than through the transform, so it stays sharp
+//! at fractional scales.
 
 use std::sync::Arc;
 
@@ -17,13 +15,11 @@ use crate::{Levels, OverlayState, Rgba, Style, physical_size};
 static INTER: &[u8] = include_bytes!("../fonts/Inter-Medium.ttf");
 const FAMILY: &str = "Inter";
 
-/// Fixed colours for meanings the style doesn't cover.
 const SUCCESS: Rgba = Rgba::new(0x3d, 0xd6, 0x8c, 0xff);
 const WARNING: Rgba = Rgba::new(0xff, 0xb0, 0x3b, 0xff);
 const ERROR: Rgba = Rgba::new(0xff, 0x5f, 0x52, 0xff);
 
-/// Renders overlay frames. Holds the font system (Inter only) and the glyph cache, so build one
-/// and keep it: [`Renderer::new`] is the only place fonts are loaded.
+/// Building one loads the font, so build one and keep it.
 pub struct Renderer {
     fonts: FontSystem,
     glyphs: SwashCache,
@@ -42,7 +38,6 @@ impl Default for Renderer {
 }
 
 impl Renderer {
-    /// Builds the font system with the embedded font and nothing else (no system fonts).
     pub fn new() -> Self {
         let mut db = fontdb::Database::new();
         db.load_font_source(fontdb::Source::Binary(Arc::new(INTER)));
@@ -52,10 +47,6 @@ impl Renderer {
         Self { fonts, glyphs: SwashCache::new() }
     }
 
-    /// Draws `state` on a surface of `width` × `height` logical pixels at `scale`. The pixmap
-    /// has [`physical_size`] pixels, premultiplied RGBA, transparent outside the pill.
-    ///
-    /// `levels` feeds the waveform of the recording states; other states ignore it.
     pub fn render(
         &mut self,
         state: &OverlayState,
@@ -80,7 +71,7 @@ enum Align {
     Right,
 }
 
-/// One frame being drawn. Coordinates are logical pixels unless named `p*`.
+/// Coordinates are logical pixels unless named `p*`.
 struct Frame<'a> {
     pixmap: Pixmap,
     w: f32,
@@ -91,22 +82,10 @@ struct Frame<'a> {
     style: &'a Style,
 }
 
-/// What the well and the content area show.
 enum Content<'s> {
-    Label {
-        text: &'s str,
-        color: Rgba,
-    },
-    Waveform {
-        color: Rgba,
-    },
-    /// A short waveform followed by text.
-    WaveAndText {
-        wave: Rgba,
-        text: &'s str,
-        color: Rgba,
-        align: Align,
-    },
+    Label { text: &'s str, color: Rgba },
+    Waveform { color: Rgba },
+    WaveAndText { wave: Rgba, text: &'s str, color: Rgba, align: Align },
 }
 
 #[derive(Clone, Copy)]
@@ -131,7 +110,6 @@ impl Frame<'_> {
         let accent = self.style.accent;
         let latest = levels.iter().last().unwrap_or(0.0);
         let countdown;
-        // (well tint, icon, content)
         let (tint, icon, content) = match state {
             OverlayState::Starting => {
                 (None, Icon::Ring(accent), Content::Label { text: "Starting\u{2026}", color: muted })
@@ -207,8 +185,7 @@ impl Frame<'_> {
         self.pixmap.stroke_path(path, &paint, &stroke, t, None);
     }
 
-    /// The background: a fully rounded rectangle with a faint hairline edge, so it reads on dark
-    /// and light windows alike.
+    /// The faint hairline edge makes it read on dark and light windows alike.
     fn pill(&mut self) {
         let (w, h) = (self.w, self.h);
         if let Some(p) = rounded_rect(0.0, 0.0, w, h, h / 2.0) {
@@ -224,7 +201,6 @@ impl Frame<'_> {
         self.h * 0.36
     }
 
-    /// The round well that holds the status icon, tinted for states with a meaning.
     fn well(&mut self, tint: Option<Rgba>) {
         let c = self.h / 2.0;
         let fill = tint.unwrap_or(self.style.foreground.faded(0.07));
@@ -233,7 +209,7 @@ impl Frame<'_> {
         }
     }
 
-    /// Icons are drawn in a 32-unit box centred in the well (unit = well radius / 16).
+    /// Icon coordinates are in a 32-unit box centred in the well.
     fn icon(&mut self, icon: Icon) {
         let c = self.h / 2.0;
         let u = self.well_radius() / 16.0;
@@ -264,7 +240,6 @@ impl Frame<'_> {
                 self.polyline(&[at(-4.5, -1.0), at(0.0, -5.5), at(4.5, -1.0)], fg, line);
             }
             Icon::Retry => {
-                // A refresh arrow: an open circle, clockwise, with the head at its upper right.
                 let (r, end) = (6.0 * u, 300.0_f32);
                 let mut pb = PathBuilder::new();
                 arc(&mut pb, c, c, r, 30.0, end);
@@ -325,8 +300,6 @@ impl Frame<'_> {
         }
     }
 
-    /// Vertical bars between `x0` and `x1`, newest on the right; older bars fade out. Without
-    /// enough history the remaining bars rest as dots.
     fn waveform(&mut self, levels: &Levels, x0: f32, x1: f32, color: Rgba) {
         let bar = (self.h * 0.068).max(2.0);
         let gap = (self.h * 0.068).max(1.5);
@@ -340,7 +313,6 @@ impl Frame<'_> {
         let max_h = self.h * 0.55;
         let have: Vec<f32> = levels.iter().rev().take(n).collect();
         for i in 0..n {
-            // i = 0 is the leftmost bar; the newest level is the rightmost.
             let age = n - 1 - i;
             let x = start + i as f32 * pitch;
             let fade = 0.22 + 0.78 * ((i + 1) as f32 / n as f32).powf(1.3);
@@ -354,8 +326,6 @@ impl Frame<'_> {
         }
     }
 
-    /// One line of text starting at `x` (logical), at most `max_w` wide, ellipsized at the end.
-    /// Right-aligned text ends at `x + max_w`. Returns the drawn width in logical pixels.
     fn text(&mut self, text: &str, x: f32, max_w: f32, color: Rgba, align: Align) -> f32 {
         if max_w <= 0.0 || text.is_empty() {
             return 0.0;
@@ -396,7 +366,7 @@ impl Frame<'_> {
     }
 }
 
-/// Perceptual curve for levels: quiet speech still moves the bars.
+/// So quiet speech still moves the bars.
 fn curve(level: f32) -> f32 {
     level.clamp(0.0, 1.0).sqrt()
 }
@@ -438,8 +408,7 @@ fn polar(cx: f32, cy: f32, r: f32, deg: f32) -> (f32, f32) {
     (cx + r * a.cos(), cy + r * a.sin())
 }
 
-/// Appends a circular arc from `from` to `to` degrees (clockwise on screen), in cubic segments
-/// of at most 90°.
+/// `from` and `to` are degrees, clockwise on screen.
 fn arc(pb: &mut PathBuilder, cx: f32, cy: f32, r: f32, from: f32, to: f32) {
     let (x, y) = polar(cx, cy, r, from);
     pb.move_to(x, y);
@@ -459,7 +428,6 @@ fn mul255(a: u32, b: u32) -> u32 {
     (a * b + 127) / 255
 }
 
-/// Source-over blend of a coverage mask in `color` onto the premultiplied pixmap.
 fn blit_mask(pixmap: &mut Pixmap, x: i32, y: i32, w: u32, h: u32, mask: &[u8], color: Rgba) {
     let (pw, ph) = (pixmap.width() as i32, pixmap.height() as i32);
     let data = pixmap.data_mut();
@@ -484,7 +452,7 @@ fn blit_mask(pixmap: &mut Pixmap, x: i32, y: i32, w: u32, h: u32, mask: &[u8], c
     }
 }
 
-/// Source-over blend of straight-alpha RGBA glyph pixels (colour fonts), with extra `alpha`.
+/// Colour glyphs come as straight-alpha RGBA.
 fn blit_rgba(pixmap: &mut Pixmap, x: i32, y: i32, w: u32, h: u32, rgba: &[u8], alpha: u8) {
     let (pw, ph) = (pixmap.width() as i32, pixmap.height() as i32);
     let data = pixmap.data_mut();
