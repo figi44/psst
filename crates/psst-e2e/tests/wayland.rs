@@ -610,8 +610,11 @@ fn the_overlay_shows_at_the_bottom_centre_on_sway() {
 fn overlay_at_the_bottom_centre(sandbox: &Sandbox) {
     let paster = Paster::new(sandbox, RESTORE);
     assert!(pill_bounds(&screenshot(sandbox)).is_none(), "the screen starts empty");
+    // The first command also connects.
+    let sent = Instant::now();
     paster.send(WaylandCmd::Overlay(Some(OverlayState::Starting)));
     paster.expect(&WaylandEvent::OverlayShown, Duration::from_secs(3));
+    eprintln!("overlay on {:?}: command → OverlayShown (presented) {:?}", sandbox.compositor(), sent.elapsed());
     for level in [0.1, 0.4, 0.2, 0.6, 0.3] {
         paster.send(WaylandCmd::Overlay(Some(OverlayState::Recording { level })));
     }
@@ -634,8 +637,10 @@ fn overlay_at_the_bottom_centre(sandbox: &Sandbox) {
     thread::sleep(Duration::from_millis(300));
     assert!(pill_bounds(&screenshot(sandbox)).is_none(), "the overlay is gone");
     // Shown again: a new surface, a new OverlayShown.
+    let sent = Instant::now();
     paster.send(WaylandCmd::Overlay(Some(OverlayState::Done)));
     paster.expect(&WaylandEvent::OverlayShown, Duration::from_secs(3));
+    eprintln!("overlay on {:?}: shown again in {:?}", sandbox.compositor(), sent.elapsed());
 }
 
 #[test]
