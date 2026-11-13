@@ -182,6 +182,21 @@ fn dictionary_terms_with_defaults() {
 }
 
 #[test]
+fn api_terms_are_dictionary_terms_with_the_same_defaults() {
+    let file = DictionaryFile::from_toml_str(
+        "[[terms]]\ntext = \"Hyprland\"\n[[terms]]\ntext = \"Dvořák\"\nlanguages = \"cs\"\nfuzzy = false\npin = true\nnotes = \"composer\"",
+    )
+    .unwrap();
+    let api: Vec<psst_proto::api::Term> = serde_json::from_value(serde_json::json!([
+        {"text": "Hyprland"},
+        {"text": "Dvořák", "languages": "cs", "fuzzy": false, "pin": true, "notes": "composer"},
+    ]))
+    .unwrap();
+    assert_eq!(api.iter().cloned().map(TermSpec::from).collect::<Vec<_>>(), file.terms);
+    assert_eq!(file.terms.iter().map(psst_proto::api::Term::from).collect::<Vec<_>>(), api);
+}
+
+#[test]
 fn dictionary_terms_need_spellings() {
     invalid::<DictionaryFile>("[[terms]]\ntext = \" \"", "text");
     invalid::<DictionaryFile>("[[terms]]\ntext = \"x\"\nsounds_like = [\"\"]", "sounds_like");

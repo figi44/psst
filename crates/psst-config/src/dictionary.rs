@@ -1,5 +1,6 @@
 use std::fmt;
 
+use psst_proto::api::Term;
 use serde::{Deserialize, Serialize};
 
 use crate::ConfigFile;
@@ -46,6 +47,33 @@ impl TermSpec {
             fuzzy: true,
             pin: false,
             notes: None,
+        }
+    }
+}
+
+/// The API's form of a term (`/api/dictionary`) has the same keys and defaults.
+impl From<Term> for TermSpec {
+    fn from(term: Term) -> Self {
+        Self {
+            text: term.text,
+            sounds_like: term.sounds_like,
+            languages: term.languages.into(),
+            fuzzy: term.fuzzy,
+            pin: term.pin,
+            notes: term.notes,
+        }
+    }
+}
+
+impl From<&TermSpec> for Term {
+    fn from(spec: &TermSpec) -> Self {
+        Self {
+            text: spec.text.clone(),
+            sounds_like: spec.sounds_like.clone(),
+            languages: spec.languages.to_string(),
+            fuzzy: spec.fuzzy,
+            pin: spec.pin,
+            notes: spec.notes.clone(),
         }
     }
 }
