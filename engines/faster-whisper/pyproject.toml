@@ -25,3 +25,5 @@ packages = ["psst_engine_faster_whisper"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = ["gpu: needs a CUDA GPU; left out unless asked for with `-m gpu` (see tests/test_gpu.py)"]
+addopts = "-m 'not gpu'"
