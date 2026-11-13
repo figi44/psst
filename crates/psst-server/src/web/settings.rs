@@ -158,10 +158,18 @@ fn groups(view: &SettingsView, action: &str, source: &str, query: &PageQuery, re
     view.groups
         .iter()
         .map(|group| {
+            let fields: Vec<Value> = group.fields.iter().map(|f| field(f, action, source, query, refusal)).collect();
+            // Closed, the fold would hide the row a save or refusal just came back to.
+            let open = group
+                .fields
+                .iter()
+                .any(|f| query.saved.as_deref() == Some(f.key.as_str()) || refusal.is_some_and(|r| r.key == f.key));
             context! {
                 id => group.id.clone(),
                 title => group.title.clone(),
-                fields => group.fields.iter().map(|f| field(f, action, source, query, refusal)).collect::<Vec<_>>(),
+                advanced => group.advanced,
+                open,
+                fields,
             }
         })
         .collect()

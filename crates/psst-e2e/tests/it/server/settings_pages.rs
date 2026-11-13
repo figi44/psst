@@ -63,6 +63,21 @@ async fn server_settings_change_and_reset_through_the_page() {
 }
 
 #[tokio::test]
+async fn advanced_settings_stay_folded_until_one_of_them_is_saved() {
+    let server = web_server();
+    let browser = logged_in(&server).await;
+
+    let page = browser.get("/settings").await;
+    assert!(page.body.contains("<details class=\"adv s-adv\">"), "{}", page.body);
+    assert!(page.body.contains("Precision"), "{}", page.body);
+
+    let saved = browser.post("/settings/model.compute_type", &[("value", "float16")]).await;
+    see_other(&saved, "/settings?saved=model.compute_type#s-model-compute_type");
+    let page = browser.get("/settings?saved=model.compute_type").await;
+    assert!(page.body.contains("<details class=\"adv s-adv\" open>"), "{}", page.body);
+}
+
+#[tokio::test]
 async fn a_devices_settings_and_paste_rules_change_through_its_page() {
     let server = web_server();
     let browser = logged_in(&server).await;

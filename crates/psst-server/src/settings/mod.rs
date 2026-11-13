@@ -266,6 +266,7 @@ fn view<T: Layerable>(layers: &Layers<T>, groups: &[Group], options: &Options<'_
         .map(|group| SettingsGroup {
             id: group.id.into(),
             title: group.title.into(),
+            advanced: group.advanced,
             fields: group.fields.iter().map(field).collect(),
         })
         .collect();

@@ -472,6 +472,9 @@ impl SettingsView {
 pub struct SettingsGroup {
     pub id: String,
     pub title: String,
+    /// Tucked away: few need it, and a wrong value costs speed or accuracy.
+    #[serde(default)]
+    pub advanced: bool,
     pub fields: Vec<Setting>,
 }
 

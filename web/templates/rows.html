@@ -48,11 +48,20 @@
 {%- endif %}
 {%- endmacro %}
 
-{%- macro groups(gs) -%}
-{%- for g in gs %}
+{%- macro group(g) -%}
 <section class="sgroup" aria-labelledby="g-{{ g.id }}">
   <h2 class="group-h" id="g-{{ g.id }}">{{ g.title }}</h2>
   <div class="srows">{% for f in g.fields %}{{ row(f) }}{% endfor %}</div>
 </section>
-{%- endfor %}
+{%- endmacro %}
+
+{%- macro groups(gs) -%}
+{%- for g in gs if not g.advanced %}{{ group(g) }}{% endfor %}
+{%- set advanced = gs|selectattr("advanced")|list %}
+{%- if advanced %}
+<details class="adv s-adv"{% if advanced|selectattr("open")|list %} open{% endif %}>
+  <summary>{{ icon("chevron") }}Advanced</summary>
+  <div class="s-adv-body">{% for g in advanced %}{{ group(g) }}{% endfor %}</div>
+</details>
+{%- endif %}
 {%- endmacro %}
