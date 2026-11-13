@@ -13,8 +13,10 @@ on:
       - flake.lock
       - justfile
       - .github/workflows/android.yml
+  # main's pushes replace the rolling release; a tag, which the paths don't filter, makes a stable one.
   push:
     branches: [main]
+    tags: ['v*']
     paths:
       - android/**
       - crates/psst-android/**
@@ -29,18 +31,52 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # A push waits for the run before it, which cancelled mid-publish would leave the rolling release
+  # half replaced. Waiting runs still give way to a newer one.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
+
+# bash -o pipefail: a failed export must not leave a truncated SDK to be cached.
+defaults:
+  run:
+    shell: bash
 
 jobs:
   apk:
     name: APK
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.name }}
     steps:
+      # The image leaves 14 GB free and the Nix store takes 11: a run saving the SDK, as main's do,
+      # ended with 234 MB. These unused toolchains are 15 GB, deleted while Nix installs.
+      - name: Free disk space
+        run: nohup sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup > /dev/null 2>&1 &
+      # All of history for the commit count, without its blobs: 380 KB.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      # The versionCode counts commits, which only grow along main, so each release installs over
+      # the one before. Checked before the build, so a mistagged release fails in seconds.
+      - name: Version the release
+        id: version
+        if: github.event_name == 'push'
+        run: |
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [[ $GITHUB_REF_TYPE == tag && $GITHUB_REF_NAME != "v$version" ]]; then
+            echo "::error::$GITHUB_REF_NAME doesn't match Cargo.toml's version $version. Set [workspace.package] version to ${GITHUB_REF_NAME#v} and tag that commit instead."
+            exit 1
+          fi
+          code=$(git rev-list --count HEAD)
+          if [[ $GITHUB_REF_TYPE == branch ]]; then
+            version+="-main.$code+${GITHUB_SHA::7}"
+          fi
+          echo "name=$version" >> "$GITHUB_OUTPUT"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
       - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
       # The SDK and NDK are unfree, so cache.nixos.org has neither and the shell would build them on
       # every run: 690 MB from Google, then 2 min 14 s (on a fast machine) to unpack and patch the
@@ -52,7 +88,7 @@ jobs:
           sdk=$(nix eval --raw .#devShells.x86_64-linux.android.ANDROID_HOME)
           sdk=${sdk%/libexec/android-sdk}
           echo "path=$sdk" >> "$GITHUB_OUTPUT"
-          echo "key=v1-${sdk#/nix/store/}" >> "$GITHUB_OUTPUT"
+          echo "key=v2-${sdk#/nix/store/}" >> "$GITHUB_OUTPUT"
       - name: Restore the Android SDK
         id: sdk-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -66,7 +102,7 @@ jobs:
         working-directory: ${{ runner.temp }}/sdk
         run: |
           xargs nix-store --realise < deps > /dev/null
-          nix-store --import < closure > /dev/null
+          zstd -d < closure.zst | nix-store --import > /dev/null
       - name: Enter the android shell
         uses: nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a # v1.2.1
         with:
@@ -95,7 +131,8 @@ jobs:
         run: |
           mkdir sdk
           nix-store --query --requisites "$SDK" | grep -v -- -android > sdk/deps
-          nix-store --query --requisites "$SDK" | grep -- -android | xargs nix-store --export > sdk/closure
+          # 0.9 GB on the runner's scarce disk, where uncompressed it took 2.8.
+          nix-store --query --requisites "$SDK" | grep -- -android | xargs nix-store --export | zstd -T0 > sdk/closure.zst
       - name: Save the Android SDK
         if: github.ref == 'refs/heads/main' && steps.sdk-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -108,3 +145,71 @@ jobs:
         with:
           path: ~/.gradle/caches
           key: ${{ steps.gradle.outputs.cache-primary-key }}
+      - name: Build the release APK
+        if: github.event_name == 'push'
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+          PSST_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          VERSION: ${{ steps.version.outputs.name }}
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+        run: |
+          if [[ -z $KEYSTORE || -z $PSST_KEYSTORE_PASSWORD ]]; then
+            echo "::error::Releases are signed with the repository's ANDROID_KEYSTORE secret, a base64 PKCS12 keystore holding the key psst, and ANDROID_KEYSTORE_PASSWORD. Add both under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          export PSST_KEYSTORE=$RUNNER_TEMP/psst.p12
+          base64 -d <<< "$KEYSTORE" > "$PSST_KEYSTORE"
+          just android-release -Ppsst.abis=arm64-v8a -Ppsst.versionName="$VERSION" -Ppsst.versionCode="$VERSION_CODE"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: github.event_name == 'push'
+        with:
+          path: android/app/build/outputs/apk/release/app-release.apk
+          archive: false
+          retention-days: 1
+          # A re-run uploads it again. Unarchived, the artifact takes the file's name, and overwrite
+          # deletes the one called `name`.
+          name: app-release.apk
+          overwrite: true
+
+  # A job of its own, so the one that can write to the repository runs no Gradle plugins or crates'
+  # build scripts.
+  release:
+    name: Release
+    needs: apk
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.apk.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: app-release.apk
+      - name: Publish the stable release
+        if: github.ref_type == 'tag'
+        run: |
+          mv app-release.apk "psst-$VERSION.apk"
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "psst-$VERSION.apk" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "psst-$VERSION.apk" --title "$VERSION" --generate-notes
+          fi
+      # One prerelease whose tag follows main. Its title is the APK's versionName, for Obtainium's
+      # "use release title as version" to compare with the installed app's; the title goes last, so
+      # it never names an APK that isn't up yet.
+      - name: Publish the rolling release
+        if: github.ref_type == 'branch'
+        run: |
+          mv app-release.apk psst-rolling.apk
+          notes="The app as of $GITHUB_SHA on main, replaced by every push that changes it."
+          if gh release view rolling > /dev/null 2>&1; then
+            gh api --method PATCH "repos/$GH_REPO/git/refs/tags/rolling" -f sha="$GITHUB_SHA" -F force=true > /dev/null
+            gh release upload rolling psst-rolling.apk --clobber
+            gh release edit rolling --title "$VERSION" --notes "$notes"
+          else
+            gh release create rolling psst-rolling.apk --prerelease --target "$GITHUB_SHA" --title "$VERSION" --notes "$notes"
+          fi

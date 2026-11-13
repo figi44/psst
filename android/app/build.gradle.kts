@@ -12,10 +12,28 @@ android {
         applicationId = "io.github.figi44.psst"
         minSdk = 31
         targetSdk = 36
-        versionCode = 1
-        versionName = providers.fileContents(workspace.file("Cargo.toml")).asText
-            .map { Regex("""(?m)^version = "(.+)"$""").find(it)!!.groupValues[1] }
+        // Android installs an update only over a versionCode no higher than its own, so CI's
+        // releases pass main's commit count.
+        versionCode = providers.gradleProperty("psst.versionCode").map(String::toInt).getOrElse(1)
+        versionName = providers.gradleProperty("psst.versionName")
+            .orElse(
+                providers.fileContents(workspace.file("Cargo.toml")).asText
+                    .map { Regex("""(?m)^version = "(.+)"$""").find(it)!!.groupValues[1] },
+            )
             .get()
+    }
+
+    // Without a keystore, as anywhere but CI, a release build comes out unsigned. Its key is
+    // `psst`, under the store's password: PKCS12 allows no other.
+    val keystore = providers.environmentVariable("PSST_KEYSTORE")
+    if (keystore.isPresent) {
+        val release = signingConfigs.create("release") {
+            storeFile = file(keystore.get())
+            storePassword = providers.environmentVariable("PSST_KEYSTORE_PASSWORD").get()
+            keyAlias = "psst"
+            keyPassword = storePassword
+        }
+        buildTypes.getByName("release").signingConfig = release
     }
 
     lint {

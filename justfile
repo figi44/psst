@@ -44,6 +44,11 @@ fix:
 android *args:
     gradle -p android :app:assembleDebug :app:lintDebug "$@"
 
+# The release APK, signed when PSST_KEYSTORE and PSST_KEYSTORE_PASSWORD are set, in `nix develop .#android`.
+[positional-arguments]
+android-release *args:
+    gradle -p android :app:assembleRelease "$@"
+
 # Install the debug APK on the connected device or emulator, in `nix develop .#android`.
 android-install:
     gradle -p android :app:installDebug
