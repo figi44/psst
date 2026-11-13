@@ -11,9 +11,9 @@ use psst_proto::{
         PairRedeemed, Pairing, Percentiles, Stats, Term, routes,
     },
     ws::{
-        AudioFormat, CancelMsg, CancelledMsg, ClientInfo, ClientMsg, ErrorMsg, EvalOpts, FinalMsg, HelloMsg, Mode,
-        ProgressMsg, ProgressState, ReadyModelState, ReadyMsg, ReportMsg, ServerLimits, ServerMsg, StartMsg, StopMsg,
-        WelcomeMsg,
+        AudioFormat, CancelMsg, CancelledMsg, ClientInfo, ClientMsg, Codec, ErrorMsg, EvalOpts, FinalMsg, HelloMsg,
+        Mode, ProgressMsg, ProgressState, ReadyModelState, ReadyMsg, ReportMsg, ServerLimits, ServerMsg, StartMsg,
+        StopMsg, WelcomeMsg,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -79,10 +79,19 @@ fn hello_and_welcome() {
             server_version: "0.1.0".into(),
             device: "local:alice".into(),
             limits: ServerLimits { max_recording_s: 600 },
+            codecs: vec![Codec::PcmS16le, Codec::Opus],
         }),
         json!({"type": "welcome", "server_version": "0.1.0", "device": "local:alice",
-               "limits": {"max_recording_s": 600}}),
+               "limits": {"max_recording_s": 600}, "codecs": ["pcm_s16le", "opus"]}),
     );
+}
+
+#[test]
+fn a_welcome_without_codecs_offers_only_pcm() {
+    let welcome = json!({"type": "welcome", "server_version": "0.1.0", "device": "local:alice",
+                         "limits": {"max_recording_s": 600}});
+    let ServerMsg::Welcome(welcome) = serde_json::from_value(welcome).unwrap() else { panic!("a welcome") };
+    assert_eq!(welcome.codecs, [Codec::PcmS16le]);
 }
 
 #[test]
@@ -98,6 +107,22 @@ fn start_with_defaults_omits_optional_fields() {
         }),
         json!({"type": "start", "session_id": SID,
                "audio": {"codec": "pcm_s16le", "sample_rate": 16000, "frame_ms": 20}, "mode": "live"}),
+    );
+}
+
+#[test]
+fn start_with_opus() {
+    assert_wire(
+        &ClientMsg::Start(StartMsg {
+            session_id: sid(),
+            profile: None,
+            audio: AudioFormat { codec: Codec::Opus, ..AudioFormat::default() },
+            mode: Mode::Live,
+            resume: false,
+            eval: None,
+        }),
+        json!({"type": "start", "session_id": SID,
+               "audio": {"codec": "opus", "sample_rate": 16000, "frame_ms": 20}, "mode": "live"}),
     );
 }
 

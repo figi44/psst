@@ -1,8 +1,9 @@
 use std::{fs, path::PathBuf};
 
 use psst_config::{
-    AppRule, AudioInput, ClientConfig, Color, ConfigError, ConfigFile, DecodePath, DictionaryFile, PasteAction,
-    PasteRule, ProfileSpec, ProfilesFile, Rule, ServerConfig, ServerFiles, TermLanguages, TermSpec, TermsAs,
+    AppRule, AudioCodec, AudioInput, ClientConfig, Color, ConfigError, ConfigFile, DecodePath, DictionaryFile,
+    PasteAction, PasteRule, ProfileSpec, ProfilesFile, Rule, ServerConfig, ServerFiles, TermLanguages, TermSpec,
+    TermsAs,
 };
 use psst_proto::Endpoint;
 
@@ -258,6 +259,15 @@ fn client_audio_input_forms() {
     assert_eq!(input("alsa_input.usb-mic").unwrap(), AudioInput::Device("alsa_input.usb-mic".into()));
     invalid::<ClientConfig>("[audio]\ninput = \"file:clip.wav\"", "absolute");
     invalid::<ClientConfig>("[audio]\ninput = \"\"", "audio.input");
+}
+
+#[test]
+fn client_audio_codec_is_opus_unless_set_to_pcm() {
+    let codec = |s: &str| ClientConfig::from_toml_str(s).map(|c| c.audio.codec);
+    assert_eq!(codec("").unwrap(), AudioCodec::Opus);
+    assert_eq!(codec("[audio]\ncodec = \"pcm\"").unwrap(), AudioCodec::Pcm);
+    assert_eq!(codec("[audio]\ncodec = \"opus\"").unwrap(), AudioCodec::Opus);
+    invalid::<ClientConfig>("[audio]\ncodec = \"flac\"", "flac");
 }
 
 #[test]

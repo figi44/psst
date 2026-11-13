@@ -241,6 +241,10 @@ impl Client {
         self.ws.send(Message::Text(text.into())).await.expect("send a message");
     }
 
+    pub async fn send_binary(&mut self, bytes: &[u8]) {
+        self.ws.send(Message::Binary(bytes.to_vec().into())).await.expect("send a binary message");
+    }
+
     pub async fn start(&mut self, session_id: SessionId, mode: Mode, resume: bool) {
         self.start_with(StartMsg {
             session_id,

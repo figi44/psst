@@ -4,9 +4,13 @@
 use std::time::Duration;
 
 use psst_client::{
-    AudioFrame, Client, ClientError, FRAME_BUFFER, LostReason, SessionEvent, StartOpts, TrySendError, upload_file,
+    AudioCodec, AudioFrame, Client, ClientError, FRAME_BUFFER, LostReason, OpusSettings, SessionEvent, StartOpts,
+    TrySendError, upload_file,
 };
-use psst_proto::{ErrorCode, FRAME_SAMPLES, Token, ws::Mode};
+use psst_proto::{
+    ErrorCode, FRAME_SAMPLES, Token,
+    ws::{Codec, Mode},
+};
 use psst_testkit::{
     fake_server::{FakeServer, FakeServerConfig, Outcome},
     test_audio, write_wav,
@@ -17,7 +21,14 @@ use uuid::Uuid;
 const WAIT: Duration = Duration::from_secs(5);
 
 fn opts(mode: Mode) -> StartOpts {
-    StartOpts { session_id: Uuid::new_v4(), profile: None, mode, resume: false, eval: None }
+    StartOpts {
+        session_id: Uuid::new_v4(),
+        profile: None,
+        mode,
+        resume: false,
+        eval: None,
+        codec: AudioCodec::Opus(OpusSettings::default()),
+    }
 }
 
 fn frames(audio: &[i16]) -> Vec<AudioFrame> {
@@ -108,6 +119,38 @@ async fn a_live_session_sends_frames_from_before_ready_first_and_in_order() {
     assert_eq!(seen.stop_samples, Some(audio.len() as u64));
     // After the terminal event the session keeps saying how it ended.
     assert_eq!(final_text(&session.next_event().await), "Push the fix.");
+}
+
+#[tokio::test]
+async fn sessions_send_pcm_to_a_server_that_does_not_offer_opus() {
+    let server = FakeServer::start(FakeServerConfig::default());
+    let mut client = Client::connect(&server.endpoint(), None).await.unwrap();
+    assert_eq!(client.welcome().codecs, [Codec::PcmS16le]);
+    let audio = test_audio(1_010);
+
+    let live = opts(Mode::Live);
+    assert!(matches!(live.codec, AudioCodec::Opus(_)));
+    let mut session = client.start(live.clone());
+    assert_eq!(session.codec(), Codec::PcmS16le);
+    for frame in frames(&audio) {
+        session.frames().try_send(frame).unwrap();
+    }
+    session.stop(audio.len() as u64).await.unwrap();
+    assert!(matches!(until_terminal(&mut session).await.last(), Some(SessionEvent::Final(_))));
+
+    let dir = tempfile::tempdir().unwrap();
+    let wav = dir.path().join("rec.wav");
+    write_wav(&wav, &audio);
+    let upload = opts(Mode::Upload);
+    let mut session = upload_file(&mut client, upload.clone(), &wav);
+    assert_eq!(session.codec(), Codec::PcmS16le);
+    assert!(matches!(until_terminal(&mut session).await.last(), Some(SessionEvent::Final(_))));
+
+    for id in [live.session_id, upload.session_id] {
+        let seen = server.session(id).unwrap();
+        assert_eq!(seen.starts[0].audio.codec, Codec::PcmS16le);
+        assert_eq!(&seen.audio[..audio.len()], &audio[..]);
+    }
 }
 
 #[tokio::test]

@@ -2,6 +2,7 @@
   lib,
   rustPlatform,
   pkg-config,
+  libopus,
   sqlite,
   versionCheckHook,
 }:
@@ -17,12 +18,15 @@ rustPlatform.buildRustPackage {
     "psst-server"
   ];
 
-  # As in the dev shell: SQLite for the database.
+  # As in the dev shell: libopus for audio on the wire, SQLite for the database.
   nativeBuildInputs = [
     pkg-config
     rustPlatform.bindgenHook
   ];
-  buildInputs = [ sqlite ];
+  buildInputs = [
+    libopus
+    sqlite
+  ];
 
   # The workspace's tests run in CI and the dev shell (cargo nextest); here the binary only has
   # to start.

@@ -142,7 +142,8 @@ pub enum ErrorCode {
     Busy,
     /// Audio more than 5 s past `max_recording_s`.
     TooLong,
-    /// `stop.samples` doesn't match the audio received.
+    /// `stop.samples` doesn't match the audio received, or a binary message isn't a frame in the
+    /// session's codec.
     BadAudio,
     /// The model was unloaded on purpose.
     ModelUnloaded,

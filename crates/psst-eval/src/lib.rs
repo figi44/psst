@@ -75,10 +75,32 @@ enum Command {
         /// The model cache (default: ~/.cache/psst/hf).
         #[arg(long)]
         cache_dir: Option<PathBuf>,
+        /// How the audio goes to the server: `pcm`, as for the committed traces, or `opus`, to
+        /// measure the codec on a copy of the eval set.
+        #[arg(long, value_enum, default_value_t = CodecArg::Pcm)]
+        codec: CodecArg,
+        /// With --codec opus: the bitrate in bits per second, instead of the client's default.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(500..=512_000))]
+        opus_bitrate: Option<u32>,
+        /// With --codec opus: libopus's application, instead of the client's default.
+        #[arg(long, value_enum)]
+        opus_application: Option<ApplicationArg>,
     },
     /// Run the scripted test engine (see psst_engine_proto::fake).
     #[command(name = "__fake-engine", hide = true)]
     FakeEngine { script: PathBuf },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum CodecArg {
+    Pcm,
+    Opus,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum ApplicationArg {
+    Voip,
+    Audio,
 }
 
 #[derive(Debug, Args)]
@@ -110,7 +132,10 @@ pub fn main() -> ExitCode {
     let result = match Cli::parse().command {
         Command::Replay { evals, write, gate } => replay_command(&evals.evals, write, &gate),
         Command::Stress { evals, gate } => stress_command(&evals.evals, &gate),
-        Command::Audio { evals, cache_dir } => audio_command(evals.evals, cache_dir),
+        Command::Audio { evals, cache_dir, codec, opus_bitrate, opus_application } => {
+            codec_for(codec, opus_bitrate, opus_application)
+                .and_then(|codec| audio_command(evals.evals, cache_dir, codec))
+        }
         Command::FakeEngine { script } => return psst_engine_proto::fake::main(&script),
     };
     match result {
@@ -209,7 +234,37 @@ fn stress_command(evals: &Path, gate: &GateArgs) -> anyhow::Result<Vec<String>> 
     Ok(failures)
 }
 
-fn audio_command(evals: PathBuf, cache_dir: Option<PathBuf>) -> anyhow::Result<Vec<String>> {
+/// The client codec the audio eval's options ask for.
+fn codec_for(
+    codec: CodecArg,
+    bitrate: Option<u32>,
+    application: Option<ApplicationArg>,
+) -> anyhow::Result<psst_client::AudioCodec> {
+    if codec == CodecArg::Pcm {
+        anyhow::ensure!(
+            bitrate.is_none() && application.is_none(),
+            "--opus-bitrate and --opus-application need --codec opus"
+        );
+        return Ok(psst_client::AudioCodec::Pcm);
+    }
+    let mut settings = psst_client::OpusSettings::default();
+    if let Some(bitrate) = bitrate {
+        settings.bitrate = bitrate;
+    }
+    if let Some(application) = application {
+        settings.application = match application {
+            ApplicationArg::Voip => psst_client::OpusApplication::Voip,
+            ApplicationArg::Audio => psst_client::OpusApplication::Audio,
+        };
+    }
+    Ok(psst_client::AudioCodec::Opus(settings))
+}
+
+fn audio_command(
+    evals: PathBuf,
+    cache_dir: Option<PathBuf>,
+    codec: psst_client::AudioCodec,
+) -> anyhow::Result<Vec<String>> {
     // The in-process server logs through `tracing`: its warnings, and the engine's stderr (model
     // downloads, CUDA errors). `RUST_LOG` overrides this, as for `psst-server`.
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -219,6 +274,7 @@ fn audio_command(evals: PathBuf, cache_dir: Option<PathBuf>) -> anyhow::Result<V
         evals,
         cache_dir: cache_dir.unwrap_or_else(audio::default_model_cache),
         require_gpu_session: true,
+        codec,
     };
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().context("cannot start tokio")?;
     runtime.block_on(audio::run(&opts))?;

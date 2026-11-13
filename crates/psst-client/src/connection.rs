@@ -13,7 +13,7 @@ use std::{
 
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use psst_proto::{
-    Endpoint, FRAME_BYTES, PROTOCOL_VERSION, SessionId, Token,
+    Endpoint, PROTOCOL_VERSION, SessionId, Token,
     ws::{AudioFormat, CancelMsg, ClientInfo, ClientMsg, ErrorMsg, HelloMsg, ReportMsg, ServerMsg, StartMsg, StopMsg},
 };
 use tokio::{
@@ -29,7 +29,7 @@ use tokio_tungstenite::{
 };
 use tracing::{debug, warn};
 
-use crate::{AudioFrame, Client, ClientError, LostReason, PROGRESS_TIMEOUT, SessionEvent, StartOpts};
+use crate::{AudioFrame, Client, ClientError, LostReason, PROGRESS_TIMEOUT, SessionEvent, StartOpts, codec::Encoder};
 
 /// Messages written before one flush.
 const WRITE_BATCH: usize = 50;
@@ -60,6 +60,7 @@ pub(crate) struct NewSession {
     pub frames: mpsc::Receiver<Outgoing>,
     /// `Some(need_audio)` once `ready` arrived; closed when the session ends.
     pub ready: watch::Sender<Option<bool>>,
+    pub encoder: Encoder,
 }
 
 pub(crate) enum Outgoing {
@@ -249,8 +250,8 @@ fn text(msg: &ClientMsg) -> Message {
 /// What the writer task writes, in order.
 enum Out {
     Msg(Message),
-    /// An audio frame and its place among the frames in flight, freed once it's written.
-    Frame(Box<AudioFrame>, OwnedSemaphorePermit),
+    /// An encoded audio frame and its place among the frames in flight, freed once it's written.
+    Frame(Vec<u8>, OwnedSemaphorePermit),
 }
 
 /// Writes messages in order, flushing after each batch. Ends when the actor drops its sender
@@ -269,7 +270,7 @@ async fn write_loop(
         while let Some(out) = next.take() {
             let result = match out {
                 Out::Msg(msg) => sink.feed(msg).await,
-                Out::Frame(frame, _permit) => sink.feed(Message::binary(frame_bytes(&frame))).await,
+                Out::Frame(frame, _permit) => sink.feed(Message::binary(frame)).await,
             };
             if let Err(err) = result {
                 return failed(err);
@@ -297,6 +298,7 @@ struct Active {
     events: mpsc::UnboundedSender<SessionEvent>,
     /// Audio still to send; `None` once `stop` went out, or the session needs no (more) audio.
     frames: Option<mpsc::Receiver<Outgoing>>,
+    encoder: Encoder,
     /// Whether `ready` arrived with `need_audio`, so `frames` may be sent.
     streaming: bool,
     ready: Option<watch::Sender<Option<bool>>>,
@@ -435,11 +437,11 @@ impl Actor {
     }
 
     fn send_start(&mut self, new: NewSession) -> Flow {
-        let NewSession { opts, events, frames, ready } = new;
+        let NewSession { opts, events, frames, ready, encoder } = new;
         let start = ClientMsg::Start(StartMsg {
             session_id: opts.session_id,
             profile: opts.profile,
-            audio: AudioFormat::default(),
+            audio: AudioFormat { codec: encoder.codec(), ..AudioFormat::default() },
             mode: opts.mode,
             resume: opts.resume,
             eval: opts.eval,
@@ -448,6 +450,7 @@ impl Actor {
             id: opts.session_id,
             events,
             frames: Some(frames),
+            encoder,
             streaming: false,
             ready: Some(ready),
             got_ready: false,
@@ -569,7 +572,13 @@ impl Actor {
     fn on_outgoing(&mut self, permit: OwnedSemaphorePermit, out: Option<Outgoing>) -> Flow {
         let Some(active) = &mut self.active else { return Flow::Continue };
         let out = match out {
-            Some(Outgoing::Frame(frame)) => Out::Frame(frame, permit),
+            Some(Outgoing::Frame(frame)) => match active.encoder.encode(&frame) {
+                Ok(bytes) => Out::Frame(bytes, permit),
+                Err(message) => {
+                    let id = active.id;
+                    return self.cancel(id, Some(message));
+                }
+            },
             Some(Outgoing::Stop(samples)) => {
                 active.frames = None;
                 Out::Msg(text(&ClientMsg::Stop(StopMsg { session_id: active.id, samples })))
@@ -600,12 +609,4 @@ async fn next_outgoing(
         }
         _ => std::future::pending().await,
     }
-}
-
-fn frame_bytes(frame: &AudioFrame) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(FRAME_BYTES);
-    for sample in frame {
-        bytes.extend_from_slice(&sample.to_le_bytes());
-    }
-    bytes
 }

@@ -1729,6 +1729,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
+name = "opusic-c"
+version = "1.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89f8e9c909466f15e60277212cc4fec082c68a5e1c9f6e373eee716fec2fed47"
+dependencies = [
+ "opusic-sys",
+]
+
+[[package]]
+name = "opusic-sys"
+version = "0.7.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "986d749e9dc12035f11bf3ecc83a2a696ff7534d4143be9469a4a0faa25b9fd1"
+
+[[package]]
 name = "ordered-stream"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1916,6 +1931,7 @@ version = "0.1.0"
 dependencies = [
  "futures-util",
  "httparse",
+ "opusic-c",
  "psst-proto",
  "psst-testkit",
  "serde",
@@ -2060,6 +2076,7 @@ dependencies = [
  "jiff",
  "minijinja",
  "nix",
+ "opusic-c",
  "psst-config",
  "psst-dict",
  "psst-engine-proto",

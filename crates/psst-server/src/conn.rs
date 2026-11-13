@@ -1,19 +1,21 @@
 //! One client connection on `/v1/client`: `hello`/`welcome`, then one active session
-//! at a time. The connection buffers its session's audio; outcomes come back from the registry
-//! as [`ConnEvent`]s, and `progress` goes out every 500 ms while a session is active.
+//! at a time. The connection buffers its session's audio as PCM, decoding Opus as each packet
+//! arrives; outcomes come back from the registry as [`ConnEvent`]s, and `progress` goes out every
+//! 500 ms while a session is active.
 
 use std::{sync::Arc, time::Duration};
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket, close_code};
+use opusic_c::{Channels, Decoder, SampleRate};
 use psst_config::{DEFAULT_PROFILE, Profile};
 use psst_dict::Dictionary;
 use psst_engine_proto::Bias;
 use psst_pipeline::PipelineOptions;
 use psst_proto::{
-    DeviceId, ErrorCode, FRAME_SAMPLES, HistoryId, PROTOCOL_VERSION, SAMPLE_RATE, ServerTimings,
+    DeviceId, ErrorCode, FRAME_MS, FRAME_SAMPLES, HistoryId, PROTOCOL_VERSION, SAMPLE_RATE, ServerTimings,
     api::ModelState,
     ws::{
-        AudioFormat, CancelMsg, CancelledMsg, ClientMsg, ErrorMsg, FinalMsg, Mode, ProgressMsg, ProgressState,
+        CancelMsg, CancelledMsg, ClientMsg, Codec, ErrorMsg, FinalMsg, Mode, ProgressMsg, ProgressState,
         ReadyModelState, ReadyMsg, ReportMsg, ServerLimits, ServerMsg, StartMsg, StopMsg, WelcomeMsg,
     },
 };
@@ -103,6 +105,7 @@ pub async fn run(state: Arc<AppState>, mut ws: WebSocket, identity: Result<Ident
         server_version: env!("CARGO_PKG_VERSION").into(),
         device: device.clone(),
         limits: ServerLimits { max_recording_s: state.server.limits.max_recording_s },
+        codecs: vec![Codec::PcmS16le, Codec::Opus],
     };
     tracing::debug!("connection {conn_id} from {device}");
     let mut conn = Conn { state: state.clone(), device, attachment, active: None };
@@ -164,6 +167,8 @@ enum Phase {
 
 struct Recording {
     pcm: Vec<u8>,
+    /// The session's decoder when its audio is Opus; `None` for `pcm_s16le`.
+    opus: Option<Decoder>,
     /// Live sessions send their audio to the engine as it arrives, a frame behind: the last frame
     /// is padded, and only its real samples are sent, at `stop`.
     stream: Option<Stream>,
@@ -236,10 +241,20 @@ impl Conn {
                 .reply(ws, reject(ErrorCode::BadRequest, "a session is already active on this connection"))
                 .await;
         }
-        if start.audio != AudioFormat::default() {
-            let message = "audio must be pcm_s16le at 16000 Hz in 20 ms frames";
+        if start.audio.sample_rate != SAMPLE_RATE || start.audio.frame_ms != FRAME_MS {
+            let message = "audio must be 16000 Hz in 20 ms frames";
             return self.reply(ws, reject(ErrorCode::BadRequest, message)).await;
         }
+        let opus = match start.audio.codec {
+            Codec::PcmS16le => None,
+            Codec::Opus => match Decoder::new(Channels::Mono, SampleRate::Hz16000) {
+                Ok(decoder) => Some(decoder),
+                Err(err) => {
+                    tracing::error!("cannot create an Opus decoder: {}", err.message());
+                    return self.reply(ws, reject(ErrorCode::Internal, "the server couldn't decode Opus")).await;
+                }
+            },
+        };
         if start.eval.is_some() && !self.state.server.eval_mode {
             let message = "`eval` is accepted only when the server runs with eval_mode = true";
             return self.reply(ws, reject(ErrorCode::BadRequest, message)).await;
@@ -288,6 +303,7 @@ impl Conn {
                 });
                 let recording = Recording {
                     pcm: Vec::with_capacity(10 * SAMPLE_RATE as usize * 2),
+                    opus,
                     stream,
                     streamed: 0,
                     last_frame: Instant::now(),
@@ -328,12 +344,9 @@ impl Conn {
         let Some(active) = &mut self.active else { return Flow::Continue };
         let Phase::Recording(recording) = &mut active.phase else { return Flow::Continue };
         let (key, epoch) = (active.key.clone(), active.epoch);
-        if !bytes.len().is_multiple_of(2) {
-            return self
-                .end_recording(ws, &key, epoch, ErrorCode::BadAudio, "an audio frame has an odd number of bytes")
-                .await;
+        if let Err(message) = append_frame(&mut recording.pcm, recording.opus.as_mut(), bytes) {
+            return self.end_recording(ws, &key, epoch, ErrorCode::BadAudio, &message).await;
         }
-        recording.pcm.extend_from_slice(bytes);
         if let Some(stream) = &recording.stream {
             let upto = recording.pcm.len().saturating_sub(FRAME_SAMPLES * 2);
             if upto > recording.streamed {
@@ -532,6 +545,31 @@ fn engine_bias(profile: &Profile, dictionary: &Dictionary, bias: bool) -> Bias {
         Bias { style: profile.prompt_style.clone(), terms: dictionary.bias_terms(&profile.language) }
     } else {
         Bias::default()
+    }
+}
+
+/// Appends one binary message's frame to `pcm`: as it is for `pcm_s16le`, or decoded with `opus`.
+fn append_frame(pcm: &mut Vec<u8>, opus: Option<&mut Decoder>, bytes: &[u8]) -> Result<(), String> {
+    let Some(decoder) = opus else {
+        if !bytes.len().is_multiple_of(2) {
+            return Err("an audio frame has an odd number of bytes".into());
+        }
+        pcm.extend_from_slice(bytes);
+        return Ok(());
+    };
+    // An empty packet would make libopus conceal a lost one instead of decoding.
+    if bytes.is_empty() {
+        return Err("an audio frame is empty".into());
+    }
+    // libopus writes 16-bit samples; the buffer holds exactly one frame, so a longer packet fails.
+    let mut frame = [0u16; FRAME_SAMPLES];
+    match decoder.decode_to_slice(bytes, &mut frame, false) {
+        Ok(FRAME_SAMPLES) => {
+            pcm.extend(frame.iter().flat_map(|sample| sample.to_le_bytes()));
+            Ok(())
+        }
+        Ok(samples) => Err(format!("an Opus packet holds {samples} samples instead of {FRAME_SAMPLES}")),
+        Err(err) => Err(format!("an audio frame isn't a 20 ms Opus packet: {}", err.message())),
     }
 }
 

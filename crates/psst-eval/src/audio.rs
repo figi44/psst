@@ -8,6 +8,13 @@
 //! recorded traces must pass the stale-trace check, and `baseline.json` is rewritten. Last, it
 //! prints the server's stop→final latency of the biased uploads.
 //!
+//! **Measuring the codec.** The audio goes as lossless `pcm_s16le`, so the committed traces
+//! measure the model. [`AudioOptions::codec`] (`--codec opus`, with `--opus-bitrate` and
+//! `--opus-application`) sends it as Opus instead, as the daemon can. Since a run rewrites
+//! `cases.jsonl` and `baseline.json` in the directory it's given, run it on a copy of `evals/`,
+//! next to a `pcm` run on another copy, and compare the two with the gate's tolerances:
+//! `psst-eval replay --evals <opus copy> --against <pcm copy>/baseline.json`.
+//!
 //! It uses the GPU, so it runs only inside `scripts/gpu-session.sh`.
 
 use std::{
@@ -19,14 +26,14 @@ use std::{
 
 use anyhow::{Context, bail, ensure};
 use psst_client::{
-    AudioFrame, Client, Endpoint, Session, SessionEvent, StartOpts,
+    AudioCodec, AudioFrame, Client, Endpoint, Session, SessionEvent, StartOpts,
     api::{ApiClient, Method},
     upload_file,
 };
 use psst_proto::{
     ErrorCode, FRAME_MS, FRAME_SAMPLES, SAMPLE_RATE, ServerTimings,
     api::{ModelState, ModelStatus, routes},
-    ws::{ErrorMsg, EvalOpts, FinalMsg, Mode},
+    ws::{Codec, ErrorMsg, EvalOpts, FinalMsg, Mode},
 };
 use psst_server::{ServeConfig, serve_in_process};
 use uuid::Uuid;
@@ -107,6 +114,9 @@ pub struct AudioOptions {
     pub cache_dir: PathBuf,
     /// Refuse to run outside `scripts/gpu-session.sh`. Off only for tests with the fake engine.
     pub require_gpu_session: bool,
+    /// How the audio goes to the server: [`AudioCodec::Pcm`] for the traces that are committed,
+    /// Opus to measure what the codec costs.
+    pub codec: AudioCodec,
 }
 
 /// `${PSST_CACHE_DIR:-${XDG_CACHE_HOME:-~/.cache}/psst}`, where `gpu-session.sh` keeps its lock.
@@ -173,7 +183,7 @@ pub async fn run(opts: &AudioOptions) -> anyhow::Result<Vec<LatencyRow>> {
     let endpoint = Endpoint::Unix(server.socket().to_owned());
     // Shut the server down whatever happened, then report the first error.
     let recorded = match wait_for_model(&endpoint).await {
-        Ok(()) => record(&mut set, &clips, &endpoint).await,
+        Ok(()) => record(&mut set, &clips, &endpoint, opts.codec).await,
         Err(err) => Err(err),
     };
     let shutdown = server.shutdown().await.context("cannot shut the eval server down");
@@ -209,8 +219,12 @@ async fn record(
     set: &mut EvalSet,
     clips: &[(PathBuf, Vec<i16>)],
     endpoint: &Endpoint,
+    codec: AudioCodec,
 ) -> anyhow::Result<Vec<ServerTimings>> {
     let mut client = Client::connect(endpoint, None).await.context("cannot connect to the eval server")?;
+    if codec != AudioCodec::Pcm {
+        eprintln!("sending the audio as {codec:?}");
+    }
 
     let profiles = set.cases.iter().map(|case| set.profile_for(&case.lang)).collect::<anyhow::Result<Vec<_>>>()?;
     let total = set.cases.len();
@@ -218,7 +232,7 @@ async fn record(
     for (i, (case, (wav, _))) in set.cases.iter_mut().zip(clips).enumerate() {
         let mut traces = Vec::new();
         for bias in [true, false] {
-            let opts = start_opts(&profiles[i], Mode::Upload, bias);
+            let opts = start_opts(&profiles[i], Mode::Upload, bias, codec);
             let fin = transcribe(&mut client, endpoint, opts, |client, opts| upload_file(client, opts, wav))
                 .await
                 .with_context(|| format!("case {} ({})", case.id, if bias { "biased" } else { "raw" }))?;
@@ -236,7 +250,7 @@ async fn record(
 
     for index in live_cases(set, clips) {
         let case = &set.cases[index];
-        let live = live_session(&mut client, start_opts(&profiles[index], Mode::Live, true), &clips[index].1)
+        let live = live_session(&mut client, start_opts(&profiles[index], Mode::Live, true, codec), &clips[index].1)
             .await
             .with_context(|| format!("live smoke test, case {}", case.id))?;
         let upload = &finals[index];
@@ -260,14 +274,26 @@ async fn record(
     Ok(finals.iter().map(|fin| fin.timings).collect())
 }
 
-fn start_opts(profile: &psst_config::Profile, mode: Mode, bias: bool) -> StartOpts {
+fn start_opts(profile: &psst_config::Profile, mode: Mode, bias: bool, codec: AudioCodec) -> StartOpts {
     StartOpts {
         session_id: Uuid::new_v4(),
         profile: Some(profile.name.clone()),
         mode,
         resume: false,
         eval: (!bias).then_some(EvalOpts { bias: false }),
+        codec,
     }
+}
+
+/// Fails unless `session` sends its audio in the codec asked for: a server without Opus would
+/// get PCM instead, and the run would measure the wrong thing.
+fn check_codec(session: &Session, asked: AudioCodec) -> anyhow::Result<()> {
+    let wanted = match asked {
+        AudioCodec::Pcm => Codec::PcmS16le,
+        AudioCodec::Opus(_) => Codec::Opus,
+    };
+    ensure!(session.codec() == wanted, "the session sends {:?} instead of {wanted:?}", session.codec());
+    Ok(())
 }
 
 /// The clips that also run live: the shortest one in each language, then the shortest others,
@@ -338,6 +364,7 @@ async fn transcribe(
     loop {
         // Every attempt is a new session: a refused or failed one is gone from the registry.
         let mut session = start(client, StartOpts { session_id: Uuid::new_v4(), ..opts.clone() });
+        check_codec(&session, opts.codec)?;
         let err = match outcome(&mut session).await {
             Ok(Outcome::Final(fin)) => return Ok(fin),
             Ok(Outcome::Refused(err)) => err,
@@ -392,7 +419,9 @@ async fn outcome(session: &mut Session) -> anyhow::Result<Outcome> {
 /// Streams `samples` through a live session in real time, then stops it and waits for its
 /// `final`.
 async fn live_session(client: &mut Client, opts: StartOpts, samples: &[i16]) -> anyhow::Result<Box<FinalMsg>> {
+    let codec = opts.codec;
     let mut session = client.start(opts);
+    check_codec(&session, codec)?;
     let frames = session.frames();
     let audio: Vec<AudioFrame> = samples
         .chunks(FRAME_SAMPLES)

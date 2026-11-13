@@ -10,6 +10,7 @@ use crate::common;
 use std::{fs, fs::File, path::PathBuf, process::Command, time::Duration};
 
 use common::{CS_PROMPT, EN_PROMPT, Evals, Run};
+use psst_client::AudioCodec;
 use psst_engine_proto::{
     EngineErrorCode,
     fake::{LoadOutcome, LoadScript, Script, read_request_log},
@@ -97,7 +98,12 @@ fn fake_eval_set(evals: &Evals, script: &Script, cases: &[(&str, (&str, usize))]
 }
 
 fn options(evals: &Evals, cache: &tempfile::TempDir) -> AudioOptions {
-    AudioOptions { evals: evals.path().into(), cache_dir: cache.path().into(), require_gpu_session: false }
+    AudioOptions {
+        evals: evals.path().into(),
+        cache_dir: cache.path().into(),
+        require_gpu_session: false,
+        codec: AudioCodec::Pcm,
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -28,7 +28,8 @@ use std::{collections::VecDeque, path::PathBuf, sync::Arc, time::Duration};
 
 use jiff::Timestamp;
 use psst_client::{
-    AudioFrame, Client, FRAME_BUFFER, FrameSender, Session, SessionEvent, StartOpts, TrySendError, upload_file,
+    AudioCodec, AudioFrame, Client, FRAME_BUFFER, FrameSender, OpusSettings, Session, SessionEvent, StartOpts,
+    TrySendError, upload_file,
 };
 use psst_config::{ClientConfig, PasteAction};
 use psst_proto::{
@@ -1091,6 +1092,15 @@ impl Core {
         }
     }
 
+    /// What `audio.codec` asks sessions to send. Opus only over TCP: the socket never leaves the
+    /// machine, so compressing would save nothing.
+    fn codec(&self) -> AudioCodec {
+        match self.cfg.audio.codec {
+            psst_config::AudioCodec::Opus if self.endpoint_is_tcp() => AudioCodec::Opus(OpusSettings::default()),
+            psst_config::AudioCodec::Opus | psst_config::AudioCodec::Pcm => AudioCodec::Pcm,
+        }
+    }
+
     fn usable_client(&mut self) -> Option<Client> {
         if self.client.as_ref().is_some_and(Client::is_closed) {
             self.client = None;
@@ -1142,6 +1152,7 @@ impl Core {
             mode: Mode::Live,
             resume: false,
             eval: None,
+            codec: self.codec(),
         });
         let ctl = self.spawn_session(id, session);
         let rec = self.recording.as_mut().expect("checked");
@@ -1161,7 +1172,14 @@ impl Core {
         let d = &self.pipeline[index];
         let (id, profile) = (d.id, d.profile.clone());
         let wav = self.store.wav_path(id);
-        let opts = StartOpts { session_id: id, profile: Some(profile), mode: Mode::Upload, resume: true, eval: None };
+        let opts = StartOpts {
+            session_id: id,
+            profile: Some(profile),
+            mode: Mode::Upload,
+            resume: true,
+            eval: None,
+            codec: self.codec(),
+        };
         let session = upload_file(client, opts, &wav);
         let ctl = self.spawn_session(id, session);
         let d = &mut self.pipeline[index];

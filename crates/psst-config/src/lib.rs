@@ -22,8 +22,8 @@ use std::{
 use serde::{Serialize, de::DeserializeOwned};
 
 pub use client::{
-    Anchor, AppRule, AudioConfig, AudioInput, ClientConfig, Color, InsertConfig, KNOWN_TERMINALS, OverlayConfig,
-    PasteAction, PasteRule,
+    Anchor, AppRule, AudioCodec, AudioConfig, AudioInput, ClientConfig, Color, InsertConfig, KNOWN_TERMINALS,
+    OverlayConfig, PasteAction, PasteRule,
 };
 pub use dictionary::{DictionaryFile, TermLanguages, TermSpec};
 pub use profiles::{

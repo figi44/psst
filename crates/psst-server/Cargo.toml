@@ -18,6 +18,7 @@ hyper-util = { version = "0.1.21", features = ["tokio"] }
 jiff = "0.2.39"
 minijinja = { version = "3.0.5", features = ["serde", "urlencode"] }
 nix = { version = "0.31.3", features = ["user", "signal", "process", "fs"] }
+opusic-c = { version = "1.6.1", default-features = false }
 psst-config = { version = "0.1.0", path = "../psst-config" }
 psst-dict = { version = "0.1.0", path = "../psst-dict" }
 psst-engine-proto = { version = "0.1.0", path = "../psst-engine-proto" }

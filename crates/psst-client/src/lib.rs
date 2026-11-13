@@ -12,6 +12,9 @@
 //!
 //! - **One session at a time.** The protocol allows one active session per connection, so a
 //!   `start` made while another session is active is sent once that session has ended.
+//! - **Codec.** A session sends its audio in the [`AudioCodec`] its [`StartOpts`] ask for when the
+//!   server's `welcome` lists it, and as PCM otherwise; [`Session::codec`] says which. Each
+//!   session has an encoder of its own.
 //! - **`progress` silence.** A session that hears nothing for [`PROGRESS_TIMEOUT`] after its
 //!   `start` was sent, or after the last `ready`/`progress`, is [`SessionEvent::Lost`]. That ends
 //!   the connection: every session on it is lost and [`Client::closed`] resolves.
@@ -24,6 +27,7 @@
 //! Everything here must run inside a tokio runtime.
 
 pub mod api;
+mod codec;
 mod connection;
 mod upload;
 mod wav;
@@ -31,14 +35,18 @@ mod wav;
 use std::{fmt, io, path::Path, sync::Arc, time::Duration};
 
 use psst_proto::{
-    ClientTimings, FRAME_SAMPLES, HistoryId, SessionId,
-    ws::{ErrorMsg, EvalOpts, FinalMsg, Mode, ProgressState, ReadyModelState, ReportMsg, WelcomeMsg},
+    ClientTimings, ErrorCode, FRAME_SAMPLES, HistoryId, SessionId,
+    ws::{Codec, ErrorMsg, EvalOpts, FinalMsg, Mode, ProgressState, ReadyModelState, ReportMsg, WelcomeMsg},
 };
 pub use psst_proto::{Endpoint, Token};
 use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::connection::{Cmd, Outgoing, Shared};
+pub use crate::codec::{AudioCodec, OpusApplication, OpusSettings};
 pub use crate::wav::{WavError, WavInfo, read_wav_info};
+use crate::{
+    codec::Encoder,
+    connection::{Cmd, Outgoing, Shared},
+};
 
 /// 20 ms of 16 kHz mono audio. The last frame of a recording is padded with zeros.
 pub type AudioFrame = [i16; FRAME_SAMPLES];
@@ -97,7 +105,7 @@ impl Client {
         connection::connect(ep, token).await
     }
 
-    /// The server's `welcome`: its version, this device, and the recording limit.
+    /// The server's `welcome`: its version, this device, the recording limit and the codecs.
     pub fn welcome(&self) -> &WelcomeMsg {
         &self.welcome
     }
@@ -132,7 +140,9 @@ impl Client {
 
     /// Sends `start` and returns at once; everything that follows arrives as [`SessionEvent`]s.
     ///
-    /// If another session is still active on this connection, `start` is sent once it ends.
+    /// If another session is still active on this connection, `start` is sent once it ends. If
+    /// the encoder can't be set up, nothing is sent and the session ends with an `internal`
+    /// [`SessionEvent::Error`].
     pub fn start(&mut self, opts: StartOpts) -> Session {
         self.start_with(opts, FRAME_BUFFER).0
     }
@@ -142,17 +152,29 @@ impl Client {
         let (events_tx, events_rx) = mpsc::unbounded_channel();
         let (frames_tx, frames_rx) = mpsc::channel(buffer);
         let (ready_tx, ready_rx) = watch::channel(None);
-        let start = Cmd::Start(Box::new(connection::NewSession {
-            opts,
-            events: events_tx,
-            frames: frames_rx,
-            ready: ready_tx,
-        }));
-        // If the connection is gone, the command (and with it the event sender) is dropped, so
-        // the session reports `Lost` at once.
-        let _ = self.cmd.send(start);
+        let codec = match Encoder::new(opts.codec, &self.welcome.codecs) {
+            Ok(encoder) => {
+                let codec = encoder.codec();
+                let start = Cmd::Start(Box::new(connection::NewSession {
+                    opts,
+                    events: events_tx,
+                    frames: frames_rx,
+                    ready: ready_tx,
+                    encoder,
+                }));
+                // If the connection is gone, the command (and with it the event sender) is
+                // dropped, so the session reports `Lost` at once.
+                let _ = self.cmd.send(start);
+                codec
+            }
+            Err(message) => {
+                let _ = events_tx.send(SessionEvent::Error(ErrorMsg::new(Some(id), ErrorCode::Internal, message)));
+                Codec::PcmS16le
+            }
+        };
         let session = Session {
             id,
+            codec,
             events: events_rx,
             cmd: self.cmd.clone(),
             frames: FrameSender { tx: frames_tx },
@@ -195,11 +217,14 @@ pub struct StartOpts {
     pub mode: Mode,
     pub resume: bool,
     pub eval: Option<EvalOpts>,
+    /// Used when the server accepts it; otherwise the audio goes as PCM.
+    pub codec: AudioCodec,
 }
 
 /// One dictation on a connection. `Send`; all outcomes arrive through [`Session::next_event`].
 pub struct Session {
     id: SessionId,
+    codec: Codec,
     events: mpsc::UnboundedReceiver<SessionEvent>,
     cmd: mpsc::UnboundedSender<Cmd>,
     frames: FrameSender,
@@ -216,6 +241,12 @@ impl fmt::Debug for Session {
 impl Session {
     pub fn id(&self) -> SessionId {
         self.id
+    }
+
+    /// The codec its audio goes in: the one [`StartOpts::codec`] asked for if the server accepts
+    /// it, else `pcm_s16le`.
+    pub fn codec(&self) -> Codec {
+        self.codec
     }
 
     /// The audio channel of a live session. Frames are sent once the server has answered
@@ -299,7 +330,7 @@ pub enum SessionEvent {
     /// An `error` before `ready` (`busy`, `model_unavailable`, `model_unloaded`, `bad_request`).
     Rejected(ErrorMsg),
     /// An `error` after `ready`. Also reported, with code `internal`, when an upload can't read
-    /// its file; the session is then cancelled on the server.
+    /// its file or a frame can't be encoded; the session is then cancelled on the server.
     Error(ErrorMsg),
     Cancelled,
     Lost(LostReason),

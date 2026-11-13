@@ -1,7 +1,15 @@
 //! Messages on the client ↔ server WebSocket, `/v1/client`.
 //!
-//! Text frames carry one JSON message each, tagged by `type`. Binary frames carry audio:
-//! 20 ms of `pcm_s16le` (640 bytes) per frame. Receivers ignore fields they don't know.
+//! Text frames carry one JSON message each, tagged by `type`. Receivers ignore fields they don't
+//! know.
+//!
+//! Binary frames carry the active session's audio: 16 kHz mono, one 20 ms frame of 320 samples
+//! per message, in the [`Codec`] its `start` named, the last frame padded with zeros. The client
+//! sends them only after `ready` with `need_audio: true`, oldest first. The server keeps the audio
+//! as 16-bit PCM whatever the codec, decoding Opus as each packet arrives with one decoder per
+//! session, and counts samples after decoding (see [`StopMsg`]). A message that isn't a frame in
+//! the session's codec ends the session with `error bad_audio`: for `pcm_s16le` an odd number of
+//! bytes, for `opus` an empty message or one that isn't an Opus packet of exactly 20 ms.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -53,6 +61,15 @@ pub struct WelcomeMsg {
     /// The device this connection is authenticated as.
     pub device: DeviceId,
     pub limits: ServerLimits,
+    /// The codecs `start.audio` may use. Absent from servers that predate Opus, which accept only
+    /// `pcm_s16le`: they can't parse a `start` with another codec, and answer it with
+    /// `error bad_request` without a `session_id`. So a client sends Opus only when it's listed.
+    #[serde(default = "pcm_only")]
+    pub codecs: Vec<Codec>,
+}
+
+fn pcm_only() -> Vec<Codec> {
+    vec![Codec::PcmS16le]
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,6 +93,8 @@ pub struct StartMsg {
     pub eval: Option<EvalOpts>,
 }
 
+/// `codec` is `pcm_s16le` or one more from `welcome.codecs`; anything but 16000 Hz in 20 ms frames
+/// gets `error bad_request`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AudioFormat {
     pub codec: Codec,
@@ -89,10 +108,17 @@ impl Default for AudioFormat {
     }
 }
 
+/// How a binary message holds its 20 ms frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Codec {
+    /// 320 samples as 16-bit little-endian PCM: 640 bytes.
     PcmS16le,
+    /// One Opus packet that decodes to exactly 320 samples. Every frame has its packet: the
+    /// encoder runs without DTX (and without FEC, which TCP doesn't need). Opus delays the audio
+    /// by its 6.5 ms lookahead, so the decoded PCM starts with 6.5 ms of near-silence, and the last
+    /// 6.5 ms of a recording, less its padding, are cut off.
+    Opus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,7 +136,9 @@ pub struct EvalOpts {
     pub bias: bool,
 }
 
-/// Ends the audio of a session. The server requires `samples ≤ received < samples + 320`.
+/// Ends the audio of a session. `samples` counts the real (unpadded) samples, and the server
+/// requires `samples ≤ received < samples + 320`, counting the samples it has decoded; otherwise
+/// `error bad_audio`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StopMsg {
     pub session_id: SessionId,

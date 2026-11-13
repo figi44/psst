@@ -8,7 +8,9 @@
 //! received and answered after [`FakeServerConfig::final_delay`] with the next scripted
 //! [`Outcome`]. Finished sessions answer `resume` with their `final`; running ones are attached.
 //! A disconnect drops sessions still recording and keeps stopped ones running. A device that
-//! connects again replaces its older connection, as with the real server.
+//! connects again replaces its older connection, as with the real server. Its `welcome` offers
+//! only `pcm_s16le`, as servers from before Opus do, so [`SeenSession::audio`] is exactly what the
+//! client sent.
 //!
 //! It runs on its own thread with its own runtime, so sync and async tests use it the same way.
 
@@ -26,8 +28,8 @@ use psst_proto::{
     Endpoint, ErrorCode, FRAME_SAMPLES, Final, HistoryId, ServerTimings, SessionId,
     api::{ApiError, ApiErrorCode, PairRedeem, PairRedeemed},
     ws::{
-        CancelledMsg, ClientMsg, ErrorMsg, FinalMsg, ProgressMsg, ProgressState, ReadyModelState, ReadyMsg, ReportMsg,
-        ServerLimits, ServerMsg, StartMsg, WelcomeMsg,
+        CancelledMsg, ClientMsg, Codec, ErrorMsg, FinalMsg, ProgressMsg, ProgressState, ReadyModelState, ReadyMsg,
+        ReportMsg, ServerLimits, ServerMsg, StartMsg, WelcomeMsg,
     },
 };
 use tokio::{
@@ -395,6 +397,7 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(inner: Arc<Inner>, mut st
         server_version: "fake".into(),
         device: device.clone(),
         limits: ServerLimits { max_recording_s: inner.cfg.max_recording_s },
+        codecs: vec![Codec::PcmS16le],
     };
     if ws.send(send(&ServerMsg::Welcome(welcome))).await.is_err() {
         return;

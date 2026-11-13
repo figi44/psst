@@ -82,6 +82,22 @@ pub const KNOWN_TERMINALS: &[&str] = &[
 #[serde(default, deny_unknown_fields)]
 pub struct AudioConfig {
     pub input: AudioInput,
+    pub codec: AudioCodec,
+}
+
+/// `audio.codec`: how audio goes to the server over TCP. Opus by default: its effect on accuracy
+/// can't be told apart from noise on the eval set, though no lossy codec can pass the eval gate's
+/// zero-change tolerances (`psst_client::OpusSettings` has the numbers).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioCodec {
+    /// Opus over TCP, at 6 % of PCM's bytes (1.9 instead of 32.4 KB/s), for a slow or metered
+    /// link. A server from before Opus gets PCM anyway, and over the socket, which never leaves
+    /// the machine, it's always PCM.
+    #[default]
+    Opus,
+    /// Lossless PCM.
+    Pcm,
 }
 
 /// Where audio comes from: `"default"`, a capture device's name, or `"file:<path>"`.
