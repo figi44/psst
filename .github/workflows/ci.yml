@@ -29,6 +29,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo nextest run --workspace --locked --no-fail-fast
+      - run: cargo nextest run --workspace --locked --profile ci
       - name: Golden frames match the committed ones
         run: git diff --exit-code -- engines/faster-whisper/tests/golden
