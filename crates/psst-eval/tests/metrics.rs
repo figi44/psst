@@ -87,6 +87,18 @@ fn an_edit_counts_when_it_unmatches_a_correct_word_whatever_else_it_fixes() {
 }
 
 #[test]
+fn an_edit_that_keeps_a_correct_word_is_not_whatever_the_alignment_does_with_repeats() {
+    let raw = "Use cloud Claude cod you works with psst.";
+    let out = output(
+        raw,
+        vec![edit(Stage::Dictionary, "fuzzy", raw, "Claude cod", "Claude Code")],
+        "Use cloud Claude Code you works with psst.",
+    );
+    let c = counts("Use Claude. Claude Code works with psst.", &["Claude Code"], &out, false);
+    assert_eq!(c.false_corrections, 0);
+}
+
+#[test]
 fn an_edit_that_adds_missing_words_to_a_correct_one_is_not() {
     let raw = "Claude is great";
     let out = output(raw, vec![edit(Stage::Dictionary, "fuzzy", raw, "Claude", "Claude Code")], "Claude Code is great");
