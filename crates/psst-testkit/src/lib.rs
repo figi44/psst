@@ -40,7 +40,8 @@ pub struct TestServerConfig {
 /// A `psst-server serve` process with its own directories. Killed on drop.
 #[derive(Debug)]
 pub struct TestServer {
-    child: Child,
+    child: Option<Child>,
+    bin: PathBuf,
     dir: TempDir,
     socket: PathBuf,
     tcp: Option<SocketAddr>,
@@ -67,29 +68,58 @@ pub fn spawn_server(bin: &Path, cfg: TestServerConfig) -> TestServer {
     let files = ServerFiles { server, profiles: cfg.profiles, dictionary: cfg.dictionary };
     files.write(&root.join("config")).expect("write config");
 
-    let log = fs::File::create(root.join("server.log")).expect("create log");
-    let child = Command::new(bin)
-        .arg("serve")
-        .arg("--config-dir")
-        .arg(root.join("config"))
-        .arg("--state-dir")
-        .arg(root.join("state"))
-        .arg("--cache-dir")
-        .arg(root.join("cache"))
-        .arg("--socket")
-        .arg(&socket)
-        .stdin(Stdio::null())
-        .stdout(log.try_clone().expect("clone log"))
-        .stderr(log)
-        .spawn()
-        .unwrap_or_else(|err| panic!("cannot start {}: {err}", bin.display()));
-    let mut server = TestServer { child, dir, socket, tcp };
-    let socket = server.socket.clone();
-    wait_for_socket(&mut server.child, &socket, &server.dir.path().join("server.log"));
+    let mut server = TestServer { child: None, bin: bin.into(), dir, socket, tcp };
+    server.start();
     server
 }
 
 impl TestServer {
+    fn start(&mut self) {
+        let root = self.dir.path();
+        let log_path = root.join("server.log");
+        let log = fs::OpenOptions::new().create(true).append(true).open(&log_path).expect("open log");
+        let mut child = Command::new(&self.bin)
+            .arg("serve")
+            .arg("--config-dir")
+            .arg(root.join("config"))
+            .arg("--state-dir")
+            .arg(root.join("state"))
+            .arg("--cache-dir")
+            .arg(root.join("cache"))
+            .arg("--socket")
+            .arg(&self.socket)
+            .stdin(Stdio::null())
+            .stdout(log.try_clone().expect("clone log"))
+            .stderr(log)
+            .spawn()
+            .unwrap_or_else(|err| panic!("cannot start {}: {err}", self.bin.display()));
+        wait_for_socket(&mut child, &self.socket, &log_path);
+        self.child = Some(child);
+    }
+
+    /// Kills the server and starts it again with the same directories, config and engine script.
+    /// The log keeps growing in the same file.
+    pub fn restart(&mut self) {
+        self.kill();
+        self.start();
+    }
+
+    /// Waits until the server's log contains `needle` at least `count` times; panics with the
+    /// log after `timeout`.
+    pub fn wait_for_log(&self, needle: &str, count: usize, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let log = self.log();
+            if log.matches(needle).count() >= count {
+                return;
+            }
+            if Instant::now() > deadline {
+                panic!("`{needle}` didn't appear {count} times in the server log within {timeout:?}; log:\n{log}");
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     pub fn socket(&self) -> &Path {
         &self.socket
     }
@@ -97,6 +127,11 @@ impl TestServer {
     /// The server's Unix socket as a client endpoint.
     pub fn endpoint(&self) -> Endpoint {
         Endpoint::Unix(self.socket.clone())
+    }
+
+    /// The TCP address, when started with `tcp: true`.
+    pub fn tcp_addr(&self) -> Option<SocketAddr> {
+        self.tcp
     }
 
     /// The TCP endpoint, when started with `tcp: true`.
@@ -126,14 +161,17 @@ impl TestServer {
         fs::read_to_string(self.dir.path().join("server.log")).unwrap_or_default()
     }
 
+    /// The running server's process id.
     pub fn pid(&self) -> u32 {
-        self.child.id()
+        self.child.as_ref().expect("the server is running").id()
     }
 
     /// Kills the server and waits for it.
     pub fn kill(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
