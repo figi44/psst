@@ -32,7 +32,7 @@
         default = pkgs.psst;
       });
 
-      devShells = forAllSystems (pkgs: {
+      devShells = forAllSystems (pkgs: rec {
         default = pkgs.mkShell {
           packages = [
             pkgs.cargo
@@ -65,6 +65,16 @@
             fi
           '';
         };
+
+        # The default shell plus `psst-engine-dev`, which runs this worktree's engine on the GPU.
+        # GPU work runs only inside scripts/gpu-session.sh.
+        gpu = default.overrideAttrs (old: {
+          nativeBuildInputs = old.nativeBuildInputs ++ [
+            (pkgs.callPackage ./nix/packages/psst-engine-dev.nix {
+              engine = pkgs.psst-engine-faster-whisper-cuda;
+            })
+          ];
+        });
       });
 
       checks = forAllSystems (pkgs: {
