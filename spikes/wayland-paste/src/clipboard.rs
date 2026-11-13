@@ -249,6 +249,11 @@ impl Machine {
                         // A paste already waiting keeps waiting for the new read.
                     }
                 }
+                // A restore check read an older selection: check the new one.
+                if let Some((id, generation)) = self.restore_check.take() {
+                    out.push(Action::CancelRead { id });
+                    self.restore_due(generation, &mut out);
+                }
             }
             Input::ReadDone { id, result } => {
                 if let Some(SnapReq { generation, state: SnapState::Reading { id: rid, mime } }) = &self.snap
@@ -339,36 +344,38 @@ impl Machine {
                     out.push(Action::ScheduleRestore { generation, after: self.cfg.restore_after });
                 }
             }
-            Input::RestoreDue { generation } => {
-                if !self.pending.as_ref().is_some_and(|p| p.generation == generation && p.armed) {
-                    out.push(Action::Note(Note::TimerIgnored { generation }));
-                    return out;
-                }
-                match self.owner.clone() {
-                    Owner::Ours(OwnKind::Dictation(g)) if g == generation => self.restore(generation, &mut out),
-                    Owner::External { offer, mimes } => match choose_text_mime(&mimes) {
-                        Some(m) => {
-                            let id = self.alloc_read();
-                            out.push(Action::Read { id, offer, mime: m.to_owned() });
-                            self.restore_check = Some((id, generation));
-                        }
-                        None => {
-                            self.pending = None;
-                            out.push(Action::Note(Note::RestoreSkipped {
-                                generation,
-                                reason: "clipboard changed (no text)".into(),
-                            }));
-                        }
-                    },
-                    other => {
-                        let reason = format!("selection is now {other:?}");
-                        self.pending = None;
-                        out.push(Action::Note(Note::RestoreSkipped { generation, reason }));
-                    }
-                }
-            }
+            Input::RestoreDue { generation } => self.restore_due(generation, &mut out),
         }
         out
+    }
+
+    fn restore_due(&mut self, generation: Gen, out: &mut Vec<Action>) {
+        if !self.pending.as_ref().is_some_and(|p| p.generation == generation && p.armed) {
+            out.push(Action::Note(Note::TimerIgnored { generation }));
+            return;
+        }
+        match self.owner.clone() {
+            Owner::Ours(OwnKind::Dictation(g)) if g == generation => self.restore(generation, out),
+            Owner::External { offer, mimes } => match choose_text_mime(&mimes) {
+                Some(m) => {
+                    let id = self.alloc_read();
+                    out.push(Action::Read { id, offer, mime: m.to_owned() });
+                    self.restore_check = Some((id, generation));
+                }
+                None => {
+                    self.pending = None;
+                    out.push(Action::Note(Note::RestoreSkipped {
+                        generation,
+                        reason: "clipboard changed (no text)".into(),
+                    }));
+                }
+            },
+            other => {
+                let reason = format!("selection is now {other:?}");
+                self.pending = None;
+                out.push(Action::Note(Note::RestoreSkipped { generation, reason }));
+            }
+        }
     }
 
     fn alloc_read(&mut self) -> ReadId {
@@ -576,6 +583,24 @@ mod tests {
         assert_eq!(offer, 2);
         let a = m.handle(Input::ReadDone { id, result: Ok(b"one".to_vec()) });
         assert_eq!(restored(&a).unwrap().data, b"orig");
+    }
+
+    #[test]
+    fn restore_check_follows_a_selection_change() {
+        let mut m = Machine::new(Config::default());
+        m.handle(Input::SelectionChanged(ext(1, &["text/plain"])));
+        dictate(&mut m, 1, "one", Some("orig"));
+        // A manager holds the dictation; its answer is still pending when the user copies.
+        m.handle(Input::SelectionChanged(ext(2, &["text/plain"])));
+        let (stale, _, _) = read_of(&m.handle(Input::RestoreDue { generation: 1 })).unwrap();
+        let a = m.handle(Input::SelectionChanged(ext(3, &["text/plain"])));
+        assert!(has(&a, |a| matches!(a, Action::CancelRead { id } if *id == stale)));
+        let (fresh, offer, _) = read_of(&a).expect("re-check the new selection");
+        assert_eq!(offer, 3);
+        assert!(restored(&m.handle(Input::ReadDone { id: stale, result: Ok(b"one".to_vec()) })).is_none());
+        let a = m.handle(Input::ReadDone { id: fresh, result: Ok(b"user copy".to_vec()) });
+        assert!(restored(&a).is_none());
+        assert!(!m.has_pending_restore());
     }
 
     #[test]
