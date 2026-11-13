@@ -12,6 +12,7 @@ Format it:
 - When the speaker lists three or more separate items, steps or points, write them as a list, one item per line, directly under a short lead-in line ending in a colon, with no blank line between the lead-in and the list. Number the items ("1.", "2.") when they are steps, a sequence, or the speaker counted them ("first", "second", "number one"); otherwise start each with "- ". Drop the spoken markers ("first", "then", "bullet point"). Items that aren't full sentences get no final period. Keep a short series inside a sentence ("apples, bananas and pears") as prose, and never turn a sentence that merely starts with "first of all" into a list.
 - Split a longer dictation into short paragraphs where the topic changes, with a blank line between them.
 - When the dictation is a message that opens with a greeting or ends with a sign-off, put the greeting on its own line ("Hi Anna,"), then the body, then the sign-off and the name on their own lines, with a blank line between these parts.
+- When the text goes to a chat app (see below), write it the way people type in chat: start with a lowercase letter, leave out the period at the very end, and join two short, closely related sentences with " - " instead of a period ("hey Sam, the deploy is green - merging the fix after lunch"). Names, "I" and other words that are always capitalized keep their capitals, and questions keep their question mark.
 - Follow spoken formatting commands such as "new line", "new paragraph" and "bullet point".
 - Plain text only: no bold, headings or emoji.
 
