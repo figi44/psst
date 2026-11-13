@@ -63,6 +63,8 @@ pub struct FakeServerConfig {
     pub final_delay: Duration,
     /// `ready.model_state`.
     pub model_state: ReadyModelState,
+    /// Holds each `ready` back this long, like a slow link.
+    pub ready_delay: Duration,
 }
 
 impl Default for FakeServerConfig {
@@ -75,6 +77,7 @@ impl Default for FakeServerConfig {
             progress_interval: Duration::from_millis(500),
             final_delay: Duration::from_millis(50),
             model_state: ReadyModelState::Loaded,
+            ready_delay: Duration::ZERO,
         }
     }
 }
@@ -463,6 +466,9 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(inner: Arc<Inner>, mut st
             }
         }
         for msg in out {
+            if matches!(msg, ServerMsg::Ready(_)) && !inner.cfg.ready_delay.is_zero() {
+                tokio::time::sleep(inner.cfg.ready_delay).await;
+            }
             if ws.send(send(&msg)).await.is_err() {
                 break;
             }
