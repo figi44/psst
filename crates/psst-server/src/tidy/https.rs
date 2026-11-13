@@ -97,6 +97,14 @@ impl Https {
             .with_context(|| format!("TLS with {host} failed"))
     }
 
+    /// Sends requests for `origin` (`host:port`) down `io` instead of a TLS connection.
+    #[cfg(test)]
+    pub async fn connect_to(&self, origin: &str, io: tokio::io::DuplexStream) {
+        let (sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(io)).await.unwrap();
+        tokio::spawn(connection);
+        self.idle.lock().await.insert(origin.to_owned(), sender);
+    }
+
     async fn connect(&self, host: &str, port: u16) -> Result<SendRequest<Full<Bytes>>> {
         let tls = self.tls(host, port).await?;
         let (sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(tls)).await?;
