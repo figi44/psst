@@ -94,8 +94,10 @@ fn a_spelling_may_start_or_end_with_punctuation() {
 #[test]
 fn matching_ignores_case_beyond_ascii_and_keeps_offsets_right() {
     let dict = dictionary(
-        "[[terms]]\ntext = \"Šťastný\"\n[[terms]]\ntext = \"Straße\"\n[[terms]]\ntext = \"Hyprland\"\nsounds_like = [\"hyper land\"]",
+        "[[terms]]\ntext = \"Šťastný\"\n[[terms]]\ntext = \"Straße\"\n[[terms]]\ntext = \"Hyprland\"\nsounds_like = [\"hyper land\"]\n[[terms]]\ntext = \"ǰak\"",
     );
+    // `ǰ` folds to `j` and a combining caron, which NFC would recombine.
+    assert_eq!(owned(matches(&dict, "ǰak", "de")), [found("ǰak", "ǰak", Outcome::Keep)]);
     // `İ` folds to two characters, `ẞ` to `ss`: matches after them still map back exactly.
     assert_eq!(
         owned(matches(&dict, "İİ ŠŤASTNÝ GROẞE STRASSE, Hyper Land", "de")),

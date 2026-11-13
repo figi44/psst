@@ -6,7 +6,7 @@ use std::{cmp::Reverse, collections::HashMap, ops::Range};
 use aho_corasick::AhoCorasick;
 use psst_config::TermLanguages;
 
-use crate::{Error, Result, Term, common::is_common_word, fold::Folded, fold::fold};
+use crate::{Error, Result, Term, common::is_common_word, fold::Folded, fold::match_key};
 
 /// What the pipeline does with an exact match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,7 +100,7 @@ impl Matcher {
             let spellings = std::iter::once((&term.text, true)).chain(term.sounds_like.iter().map(|s| (s, false)));
             let mut own: Vec<usize> = Vec::new();
             for (spelling, is_text) in spellings {
-                let key = fold(spelling.trim());
+                let key = match_key(spelling.trim());
                 if key.is_empty() {
                     continue;
                 }
