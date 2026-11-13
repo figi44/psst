@@ -131,7 +131,9 @@ fn render(status: StatusCode, template: &str, ctx: Value) -> Response {
                 (CONTENT_SECURITY_POLICY, HeaderValue::from_static(CSP)),
                 (X_FRAME_OPTIONS, HeaderValue::from_static("DENY")),
                 (X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff")),
-                (REFERRER_POLICY, HeaderValue::from_static("no-referrer")),
+                // Not `no-referrer`: with it, browsers send `Origin: null` with a page's own
+                // (non-script) form posts, which then fail the same-origin check.
+                (REFERRER_POLICY, HeaderValue::from_static("same-origin")),
                 (CACHE_CONTROL, HeaderValue::from_static("no-store")),
             ],
             Html(html),

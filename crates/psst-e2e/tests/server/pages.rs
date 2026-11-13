@@ -185,7 +185,7 @@ async fn pages_need_a_session_or_a_token_and_refuse_posts_from_elsewhere() {
         ("content-security-policy", "default-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'"),
         ("x-frame-options", "DENY"),
         ("x-content-type-options", "nosniff"),
-        ("referrer-policy", "no-referrer"),
+        ("referrer-policy", "same-origin"),
         ("cache-control", "no-store"),
         ("content-type", "text/html; charset=utf-8"),
     ];
