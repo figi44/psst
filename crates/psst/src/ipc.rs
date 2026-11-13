@@ -1,6 +1,10 @@
 //! The daemon's command socket, `$XDG_RUNTIME_DIR/psst/daemon.sock` (plan 9.1): one JSON
 //! request line, one JSON response line, then the connection closes. The CLI side is blocking
 //! std I/O, so a command costs a connect and a round trip.
+//!
+//! [`Request::Follow`] is the exception: the connection stays open, and the daemon writes the
+//! [`Status`] as one JSON line at once and again after every change, until either side closes
+//! it ([`crate::follow`] is the client).
 
 use std::{
     io::{self, BufRead, BufReader, Write},
@@ -42,6 +46,10 @@ pub enum Request {
         session: SessionId,
     },
     Status,
+    /// Subscribes to the status: a [`Status`] line now and one after every change. Changes
+    /// closer together than the daemon's `follow_interval` arrive as one line, and audio levels
+    /// are never part of it.
+    Follow,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -63,13 +71,17 @@ impl Response {
     }
 }
 
-/// `psst status --json`.
+/// `psst status --json`, and each line of `psst status --follow --json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Status {
-    /// `idle`, `starting`, `recording`, `finishing` or `inserting`.
+    /// `idle`, `starting`, `recording`, `finishing` or `inserting`; `psst status --follow` uses
+    /// `stopped` while the daemon isn't running ([`Status::stopped`]).
     pub state: String,
-    /// `connected`, `connecting`, or `offline: <reason>`.
+    /// `connected to <server>`, `connecting`, or `offline: <reason>`.
     pub connection: String,
+    /// The error the overlay shows, while it shows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recording: Option<ActiveInfo>,
     /// Dictations after `stop`, in delivery order.
@@ -85,8 +97,12 @@ pub struct Status {
 pub struct ActiveInfo {
     pub session_id: SessionId,
     pub profile: String,
-    /// What it's doing, for example `recording (offline: …)` or `uploading`.
+    /// What it's doing, for example `recording, offline: …` or `uploading`.
     pub phase: String,
+    /// Why it isn't streaming to the server: it records to its file only, and is uploaded at
+    /// `stop`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offline: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -102,6 +118,9 @@ pub struct RetainedInfo {
     pub text: Option<String>,
     /// The command that delivers or retries it.
     pub hint: String,
+    /// It's the dictation being recorded or finished right now, not one waiting for you.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub in_progress: bool,
 }
 
 /// Sends one request to the daemon and waits for its response.
@@ -118,9 +137,31 @@ pub fn call(socket: &Path, request: &Request) -> io::Result<Response> {
 }
 
 impl Status {
+    /// What `psst status --follow` reports while the daemon isn't running.
+    pub fn stopped() -> Status {
+        Status {
+            state: "stopped".into(),
+            connection: "offline: the daemon isn't running".into(),
+            error: None,
+            recording: None,
+            finishing: Vec::new(),
+            retained: Vec::new(),
+            warnings: Vec::new(),
+            last_timings: None,
+        }
+    }
+
+    /// Saved recordings waiting for `psst retry` or `psst paste-last`.
+    pub fn saved(&self) -> usize {
+        self.retained.iter().filter(|r| !r.in_progress).count()
+    }
+
     /// The human-readable form of `psst status`.
     pub fn render(&self) -> String {
         let mut out = format!("state: {}\nserver: {}\n", self.state, self.connection);
+        if let Some(error) = &self.error {
+            out += &format!("error: {error}\n");
+        }
         if let Some(rec) = &self.recording {
             out += &format!("recording: {} ({}, {})\n", rec.session_id, rec.profile, rec.phase);
         }
