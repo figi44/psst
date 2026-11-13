@@ -13,7 +13,7 @@ on:
       - flake.lock
       - justfile
       - .github/workflows/android.yml
-  # main's pushes replace the rolling release; a tag, which the paths don't filter, makes a stable one.
+  # Each push to main publishes a prerelease; a tag, which the paths don't filter, makes a stable one.
   push:
     branches: [main]
     tags: ['v*']
@@ -31,8 +31,8 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  # A push waits for the run before it, which cancelled mid-publish would leave the rolling release
-  # half replaced. Waiting runs still give way to a newer one.
+  # A push waits for the run before it, which cancelled mid-publish would leave its release a draft.
+  # Waiting runs still give way to a newer one.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -50,6 +50,7 @@ jobs:
     timeout-minutes: 30
     outputs:
       version: ${{ steps.version.outputs.name }}
+      code: ${{ steps.version.outputs.code }}
     steps:
       # The image leaves 14 GB free and the Nix store takes 11: a run saving the SDK, as main's do,
       # ended with 234 MB. These unused toolchains are 15 GB, deleted while Nix installs.
@@ -198,18 +199,17 @@ jobs:
           else
             gh release create "$GITHUB_REF_NAME" "psst-$VERSION.apk" --title "$VERSION" --generate-notes
           fi
-      # One prerelease whose tag follows main. Its title is the APK's versionName, for Obtainium's
-      # "use release title as version" to compare with the installed app's; the title goes last, so
-      # it never names an APK that isn't up yet.
-      - name: Publish the rolling release
+      # A prerelease per build of main. Its title is the APK's versionName, for Obtainium's "use
+      # release title as version" to compare with the installed app's.
+      - name: Publish the main build
         if: github.ref_type == 'branch'
+        env:
+          TAG: main-${{ needs.apk.outputs.code }}
+          MESSAGE: ${{ github.event.head_commit.message }}
         run: |
-          mv app-release.apk psst-rolling.apk
-          notes="The app as of $GITHUB_SHA on main, replaced by every push that changes it."
-          if gh release view rolling > /dev/null 2>&1; then
-            gh api --method PATCH "repos/$GH_REPO/git/refs/tags/rolling" -f sha="$GITHUB_SHA" -F force=true > /dev/null
-            gh release upload rolling psst-rolling.apk --clobber
-            gh release edit rolling --title "$VERSION" --notes "$notes"
+          mv app-release.apk "psst-$TAG.apk"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" "psst-$TAG.apk" --clobber
           else
-            gh release create rolling psst-rolling.apk --prerelease --target "$GITHUB_SHA" --title "$VERSION" --notes "$notes"
+            gh release create "$TAG" "psst-$TAG.apk" --prerelease --target "$GITHUB_SHA" --title "$VERSION" --notes "$MESSAGE"
           fi
