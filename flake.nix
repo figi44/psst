@@ -4,21 +4,47 @@
   # Pinned to the revision the host config uses, so builds hit derivations already in the local store and
   # in the caches the host config uses (plan section 11).
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/1d060086d60cb76a40cf37109f979d88a5bd6396";
+  # Only for evaluating the Home Manager module in `checks`; pinned to the host config's revision too.
+  inputs.home-manager = {
+    url = "github:nix-community/home-manager/b787c48e2ec57a9d098f5c2721882a3bc1e16f97";
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
 
   outputs =
-    { self, nixpkgs }:
+    {
+      self,
+      nixpkgs,
+      home-manager,
+    }:
     let
+      inherit (nixpkgs) lib;
       systems = [
         "x86_64-linux"
         "aarch64-linux"
       ];
-      forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+      # nixpkgs as the host config configures it (only `allowUnfree`, for the CUDA engine), plus psst.
+      pkgsFor = lib.genAttrs systems (
+        system:
+        import nixpkgs {
+          inherit system;
+          config.allowUnfree = true;
+          overlays = [ self.overlays.default ];
+        }
+      );
+      forAllSystems = f: lib.genAttrs systems (system: f pkgsFor.${system});
     in
     {
-      # Packages, the GPU dev shell, and the NixOS and Home Manager modules come with the Nix
-      # work package.
+      overlays.default = import ./nix/overlay.nix;
+      # Both build psst from the host's pkgs through the overlay (docs/nix.md).
+      nixosModules.psst-server = import ./nix/modules/nixos.nix self.overlays.default;
+      homeManagerModules.psst = import ./nix/modules/home-manager.nix self.overlays.default;
 
-      devShells = forAllSystems (pkgs: {
+      packages = forAllSystems (pkgs: {
+        inherit (pkgs) psst psst-server psst-engine-faster-whisper-cuda;
+        default = pkgs.psst;
+      });
+
+      devShells = forAllSystems (pkgs: rec {
         default = pkgs.mkShell {
           packages = [
             pkgs.cargo
@@ -51,10 +77,33 @@
             fi
           '';
         };
+
+        # The default shell plus `psst-engine-dev`, which runs this worktree's engine on the GPU.
+        # GPU work runs only inside scripts/gpu-session.sh.
+        gpu = default.overrideAttrs (old: {
+          nativeBuildInputs = old.nativeBuildInputs ++ [
+            (pkgs.callPackage ./nix/packages/psst-engine-dev.nix {
+              engine = pkgs.psst-engine-faster-whisper-cuda;
+            })
+          ];
+        });
       });
 
+      # CI evaluates these (`nix flake check --no-build`); building them, the VM test included,
+      # runs locally. The CUDA engine is left out: it's unfree, and checked with
+      # `nix build --dry-run .#psst-engine-faster-whisper-cuda` instead.
       checks = forAllSystems (pkgs: {
         devShell = self.devShells.${pkgs.stdenv.hostPlatform.system}.default;
+        inherit (pkgs) psst psst-server;
+        modules = import ./nix/tests/modules.nix {
+          inherit
+            self
+            nixpkgs
+            home-manager
+            pkgs
+            ;
+        };
+        vm = import ./nix/tests/vm.nix { inherit self pkgs; };
       });
 
       formatter = forAllSystems (pkgs: pkgs.nixfmt);
