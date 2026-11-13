@@ -54,10 +54,10 @@ fn decodes_engine_frames() {
     let trace = &result.trace;
     assert_eq!(
         (trace.engine.as_str(), trace.revision.as_str(), trace.path.as_str()),
-        ("faster-whisper", REVISION, "sequential")
+        ("faster-whisper", REVISION, "batched")
     );
     assert_eq!(trace.prompt, "I'm updating the NixOS config. Hyprland, psst, t3code.");
-    assert_eq!(trace.options["beam_size"], 5);
+    assert_eq!((&trace.options["beam_size"], &trace.options["batch_size"]), (&json!(5), &json!(8)));
     assert_eq!(trace.result.speech_ms, Some(5200));
     let segment = &trace.result.segments[0];
     assert_eq!(segment.text, " Push the fix to psst.");
@@ -124,8 +124,8 @@ fn writes_server_frames() {
                     terms: vec!["Hyprland".into(), "psst".into(), "t3code".into(), "Dvořák".into()],
                 },
                 options: json!({
-                    "path": "sequential", "beam_size": 5, "word_timestamps": true, "vad_filter": true,
-                    "terms_as": "prompt"
+                    "path": "batched", "beam_size": 5, "word_timestamps": true, "vad_filter": true,
+                    "terms_as": "prompt", "batch_size": 8
                 }),
             }),
             samples_to_payload(&samples),

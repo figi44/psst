@@ -45,15 +45,14 @@ def engine(tokenizer):
 
 
 @pytest.mark.parametrize("terms_as", ["prompt", "hotwords"])
-@pytest.mark.parametrize("path", ["sequential", "batched"])
-def test_transcribes_speech_with_the_bias_counted_as_faster_whisper_encodes_it(engine, tokenizer, path, terms_as):
-    result = engine.transcribe(1, payload(speech()), style=STYLE, terms=TERMS, path=path, terms_as=terms_as)
+def test_transcribes_speech_with_the_bias_counted_as_faster_whisper_encodes_it(engine, tokenizer, terms_as):
+    result = engine.transcribe(1, payload(speech()), style=STYLE, terms=TERMS, terms_as=terms_as)
     assert result["type"] == "result", result
     assert KEY_WORDS <= set(words(result))
     trace, timings = result["trace"], result["timings"]
-    assert (trace["path"], trace["options"]["terms_as"]) == (path, terms_as)
+    assert (trace["path"], trace["options"]["terms_as"], trace["options"]["batch_size"]) == ("batched", terms_as, 8)
     assert trace["prompt"] == "I'm updating the NixOS config. Hyprland, psst, t3code."
-    expected = bias.render(STYLE, TERMS, terms_as=terms_as, path=path, encode=tokenizer)
+    expected = bias.render(STYLE, TERMS, terms_as=terms_as, encode=tokenizer)
     assert (timings["prompt_tokens"], timings["bias_terms_used"]) == (expected.tokens, 3)
     segment = trace["result"]["segments"][0]
     assert [w["text"] for w in segment["words"]][:2] == [" Please", " push"]
@@ -61,18 +60,17 @@ def test_transcribes_speech_with_the_bias_counted_as_faster_whisper_encodes_it(e
     assert 3000 <= trace["result"]["speech_ms"] <= 3600
 
 
-def test_a_long_recording_takes_the_batched_path_on_auto(engine):
+def test_a_long_recording_is_decoded_in_chunks(engine):
     samples = long_speech()
-    result = engine.transcribe(2, payload(samples), path="auto", word_timestamps=False)
+    result = engine.transcribe(2, payload(samples), word_timestamps=False)
     assert_covers_long_speech(result)
     assert "words" not in result["trace"]["result"]["segments"][0]
     # VAD kept the speech, with its padding, and dropped most of the silence.
     assert 35_000 <= result["trace"]["result"]["speech_ms"] < len(samples) / 16
 
 
-@pytest.mark.parametrize("path", ["sequential", "batched"])
-def test_silence_has_no_segments(engine, path):
-    result = engine.transcribe(3, payload([0.0] * 32_000), path=path)
+def test_silence_has_no_segments(engine):
+    result = engine.transcribe(3, payload([0.0] * 32_000))
     assert result["type"] == "result", result
     assert result["trace"]["result"]["segments"] == []
     assert result["trace"]["result"]["speech_ms"] == 0

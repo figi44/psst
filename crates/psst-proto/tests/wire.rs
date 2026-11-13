@@ -37,7 +37,7 @@ fn trace() -> EngineTrace {
         engine: "faster-whisper".into(),
         model: "large-v3-turbo".into(),
         revision: "abc123".into(),
-        path: "sequential".into(),
+        path: "batched".into(),
         options: json!({"beam_size": 5}),
         prompt: "Hyprland, psst.".into(),
         result: EngineResult {
@@ -56,7 +56,7 @@ fn trace() -> EngineTrace {
 
 fn trace_json() -> Value {
     json!({
-        "engine": "faster-whisper", "model": "large-v3-turbo", "revision": "abc123", "path": "sequential",
+        "engine": "faster-whisper", "model": "large-v3-turbo", "revision": "abc123", "path": "batched",
         "options": {"beam_size": 5}, "prompt": "Hyprland, psst.",
         "result": {"language": "en", "speech_ms": 2100, "segments": [{
             "text": " Push the fix.", "start_ms": 0, "end_ms": 2100, "no_speech_prob": 0.5,

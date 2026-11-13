@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from fake_tokenizer import fake_encode
-from fake_whisper import REMOTE, FakeWhisper, default_segment, snapshot_dir
+from fake_whisper import INVALID_DEVICE, OUT_OF_MEMORY, REMOTE, FakeWhisper, default_segment, snapshot_dir
 from psst_engine_faster_whisper.engine import Engine, Fatal
 from psst_engine_faster_whisper.model import FasterWhisperModel
 from psst_engine_faster_whisper.protocol import parse_header, read_frame, write_frame
@@ -20,6 +20,8 @@ LOAD = {"type": "load", "model": "large-v3-turbo", "device": "cuda", "compute_ty
 STYLE = "I'm updating the NixOS config."
 TERMS = ["Hyprland", "psst", "t3code"]
 PROMPT = "I'm updating the NixOS config. Hyprland, psst, t3code."
+OPTIONS = {"path": "batched", "beam_size": 5, "word_timestamps": True, "vad_filter": True, "terms_as": "prompt", "batch_size": 8}
+"""The defaults in docs/config.md, as every trace records them."""
 
 
 def transcribe(request_id: int = 1, *, seconds: float = 3.0, style=STYLE, terms=TERMS, language="en", **options):
@@ -175,22 +177,15 @@ def test_an_unknown_model_fails_the_load():
 # Transcribing.
 
 
-def test_transcribes_sequentially_with_the_bias_as_the_initial_prompt():
+def test_transcribes_on_the_batched_path_with_the_bias_as_the_initial_prompt():
     fake = FakeWhisper()
-    [result] = loaded(fake, transcribe(7, path="sequential", beam_size=5, word_timestamps=True, vad_filter=True))
+    [result] = loaded(fake, transcribe(7, path="batched", beam_size=5, word_timestamps=True, vad_filter=True, batch_size=8))
     assert result["id"] == 7
     trace = result["trace"]
     assert (trace["engine"], trace["model"], trace["revision"], trace["path"]) == (
-        "faster-whisper", "large-v3-turbo", REMOTE[TURBO], "sequential"
+        "faster-whisper", "large-v3-turbo", REMOTE[TURBO], "batched"
     )  # fmt: skip
-    assert trace["options"] == {
-        "path": "sequential",
-        "beam_size": 5,
-        "word_timestamps": True,
-        "vad_filter": True,
-        "terms_as": "prompt",
-        "condition_on_previous_text": True,
-    }
+    assert trace["options"] == OPTIONS
     assert trace["prompt"] == PROMPT
     assert trace["result"] == {
         "language": "en",
@@ -212,11 +207,12 @@ def test_transcribes_sequentially_with_the_bias_as_the_initial_prompt():
         ],
     }
     timings = result["timings"]
-    assert timings["prompt_tokens"] == len(fake_encode(" " + PROMPT))
+    # The batched path encodes the prompt without a leading space.
+    assert timings["prompt_tokens"] == len(fake_encode(PROMPT))
     assert (timings["bias_terms_used"], timings["prompt_truncated"]) == (3, False)
     assert fake.runs == [
         (
-            "sequential",
+            "batched",
             {
                 "language": "en",
                 "beam_size": 5,
@@ -224,7 +220,7 @@ def test_transcribes_sequentially_with_the_bias_as_the_initial_prompt():
                 "vad_filter": True,
                 "initial_prompt": PROMPT,
                 "hotwords": None,
-                "condition_on_previous_text": True,
+                "batch_size": 8,
             },
         )
     ]
@@ -233,62 +229,30 @@ def test_transcribes_sequentially_with_the_bias_as_the_initial_prompt():
 def test_options_default_to_the_documented_defaults():
     fake = FakeWhisper()
     [result] = loaded(fake, transcribe())
-    assert result["trace"]["options"] == {
-        "path": "sequential",
-        "beam_size": 5,
-        "word_timestamps": True,
-        "vad_filter": True,
-        "terms_as": "prompt",
-        "condition_on_previous_text": True,
-    }
+    assert result["trace"]["options"] == OPTIONS
+    assert fake.runs[0][0] == "batched"
 
 
-def test_hotwords_carry_the_terms_and_turn_off_conditioning_on_the_sequential_path():
+def test_the_batch_size_is_passed_on_and_recorded():
+    fake = FakeWhisper()
+    [result] = loaded(fake, transcribe(batch_size=1))
+    assert fake.runs[0][1]["batch_size"] == 1
+    assert result["trace"]["options"]["batch_size"] == 1
+
+
+def test_hotwords_carry_the_terms_under_the_same_budget():
     fake = FakeWhisper()
     [result] = loaded(fake, transcribe(terms_as="hotwords"))
     _, kwargs = fake.runs[0]
-    assert (kwargs["initial_prompt"], kwargs["hotwords"], kwargs["condition_on_previous_text"]) == (
-        STYLE, "Hyprland, psst, t3code.", False
-    )  # fmt: skip
+    assert (kwargs["initial_prompt"], kwargs["hotwords"]) == (STYLE, "Hyprland, psst, t3code.")
     assert result["trace"]["prompt"] == PROMPT
-    assert result["trace"]["options"]["condition_on_previous_text"] is False
-    assert result["timings"]["prompt_tokens"] == len(fake_encode(" " + STYLE)) + len(fake_encode(" Hyprland, psst, t3code."))
+    assert result["trace"]["options"]["terms_as"] == "hotwords"
+    assert result["timings"]["prompt_tokens"] == len(fake_encode(STYLE)) + len(fake_encode(" Hyprland, psst, t3code."))
 
 
-def test_hotwords_without_terms_keep_conditioning():
-    fake = FakeWhisper()
-    loaded(fake, transcribe(terms=[], terms_as="hotwords"))
-    assert fake.runs[0][1]["condition_on_previous_text"] is True
-
-
-def test_the_batched_path_counts_the_prompt_without_a_leading_space():
-    fake = FakeWhisper()
-    [result] = loaded(fake, transcribe(style="abcd", terms=[], path="batched", batch_size=4))
-    path, kwargs = fake.runs[0]
-    assert path == "batched"
-    assert (kwargs["initial_prompt"], kwargs["batch_size"]) == ("abcd", 4)
-    assert "condition_on_previous_text" not in kwargs
-    assert result["trace"]["path"] == "batched"
-    assert result["trace"]["options"]["batch_size"] == 4
-    assert result["trace"]["options"]["condition_on_previous_text"] is False
-    assert result["timings"]["prompt_tokens"] == 1  # " abcd" would be 2
-
+def test_the_prompt_is_counted_without_a_leading_space():
     [result] = loaded(FakeWhisper(), transcribe(style="abcd", terms=[]))
-    assert result["timings"]["prompt_tokens"] == 2
-
-
-def test_the_batched_path_uses_the_engine_batch_size_when_unset():
-    fake = FakeWhisper()
-    loaded(fake, transcribe(path="batched"))
-    assert fake.runs[0][1]["batch_size"] == 8
-
-
-@pytest.mark.parametrize(("seconds", "path"), [(3.0, "sequential"), (30.0, "sequential"), (30.5, "batched"), (600, "batched")])
-def test_auto_decodes_up_to_30_seconds_sequentially_and_longer_batched(seconds, path):
-    fake = FakeWhisper()
-    [result] = loaded(fake, transcribe(seconds=seconds, path="auto"))
-    assert fake.runs[0][0] == result["trace"]["path"] == path
-    assert result["trace"]["options"]["path"] == "auto"
+    assert result["timings"]["prompt_tokens"] == 1  # " abcd" would be 2
 
 
 def test_terms_beyond_the_budget_are_dropped_from_the_end():
@@ -329,8 +293,9 @@ def test_without_word_timestamps_segments_have_no_words():
 @pytest.mark.parametrize(
     "request_",
     [
-        transcribe(path="batched", vad_filter=False),
-        transcribe(path="auto", vad_filter=False),
+        transcribe(vad_filter=False),
+        transcribe(path="sequential"),
+        transcribe(path="auto"),
         transcribe(path="greedy"),
         transcribe(beam_size=0),
         transcribe(beam_size=True),
@@ -355,11 +320,20 @@ def test_unknown_options_are_ignored():
     assert "temperature" not in fake.runs[0][1]
 
 
-def test_running_out_of_gpu_memory_is_an_oom_error_and_the_engine_keeps_serving():
-    fake = FakeWhisper(fail_next=RuntimeError("CUDA failed with error out of memory"))
-    replies = loaded(fake, transcribe(1, path="batched"), transcribe(2, path="batched", batch_size=1))
-    assert replies[0] == {"type": "error", "id": 1, "code": "oom", "message": "CUDA failed with error out of memory", "retryable": True}
-    assert replies[1]["type"] == "result" and replies[1]["id"] == 2
+def test_after_running_out_of_gpu_memory_the_engine_replies_oom_and_the_retry_works():
+    # The fake fails the first call after an out-of-memory error, as CTranslate2 does.
+    fake = FakeWhisper(fail_next=OUT_OF_MEMORY)
+    replies = loaded(fake, transcribe(1, batch_size=8), transcribe(2, batch_size=1), transcribe(3))
+    assert replies[0] == {"type": "error", "id": 1, "code": "oom", "message": str(OUT_OF_MEMORY), "retryable": True}
+    assert [(r["type"], r["id"]) for r in replies[1:]] == [("result", 2), ("result", 3)]
+    assert [kwargs["batch_size"] for _, kwargs in fake.runs] == [8, 1, 8]
+
+
+def test_an_engine_whose_model_still_fails_after_running_out_of_gpu_memory_exits_without_replying():
+    fake = FakeWhisper(cached={TURBO}, fail_next=OUT_OF_MEMORY, after_oom=[INVALID_DEVICE, INVALID_DEVICE])
+    replies, fatal = run(fake, LOAD, transcribe(1), transcribe(2))
+    assert "cudaErrorInvalidDevice" in str(fatal)
+    assert [r["type"] for r in replies] == ["hello", "progress", "loaded"]
 
 
 def test_other_cuda_errors_end_the_engine_without_a_reply():

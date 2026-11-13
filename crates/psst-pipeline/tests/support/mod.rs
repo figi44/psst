@@ -22,7 +22,7 @@ pub fn trace(language: &str, speech_ms: Option<u32>, segments: Vec<Segment>) -> 
         engine: "fake".into(),
         model: "m".into(),
         revision: "r".into(),
-        path: "sequential".into(),
+        path: "batched".into(),
         options: serde_json::json!({}),
         prompt: String::new(),
         result: EngineResult { language: language.into(), speech_ms, segments },

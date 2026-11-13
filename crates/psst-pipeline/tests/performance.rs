@@ -60,7 +60,7 @@ fn dictation() -> EngineTrace {
         engine: "fake".into(),
         model: "m".into(),
         revision: "r".into(),
-        path: "sequential".into(),
+        path: "batched".into(),
         options: serde_json::json!({}),
         prompt: String::new(),
         result: EngineResult { language: "en".into(), speech_ms: Some(60_000), segments },

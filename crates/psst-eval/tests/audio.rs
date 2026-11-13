@@ -15,9 +15,10 @@ use psst_engine_proto::{
     fake::{LoadOutcome, LoadScript, Script, read_request_log},
 };
 use psst_eval::{
-    audio::{AudioOptions, run},
+    audio::{AudioOptions, latency_rows, run},
     cases::{Case, Source, Split, read_cases},
 };
+use psst_proto::ServerTimings;
 
 /// `psst-eval audio` with the GPU lock in `cache` and `PSST_GPU_SESSION` as given.
 fn audio(evals: &Evals, cache: &std::path::Path, session: Option<&str>) -> Run {
@@ -106,7 +107,7 @@ async fn it_records_both_traces_of_every_clip_through_the_in_process_server() {
     let script = fake_eval_set(&evals, &Script::default(), &cases);
     let cache = tempfile::tempdir().unwrap();
 
-    run(&options(&evals, &cache)).await.unwrap();
+    let latency = run(&options(&evals, &cache)).await.unwrap();
 
     for case in read_cases(&evals.file("cases.jsonl")).unwrap() {
         let (output, raw) = (case.engine_output.unwrap(), case.engine_output_raw.unwrap());
@@ -130,6 +131,33 @@ async fn it_records_both_traces_of_every_clip_through_the_in_process_server() {
     assert_eq!(transcribed, expected);
     // The baseline it wrote is the replay of what it recorded.
     evals.run("replay", &["--check"]).success();
+    // And the latency of the three biased uploads, all short.
+    assert_eq!(
+        latency.iter().map(|row| (row.over_s, row.up_to_s, row.dictations)).collect::<Vec<_>>(),
+        [(0, Some(15), 3)]
+    );
+}
+
+#[test]
+fn latency_is_reported_per_range_of_recording_lengths() {
+    let timing = |audio_ms, stop_to_final_ms| ServerTimings {
+        audio_ms,
+        stop_to_final_ms,
+        engine_ms: stop_to_final_ms - 10,
+        ..ServerTimings::default()
+    };
+    // Twenty short dictations taking 201–220 ms, two of a minute, and one that waited for the
+    // model, which is left out.
+    let mut timings: Vec<_> = (1..=20).map(|i| timing(3_000 + i, 200 + i)).collect();
+    timings.extend([timing(60_000, 800), timing(90_000, 900)]);
+    timings.push(ServerTimings { load_wait_ms: 2_500, ..timing(5_000, 2_700) });
+    let rows = latency_rows(&timings);
+    let summary: Vec<_> = rows
+        .iter()
+        .map(|row| (row.over_s, row.up_to_s, row.dictations, row.stop_to_final_ms.p50, row.stop_to_final_ms.p95))
+        .collect();
+    assert_eq!(summary, [(0, Some(15), 20, 210, 219), (30, Some(90), 2, 800, 900)]);
+    assert_eq!((rows[0].stop_to_final_ms.max, rows[0].engine_ms.p50), (220, 200));
 }
 
 #[tokio::test(flavor = "multi_thread")]

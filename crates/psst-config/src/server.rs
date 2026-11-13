@@ -92,29 +92,30 @@ impl Default for ModelConfig {
     }
 }
 
-/// Decoding options sent with every `transcribe` (plan 6.3). Phase 0 settles the defaults.
+/// Decoding options sent with every `transcribe` (plan 6.3), with the defaults Phase 0 measured
+/// (docs/decisions/engine.md).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ModelOptions {
     pub path: DecodePath,
     pub beam_size: u32,
     pub word_timestamps: bool,
+    /// Required by the batched path.
     pub vad_filter: bool,
     pub terms_as: TermsAs,
-    /// Batch size of the batched path; the engine's default when unset.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub batch_size: Option<u32>,
+    /// Chunks the batched path decodes at once.
+    pub batch_size: u32,
 }
 
 impl Default for ModelOptions {
     fn default() -> Self {
         Self {
-            path: DecodePath::Sequential,
+            path: DecodePath::Batched,
             beam_size: 5,
             word_timestamps: true,
             vad_filter: true,
             terms_as: TermsAs::Prompt,
-            batch_size: None,
+            batch_size: 8,
         }
     }
 }
@@ -126,13 +127,14 @@ impl ModelOptions {
     }
 }
 
+/// faster-whisper's decoding path. Phase 0 chose the batched one for every length and deleted
+/// the others (docs/decisions/engine.md).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DecodePath {
-    Sequential,
+    /// `BatchedInferencePipeline`: VAD cuts the recording into chunks of up to 30 s, decoded
+    /// `batch_size` at a time.
     Batched,
-    /// Sequential up to 30 s, batched above.
-    Auto,
 }
 
 /// Where dictionary terms go in the engine request.
@@ -164,11 +166,11 @@ impl ConfigFile for ServerConfig {
             return Err("model.model must not be empty".into());
         }
         let options = &model.options;
-        if options.beam_size == 0 || options.batch_size == Some(0) {
+        if options.beam_size == 0 || options.batch_size == 0 {
             return Err("model.options.beam_size and batch_size must be at least 1".into());
         }
-        if options.path != DecodePath::Sequential && !options.vad_filter {
-            return Err("model.options.path = \"batched\" or \"auto\" requires vad_filter = true".into());
+        if !options.vad_filter {
+            return Err("model.options.vad_filter must be true: the batched path requires it".into());
         }
         Ok(())
     }

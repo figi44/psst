@@ -5,7 +5,8 @@
 //! `server.toml` (`eval_mode = true`, engine `psst-engine-dev`), a temporary state directory and
 //! the shared model cache. Each clip is uploaded twice, normally and with `eval.bias = false`;
 //! two clips also go through a live session, paced in real time, as a smoke test. Then the
-//! recorded traces must pass the stale-trace check, and `baseline.json` is rewritten.
+//! recorded traces must pass the stale-trace check, and `baseline.json` is rewritten. Last, it
+//! prints the server's stop→final latency of the biased uploads (plan 10).
 //!
 //! It uses the GPU, so it runs only inside `scripts/gpu-session.sh`.
 
@@ -19,7 +20,7 @@ use std::{
 use anyhow::{Context, bail, ensure};
 use psst_client::{AudioFrame, Client, Endpoint, Session, SessionEvent, StartOpts, upload_file};
 use psst_proto::{
-    ErrorCode, FRAME_MS, FRAME_SAMPLES, SAMPLE_RATE,
+    ErrorCode, FRAME_MS, FRAME_SAMPLES, SAMPLE_RATE, ServerTimings,
     ws::{ErrorMsg, EvalOpts, FinalMsg, Mode},
 };
 use psst_server::{ServeConfig, serve_in_process};
@@ -33,6 +34,66 @@ const MODEL_WAIT: Duration = Duration::from_secs(30 * 60);
 const ATTEMPTS: usize = 3;
 /// Clips that also run live.
 const LIVE_CLIPS: usize = 2;
+/// Upper bounds of the recording lengths the latency is reported for, in seconds; the last row
+/// takes the rest.
+const LATENCY_ROWS_S: [u32; 3] = [15, 30, 90];
+
+/// The server's timings for the biased uploads of one range of recording lengths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LatencyRow {
+    /// Recordings longer than this…
+    pub over_s: u32,
+    /// …and up to this long; `None` for no limit.
+    pub up_to_s: Option<u32>,
+    pub dictations: usize,
+    /// From `stop` arriving at the server until it sent `final`.
+    pub stop_to_final_ms: Spread,
+    pub engine_ms: Spread,
+}
+
+/// Nearest-rank percentiles, in milliseconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Spread {
+    pub p50: u32,
+    pub p95: u32,
+    pub max: u32,
+}
+
+impl Spread {
+    fn of(mut values: Vec<u32>) -> Spread {
+        values.sort_unstable();
+        let rank = |p: usize| values[(values.len() * p).div_ceil(100).max(1) - 1];
+        Spread { p50: rank(50), p95: rank(95), max: values[values.len() - 1] }
+    }
+}
+
+/// [`LatencyRow`]s for the ranges that have any of `timings`. Dictations that waited for the
+/// model are left out: the targets assume a loaded engine (plan 10).
+pub fn latency_rows(timings: &[ServerTimings]) -> Vec<LatencyRow> {
+    let mut bounds: Vec<(u32, Option<u32>)> = Vec::new();
+    let mut over = 0;
+    for up_to in LATENCY_ROWS_S {
+        bounds.push((over, Some(up_to)));
+        over = up_to;
+    }
+    bounds.push((over, None));
+    bounds
+        .into_iter()
+        .filter_map(|(over_s, up_to_s)| {
+            let in_range = |t: &&ServerTimings| {
+                t.audio_ms > over_s * 1000 && up_to_s.is_none_or(|up_to| t.audio_ms <= up_to * 1000)
+            };
+            let rows: Vec<&ServerTimings> = timings.iter().filter(|t| t.load_wait_ms == 0).filter(in_range).collect();
+            (!rows.is_empty()).then(|| LatencyRow {
+                over_s,
+                up_to_s,
+                dictations: rows.len(),
+                stop_to_final_ms: Spread::of(rows.iter().map(|t| t.stop_to_final_ms).collect()),
+                engine_ms: Spread::of(rows.iter().map(|t| t.engine_ms).collect()),
+            })
+        })
+        .collect()
+}
 
 #[derive(Debug, Clone)]
 pub struct AudioOptions {
@@ -73,8 +134,9 @@ pub fn check_gpu_session() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Runs the audio eval, rewriting `cases.jsonl` and `baseline.json`.
-pub async fn run(opts: &AudioOptions) -> anyhow::Result<()> {
+/// Runs the audio eval, rewriting `cases.jsonl` and `baseline.json`; returns the latency it
+/// printed.
+pub async fn run(opts: &AudioOptions) -> anyhow::Result<Vec<LatencyRow>> {
     if opts.require_gpu_session {
         check_gpu_session()?;
     }
@@ -107,7 +169,7 @@ pub async fn run(opts: &AudioOptions) -> anyhow::Result<()> {
     // Shut the server down whatever happened, then report the first error.
     let recorded = record(&mut set, &clips, &endpoint).await;
     let shutdown = server.shutdown().await.context("cannot shut the eval server down");
-    recorded?;
+    let timings = recorded?;
     shutdown?;
     crate::cases::write_cases(&set.cases_path(), &set.cases)?;
     eprintln!("wrote {}", set.cases_path().display());
@@ -128,11 +190,18 @@ pub async fn run(opts: &AudioOptions) -> anyhow::Result<()> {
     replay.baseline.write(&set.baseline_path())?;
     eprintln!("wrote {}", set.baseline_path().display());
     crate::report::print_summary(&replay.baseline);
-    Ok(())
+    let latency = latency_rows(&timings);
+    crate::report::print_latency(&latency);
+    Ok(latency)
 }
 
-/// Uploads every clip twice and runs the live smoke test, storing the traces in `set.cases`.
-async fn record(set: &mut EvalSet, clips: &[(PathBuf, Vec<i16>)], endpoint: &Endpoint) -> anyhow::Result<()> {
+/// Uploads every clip twice and runs the live smoke test, storing the traces in `set.cases`;
+/// returns the server timings of the biased uploads.
+async fn record(
+    set: &mut EvalSet,
+    clips: &[(PathBuf, Vec<i16>)],
+    endpoint: &Endpoint,
+) -> anyhow::Result<Vec<ServerTimings>> {
     let mut client = Client::connect(endpoint, None).await.context("cannot connect to the eval server")?;
 
     let profiles = set.cases.iter().map(|case| set.profile_for(&case.lang)).collect::<anyhow::Result<Vec<_>>>()?;
@@ -180,7 +249,7 @@ async fn record(set: &mut EvalSet, clips: &[(PathBuf, Vec<i16>)], endpoint: &End
         }
     }
 
-    Ok(())
+    Ok(finals.iter().map(|fin| fin.timings).collect())
 }
 
 fn start_opts(profile: &psst_config::Profile, mode: Mode, bias: bool) -> StartOpts {

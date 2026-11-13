@@ -73,7 +73,7 @@ class StubModel:
                     }
                 ],
             },
-            path="sequential",
+            path="batched",
             options=request.options,
             prompt=prompt,
             prompt_tokens=19,

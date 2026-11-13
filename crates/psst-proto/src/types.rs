@@ -45,7 +45,7 @@ pub struct EngineTrace {
     pub engine: String,
     pub model: String,
     pub revision: String,
-    /// Decoding path actually taken (`sequential` or `batched` for faster-whisper).
+    /// Decoding path actually taken (`batched` for faster-whisper).
     pub path: String,
     /// Effective engine options for this request.
     pub options: Value,

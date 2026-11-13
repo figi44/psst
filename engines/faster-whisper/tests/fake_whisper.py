@@ -14,6 +14,10 @@ REMOTE = {
     "mobiuslabsgmbh/faster-whisper-large-v3-turbo": "0123456789abcdef0123456789abcdef01234567",
     "Systran/faster-whisper-tiny": "d90ca5fe260221311c53c58e660288d3deb8d356",
 }
+INVALID_DEVICE = RuntimeError("parallel_for failed: cudaErrorInvalidDevice: invalid device ordinal")
+"""What CTranslate2 raises on the first call after running out of GPU memory."""
+OUT_OF_MEMORY = RuntimeError("CUDA failed with error out of memory")
+
 ALIASES = {"large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo", "tiny": "Systran/faster-whisper-tiny"}
 
 
@@ -41,6 +45,9 @@ class FakeWhisper:
     download_error: Exception | None = None
     fail_next: Exception | None = None
     """Raised while the next transcription's segments are read, as faster-whisper does."""
+    after_oom: list[Exception] = field(default_factory=lambda: [INVALID_DEVICE])
+    """Raised by the next calls into the model after it ran out of memory, one per call. By
+    default the first call fails, as CTranslate2's does (docs/decisions/engine.md)."""
     segments: list[Any] = field(default_factory=lambda: [default_segment()])
     duration_after_vad: float = 2.5
     language: str = "en"
@@ -48,9 +55,12 @@ class FakeWhisper:
     downloads: list[dict[str, Any]] = field(default_factory=list)
     models: list[dict[str, Any]] = field(default_factory=list)
     runs: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
-    """``(path, kwargs)`` of every ``transcribe`` call, ``path`` being sequential or batched."""
+    """``(runner, kwargs)`` of every ``transcribe`` call except warm-ups: ``batched`` for the
+    ``BatchedInferencePipeline``, ``model`` for ``WhisperModel`` itself."""
     warmed_up: list[Any] = field(default_factory=list)
     warm_up_error: Exception | None = None
+    _broken: list[Exception] = field(default_factory=list)
+    """What the next calls into the model raise."""
 
     def backend(self) -> Backend:
         return Backend(
@@ -64,6 +74,8 @@ class FakeWhisper:
         )
 
     def _warm_up(self, model: Any) -> None:
+        if self._broken:
+            raise self._broken.pop(0)
         if self.warm_up_error is not None:
             raise self.warm_up_error
         self.warmed_up.append(model)
@@ -104,11 +116,16 @@ class FakeWhisper:
         if path in self.broken:
             raise self.broken[path]
         tokenizer = SimpleNamespace(encode=lambda text, add_special_tokens=True: SimpleNamespace(ids=fake_encode(text)))
-        return SimpleNamespace(hf_tokenizer=tokenizer, transcribe=lambda audio, **kw: self._run("sequential", audio, kw))
+        return SimpleNamespace(hf_tokenizer=tokenizer, transcribe=lambda audio, **kw: self._run("model", audio, kw))
 
     def _run(self, path: str, audio: Any, kwargs: dict[str, Any]) -> tuple[Iterator[Any], Any]:
         self.runs.append((path, kwargs))
-        failure, self.fail_next = self.fail_next, None
+        if self._broken:
+            failure = self._broken.pop(0)
+        else:
+            failure, self.fail_next = self.fail_next, None
+            if failure is not None and "out of memory" in str(failure):
+                self._broken = list(self.after_oom)
 
         def segments() -> Iterator[Any]:
             if failure is not None:

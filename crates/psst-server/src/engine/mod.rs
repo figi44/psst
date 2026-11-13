@@ -18,7 +18,7 @@ use std::{
     time::Duration,
 };
 
-use psst_config::{DecodePath, ModelOptions};
+use psst_config::ModelOptions;
 use psst_engine_proto::{
     Bias, EngineErrorCode, FromEngine, Load, LoadPhase, PROTOCOL_VERSION, ToEngine, Transcribe, TranscribeResult,
 };
@@ -738,8 +738,8 @@ impl Actor {
             }
             job.status.set(JobPhase::Transcribing);
             let mut options = self.cfg.options;
-            if job.oom_retry && options.path != DecodePath::Sequential {
-                options.batch_size = Some(1);
+            if job.oom_retry {
+                options.batch_size = 1;
             }
             proc.send(
                 &ToEngine::Transcribe(Transcribe {

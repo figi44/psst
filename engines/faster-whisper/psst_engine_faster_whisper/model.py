@@ -6,6 +6,7 @@ claimed stdout and said hello. ``Backend`` is everything used from them.
 
 from __future__ import annotations
 
+import dataclasses
 import gc
 import os
 import sys
@@ -28,20 +29,22 @@ from .engine import (
 
 SAMPLE_RATE = 16_000
 
-AUTO_SEQUENTIAL_MAX_S = 30.0
-"""``path = "auto"`` decodes recordings up to this long sequentially, and longer ones batched."""
+PATH = "batched"
+"""The one decoding path: faster-whisper's ``BatchedInferencePipeline``, which Phase 0 chose for
+every length (docs/decisions/engine.md)."""
 
 DEFAULT_BATCH_SIZE = 8
-"""Batch size of the batched path when ``options.batch_size`` is unset; faster-whisper's default."""
+"""Batch size when ``options.batch_size`` is unset, as in docs/config.md."""
 
-PATHS = ("sequential", "batched", "auto")
+RECOVERY_RUNS = 2
+"""Throwaway runs after the GPU ran out of memory, until one works (``FasterWhisperModel._recover``)."""
 
 
 @dataclass(frozen=True)
 class Options:
     """``transcribe.options``, from ``[model.options]``, with the defaults in docs/config.md."""
 
-    path: str = "sequential"
+    path: str = PATH
     beam_size: int = 5
     word_timestamps: bool = True
     vad_filter: bool = True
@@ -67,24 +70,17 @@ def parse_options(raw: Mapping[str, Any]) -> Options:
         return isinstance(value, bool)
 
     options = Options(
-        path=get("path", lambda v: v in PATHS, "sequential, batched or auto"),
+        path=get("path", lambda v: v == PATH, PATH),
         beam_size=get("beam_size", positive, "an integer of at least 1"),
         word_timestamps=get("word_timestamps", boolean, "true or false"),
         vad_filter=get("vad_filter", boolean, "true or false"),
         terms_as=get("terms_as", lambda v: v in (bias.PROMPT, bias.HOTWORDS), "prompt or hotwords"),
         batch_size=get("batch_size", positive, "an integer of at least 1"),
     )
-    if options.path != bias.SEQUENTIAL and not options.vad_filter:
+    if not options.vad_filter:
         # faster-whisper's batched path refuses audio of 30 s or more without VAD.
-        raise InvalidRequest(f"`options.path = {options.path}` needs `vad_filter = true`")
+        raise InvalidRequest(f"`options.path = {PATH}` needs `vad_filter = true`")
     return options
-
-
-def resolve_path(path: str, duration_s: float) -> str:
-    """The decoding path actually taken: ``auto`` is sequential up to 30 s, batched above."""
-    if path == "auto":
-        return bias.SEQUENTIAL if duration_s <= AUTO_SEQUENTIAL_MAX_S else bias.BATCHED
-    return path
 
 
 _OOM_MARKERS = ("out of memory", "alloc_failed", "cudaerrormemoryallocation")
@@ -220,46 +216,28 @@ class FasterWhisperModel:
         if language is not None and language not in backend.languages:
             raise InvalidRequest(f"`language` {language!r} is not a Whisper language code")
 
-        path = resolve_path(options.path, len(samples) / SAMPLE_RATE)
         rendered = bias.render(
             request.bias.style,
             request.bias.terms,
             terms_as=options.terms_as,
-            path=path,
             encode=lambda text: model.hf_tokenizer.encode(text, add_special_tokens=False).ids,
         )
-        kwargs: dict[str, Any] = {
-            "language": language,
-            "beam_size": options.beam_size,
-            "word_timestamps": options.word_timestamps,
-            "vad_filter": options.vad_filter,
-            "initial_prompt": rendered.initial_prompt,
-            "hotwords": rendered.hotwords,
-        }
-        effective: dict[str, Any] = {
-            "path": options.path,
-            "beam_size": options.beam_size,
-            "word_timestamps": options.word_timestamps,
-            "vad_filter": options.vad_filter,
-            "terms_as": options.terms_as,
-        }
-        if path == bias.SEQUENTIAL:
-            # Hotwords and the previous text would share the decoder's 448 positions.
-            kwargs["condition_on_previous_text"] = rendered.hotwords is None
-            runner = model
-        else:
-            kwargs["batch_size"] = options.batch_size
-            effective["batch_size"] = options.batch_size
-            runner = backend.batched_pipeline(model)
-        # The batched path never conditions on previous text.
-        effective["condition_on_previous_text"] = kwargs.get("condition_on_previous_text", False)
-
         try:
-            segments, info = runner.transcribe(backend.audio(samples), **kwargs)
+            segments, info = backend.batched_pipeline(model).transcribe(
+                backend.audio(samples),
+                language=language,
+                beam_size=options.beam_size,
+                word_timestamps=options.word_timestamps,
+                vad_filter=options.vad_filter,
+                initial_prompt=rendered.initial_prompt,
+                hotwords=rendered.hotwords,
+                batch_size=options.batch_size,
+            )
             segments = list(segments)
         except RuntimeError as err:
             kind = gpu_error(err)
             if kind == "oom":
+                self._recover(backend, model, err)
                 raise OutOfMemory(str(err)) from None
             if kind == "gpu":
                 raise Fatal(f"CUDA error: {err}") from None
@@ -271,13 +249,32 @@ class FasterWhisperModel:
                 "speech_ms": _ms(info.duration_after_vad),
                 "segments": [_segment(segment) for segment in segments],
             },
-            path=path,
-            options=effective,
+            path=PATH,
+            options=dataclasses.asdict(options),
             prompt=rendered.text,
             prompt_tokens=rendered.tokens,
             bias_terms_used=rendered.terms_used,
             prompt_truncated=rendered.truncated,
         )
+
+    def _recover(self, backend: Backend, model: Any, oom: RuntimeError) -> None:
+        """Makes sure the model can run again after the GPU ran out of memory, so that the server's
+        retry (with ``batch_size = 1``) doesn't fail for this run's sake.
+
+        After CTranslate2 runs out of memory, its next call fails with ``cudaErrorInvalidDevice``
+        and the one after works (docs/decisions/engine.md). The warm-up's second of silence is
+        that next call: it runs until it works, at most ``RECOVERY_RUNS`` times. Raises ``Fatal``
+        when none works, so the engine exits as for any other CUDA error.
+        """
+        failures = []
+        for _ in range(RECOVERY_RUNS):
+            try:
+                backend.warm_up(model)
+                return
+            except Exception as err:
+                failures.append(f"{type(err).__name__}: {err}")
+        log(f"ran out of GPU memory ({oom}), and the throwaway runs after it failed: {'; '.join(failures)}")
+        raise Fatal(f"the model doesn't run after running out of GPU memory: {failures[-1]}")
 
     def _get_backend(self) -> Backend:
         if self._backend is None:

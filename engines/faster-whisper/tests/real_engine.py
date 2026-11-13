@@ -56,7 +56,7 @@ def words(result: dict[str, Any], after_ms: int = 0) -> list[str]:
 
 
 def assert_covers_long_speech(result: dict[str, Any]) -> None:
-    """The batched path decoded both 30 s chunks of ``long_speech()``, in the recording's time.
+    """The engine decoded both 30 s chunks of ``long_speech()``, in the recording's time.
 
     Not a word count: on a chunk that repeats one sentence, Whisper may write it more or fewer
     times (turbo writes it once).

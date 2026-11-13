@@ -52,11 +52,12 @@ def test_decodes_server_frames():
     assert request.bias.style == "I'm updating the NixOS config."
     assert request.bias.terms == ("Hyprland", "psst", "t3code", "Dvořák")
     assert request.options == {
-        "path": "sequential",
+        "path": "batched",
         "beam_size": 5,
         "word_timestamps": True,
         "vad_filter": True,
         "terms_as": "prompt",
+        "batch_size": 8,
     }
     samples = samples_from_payload(transcribe.payload)
     assert len(samples) == 1600
@@ -81,7 +82,14 @@ def test_writes_engine_frames():
             "id": 42,
             "language": "en",
             "bias": {"style": "I'm updating the NixOS config.", "terms": ["Hyprland", "psst", "t3code"]},
-            "options": {"path": "sequential", "beam_size": 5, "word_timestamps": True, "vad_filter": True},
+            "options": {
+                "path": "batched",
+                "beam_size": 5,
+                "word_timestamps": True,
+                "vad_filter": True,
+                "terms_as": "prompt",
+                "batch_size": 8,
+            },
         },
         payload_from_samples([0.0] * 96_000),
     )
