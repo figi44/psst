@@ -150,7 +150,7 @@ fn stats(name: &str, v: &mut [f64]) {
     println!(
         "{name:<26} {:>8.2} {:>8.2} {:>8.2} {:>8.2}",
         q(0.5),
-        q(0.9),
+        q(0.95),
         v[0],
         v[v.len() - 1]
     );
@@ -203,7 +203,7 @@ fn first_frame(host: &cpal::Host, want: Option<String>, runs: usize) {
     );
     println!(
         "{:<26} {:>8} {:>8} {:>8} {:>8}",
-        "ms", "median", "p90", "min", "max"
+        "ms", "median", "p95", "min", "max"
     );
     stats("device lookup", &mut lookup);
     stats("build_input_stream", &mut build);
