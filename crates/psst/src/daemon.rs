@@ -1626,7 +1626,9 @@ impl Core {
             (Net::Live { .. }, Some(session)) => match session.frames.try_send(frame) {
                 Ok(()) => {}
                 Err(TrySendError::Full) => lost = Some(("the server isn't keeping up".to_string(), true)),
-                Err(TrySendError::Closed) => lost = Some(("the session ended".to_string(), false)),
+                // The client closes the channel before the session's last event reaches us, and
+                // that event says why it ended (a rejection's reason, say). The frame is in the file.
+                Err(TrySendError::Closed) => {}
             },
             (Net::Checking { .. } | Net::Pending, _) => {
                 if d.backlog.len() < FRAME_BUFFER {
