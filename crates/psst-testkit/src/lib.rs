@@ -50,6 +50,18 @@ pub struct TestServerConfig {
     pub dictionary: DictionaryFile,
     /// Also listen on a free TCP port on 127.0.0.1.
     pub tcp: bool,
+    /// Runs a real engine instead of the fake one (`script` is then unused). For GPU smoke tests,
+    /// which run only inside `scripts/gpu-session.sh`.
+    pub real_engine: Option<RealEngine>,
+}
+
+/// A real engine for [`TestServerConfig::real_engine`].
+#[derive(Debug, Clone)]
+pub struct RealEngine {
+    /// `model.command`, for example `["psst-engine-dev"]` from `nix develop .#gpu`.
+    pub command: Vec<String>,
+    /// The model cache (`HF_HOME`), shared across worktrees so models aren't downloaded again.
+    pub model_cache: PathBuf,
 }
 
 /// A `psst-server serve` process with its own directories. Killed on drop.
@@ -60,9 +72,11 @@ pub struct TestServer {
     dir: TempDir,
     socket: PathBuf,
     tcp: Option<SocketAddr>,
+    cache: PathBuf,
 }
 
-/// Starts `bin serve` with the fake engine and waits until its socket accepts connections.
+/// Starts `bin serve` with the fake engine (or [`TestServerConfig::real_engine`]) and waits until
+/// its socket accepts connections.
 ///
 /// Panics with the server's log if it exits or doesn't come up within [`STARTUP_TIMEOUT`].
 pub fn spawn_server(bin: &Path, cfg: TestServerConfig) -> TestServer {
@@ -79,11 +93,21 @@ pub fn spawn_server(bin: &Path, cfg: TestServerConfig) -> TestServer {
     let mut server = cfg.server;
     server.socket = socket.clone();
     server.listen = tcp.into_iter().collect();
-    server.model.command = vec![bin.display().to_string(), "__fake-engine".into(), script.display().to_string()];
+    let cache = match cfg.real_engine {
+        Some(engine) => {
+            server.model.command = engine.command;
+            engine.model_cache
+        }
+        None => {
+            server.model.command =
+                vec![bin.display().to_string(), "__fake-engine".into(), script.display().to_string()];
+            root.join("cache")
+        }
+    };
     let files = ServerFiles { server, profiles: cfg.profiles, dictionary: cfg.dictionary };
     files.write(&root.join("config")).expect("write config");
 
-    let mut server = TestServer { child: None, bin: bin.into(), dir, socket, tcp };
+    let mut server = TestServer { child: None, bin: bin.into(), dir, socket, tcp, cache };
     server.start();
     server
 }
@@ -100,7 +124,7 @@ impl TestServer {
             .arg("--state-dir")
             .arg(root.join("state"))
             .arg("--cache-dir")
-            .arg(root.join("cache"))
+            .arg(&self.cache)
             .arg("--socket")
             .arg(&self.socket)
             .stdin(Stdio::null())
@@ -163,7 +187,7 @@ impl TestServer {
     }
 
     pub fn cache_dir(&self) -> PathBuf {
-        self.dir.path().join("cache")
+        self.cache.clone()
     }
 
     /// Every request the fake engine received, across engine restarts.
