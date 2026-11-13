@@ -30,7 +30,8 @@ pub const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Debug, Clone, Default)]
 pub struct TestServerConfig {
     pub script: Script,
-    /// The testkit overrides `socket`, `listen` and `model.command`.
+    /// The testkit overrides `socket`, `listen` and `model.command`, and a default
+    /// `tailscale_socket`, so that no test asks this machine's tailscaled.
     pub server: ServerConfig,
     pub profiles: ProfilesFile,
     pub dictionary: DictionaryFile,
@@ -70,6 +71,9 @@ pub fn spawn_server(bin: &Path, cfg: TestServerConfig) -> TestServer {
     let mut server = cfg.server;
     server.socket = socket.clone();
     server.listen = tcp.into_iter().collect();
+    if server.tailscale_socket == ServerConfig::default().tailscale_socket {
+        server.tailscale_socket = root.join("no-tailscaled.sock");
+    }
     let cache = match cfg.real_engine {
         Some(engine) => {
             server.model.command = engine.command;

@@ -73,6 +73,7 @@
                         android:text="@string/setup_pair_label" />
 
                     <TextView
+                        android:id="@+id/setup_pair_where"
                         style="@style/Setup.Body"
                         android:text="@string/setup_pair_where" />
 

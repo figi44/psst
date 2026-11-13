@@ -3,6 +3,7 @@
 mod dictionary;
 mod history;
 mod login;
+mod pair;
 mod profiles;
 
 use std::sync::{Arc, OnceLock};
@@ -39,6 +40,7 @@ const TEMPLATES: &[(&str, &str)] = &[
     ("base.html", include_str!("../../../../web/templates/base.html")),
     ("message.html", include_str!("../../../../web/templates/message.html")),
     ("login.html", include_str!("../../../../web/templates/login.html")),
+    ("pair.html", include_str!("../../../../web/templates/pair.html")),
     ("dictionary.html", include_str!("../../../../web/templates/dictionary.html")),
     ("profiles.html", include_str!("../../../../web/templates/profiles.html")),
     ("history.html", include_str!("../../../../web/templates/history.html")),
@@ -60,6 +62,7 @@ pub fn router() -> Router<AppRef> {
         .route("/login", get(login::page))
         .route(routes::LOGIN_REDEEM, post(login::redeem))
         .route("/logout", post(login::logout))
+        .route(routes::PAIR_PAGE, get(pair::page))
         .route("/dictionary", get(dictionary::show))
         .route("/dictionary.toml", get(dictionary::export))
         .route("/dictionary/terms", post(dictionary::add))

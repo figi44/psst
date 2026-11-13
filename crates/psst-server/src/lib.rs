@@ -264,10 +264,14 @@ enum Command {
         #[command(flatten)]
         connection: Connection,
     },
-    /// Print a one-time pairing code for a new device.
+    /// Print a one-time pairing code for a new device, and a link with a QR code for a phone.
     Pair {
         #[arg(long)]
         name: String,
+        /// The address the device reaches this server by, as http://host:port, when the one `pair`
+        /// prints (the tailnet name, else the host name) is wrong.
+        #[arg(long, value_parser = device_address)]
+        server: Option<psst_proto::Endpoint>,
         #[command(flatten)]
         connection: Connection,
     },
@@ -368,7 +372,7 @@ pub fn main() -> ExitCode {
                 ModelAction::Status => admin::Action::ModelStatus,
             },
         ),
-        Command::Pair { name, connection } => admin(connection, admin::Action::Pair { name }),
+        Command::Pair { name, server, connection } => admin(connection, admin::Action::Pair { name, server }),
         Command::Devices { action, connection } => admin(
             connection,
             match action {
@@ -382,6 +386,13 @@ pub fn main() -> ExitCode {
         }
         Command::Stats { connection } => admin(connection, admin::Action::Stats),
         Command::History { limit, connection } => admin(connection, admin::Action::History { limit }),
+    }
+}
+
+fn device_address(text: &str) -> Result<psst_proto::Endpoint, String> {
+    match text.parse() {
+        Ok(endpoint @ psst_proto::Endpoint::Tcp { .. }) => Ok(endpoint),
+        _ => Err("expected http://host[:port]".into()),
     }
 }
 

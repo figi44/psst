@@ -138,7 +138,7 @@ impl Pairings {
         state.codes.push(PendingCode { code: code.clone(), name, expires: now + CODE_TTL, wrong: 0 });
         let expires_at = Timestamp::now() + CODE_TTL;
         let expires_at = expires_at.round(jiff::Unit::Second).unwrap_or(expires_at);
-        Pairing { code, expires_at }
+        Pairing { code, expires_at, server: None }
     }
 
     /// Auto-pairing guesses nothing, but shares the limit so callers can't hammer tailscaled.

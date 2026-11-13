@@ -322,8 +322,12 @@ fn api_bodies() {
         json!({"device_id": "d1", "token": "s3cret"}),
     );
     assert_wire(
-        &Pairing { code: "ABCD2345".into(), expires_at: "2026-11-06T10:05:00Z".parse().unwrap() },
-        json!({"code": "ABCD2345", "expires_at": "2026-11-06T10:05:00Z"}),
+        &Pairing {
+            code: "ABCD2345".into(),
+            expires_at: "2026-11-06T10:05:00Z".parse().unwrap(),
+            server: Some("http://box.tail1234.ts.net:7341".parse().unwrap()),
+        },
+        json!({"code": "ABCD2345", "expires_at": "2026-11-06T10:05:00Z", "server": "http://box.tail1234.ts.net:7341"}),
     );
     assert_wire(
         &Stats {

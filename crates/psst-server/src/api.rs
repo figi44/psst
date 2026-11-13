@@ -14,7 +14,7 @@ use axum::{
 use psst_dict::term_id;
 use psst_pipeline::PipelineOptions;
 use psst_proto::{
-    ClientTimings, DeviceId, EngineResult, EngineTrace, Final, Segment, ServerTimings, Token,
+    ClientTimings, DeviceId, Endpoint, EngineResult, EngineTrace, Final, Segment, ServerTimings, Token,
     api::{
         ApiError, ApiErrorCode, Device, DictionaryExport, DictionaryTest, DictionaryView, Health, HistoryQuery,
         HistoryRow, LoginLink, ModelStatus, NeverRule, NeverRuleId, NewNeverRule, PairRedeem, PairRedeemed, Pairing,
@@ -430,7 +430,25 @@ async fn pairing(
     }
     let pairing = state.pairings.create(name.to_owned());
     tracing::info!("pairing code for {name} created; valid until {}", pairing.expires_at);
-    Ok(Json(pairing))
+    Ok(Json(Pairing { server: own_address(&state).await, ..pairing }))
+}
+
+/// A name, not an IP address: a phone keeps it while DHCP or Tailscale moves the server.
+async fn own_address(state: &AppState) -> Option<Endpoint> {
+    let port = state.tcp_addrs.first()?.port();
+    let host = match tailscale::own_name(&state.server.tailscale_socket).await {
+        Ok(Some(name)) => name,
+        Ok(None) => host_name()?,
+        Err(err) => {
+            tracing::debug!("no tailnet name from tailscaled: {err:#}");
+            host_name()?
+        }
+    };
+    Some(Endpoint::Tcp { host, port })
+}
+
+fn host_name() -> Option<String> {
+    nix::unistd::gethostname().ok()?.into_string().ok().filter(|name| !name.is_empty())
 }
 
 async fn devices(_: Admin, State(state): State<AppRef>) -> Result<Json<Vec<Device>>, ApiErr> {

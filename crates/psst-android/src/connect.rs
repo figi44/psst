@@ -55,7 +55,7 @@ impl Failure {
             ClientError::Refused(refusal) => {
                 Failure::offline(format!("The server refused the connection: {}.", sentence(&refusal.message)))
             }
-            ClientError::Connect { source, .. } => unreachable(source),
+            ClientError::Connect { endpoint, source } => unreachable(endpoint, source),
             ClientError::Protocol(_) => not_psst(),
             ClientError::Timeout => Failure::no_answer(),
             ClientError::Closed => Failure::offline("The server closed the connection; try again."),
@@ -67,7 +67,17 @@ pub(crate) fn no_longer_accepted() -> String {
     format!("The server no longer accepts this phone: {CODE_HINT}.")
 }
 
-pub(crate) fn unreachable(source: &std::io::Error) -> Failure {
+pub(crate) fn unreachable(endpoint: &Endpoint, source: &std::io::Error) -> Failure {
+    // std has no ErrorKind for a name that doesn't resolve: its message is the only sign.
+    if let Endpoint::Tcp { host, .. } = endpoint
+        && source.to_string().starts_with("failed to lookup address information")
+    {
+        return Failure::offline(format!(
+            "This phone cannot find {host}. If the server is on your tailnet, turn on Tailscale, and if \
+             Tailscale's app-based split tunneling is on, let psst use Tailscale in its settings. Otherwise, \
+             check the address."
+        ));
+    }
     Failure::offline(format!("Cannot reach the server ({source}); check the address and this phone's connection."))
 }
 
@@ -157,7 +167,7 @@ async fn redeem(endpoint: &Endpoint, code: &str, name: &str) -> Result<PairRedee
             link: Link::NeedsPairing,
             message: format!("The server refused the code: {}.", sentence(&error.message)),
         },
-        ApiCallError::Connect { source, .. } => unreachable(&source),
+        ApiCallError::Connect { endpoint, source } => unreachable(&endpoint, &source),
         ApiCallError::Timeout(_) => Failure::no_answer(),
         ApiCallError::Protocol { .. } => not_psst(),
     })

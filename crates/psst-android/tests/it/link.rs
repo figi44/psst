@@ -112,3 +112,15 @@ fn an_address_that_is_not_one_says_so() {
     assert!(offline.link_message.is_some(), "{offline:?}");
     assert_eq!(unconfigured.server, None);
 }
+
+#[test]
+fn a_server_name_the_phone_cannot_find_points_at_tailscale() {
+    let mut phone = Phone::new();
+
+    phone.send(Command::Configure { server: "http://psst-server.invalid:7341".into() });
+    let offline = phone.until_link(Link::Offline);
+
+    let message = offline.link_message.unwrap();
+    assert!(message.contains("cannot find psst-server.invalid"), "{message}");
+    assert!(message.contains("turn on Tailscale") && message.contains("split tunneling"), "{message}");
+}

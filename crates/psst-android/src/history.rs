@@ -43,7 +43,7 @@ fn message(err: ApiCallError) -> String {
                 connect::sentence(&error.message)
             )
         }
-        ApiCallError::Connect { source, .. } => connect::unreachable(&source).message,
+        ApiCallError::Connect { endpoint, source } => connect::unreachable(&endpoint, &source).message,
         ApiCallError::Timeout(_) => Failure::no_answer().message,
         ApiCallError::Protocol { .. } => connect::not_psst().message,
     }

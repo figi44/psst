@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Pair this phone · psst{% endblock %}
+{% block solo %}
+<main class="solo"><div class="solo-in">
+  <a class="brand" href="/history">psst<i aria-hidden="true"></i></a>
+  <h1>Pair this phone</h1>
+  <p>Open the psst app to pair it with this server.</p>
+  <div class="actions"><a class="btn primary" id="open" href="{{ app }}">Open psst</a></div>
+  <p class="hint">Without the app, the button gets it from GitHub. Or pair by hand: in psst's setup, enter the server <code>{{ server }}</code> and the code <code>{{ code }}</code>.</p>
+</div></main>
+{% endblock %}

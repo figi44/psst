@@ -1,15 +1,19 @@
 //! Every admin command goes through `/api` over the socket; none opens the database.
 
-use std::{path::Path, process::ExitCode, time::Duration};
+use std::{io::IsTerminal, path::Path, process::ExitCode, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
 use http_body_util::{BodyExt, Full};
 use hyper::{Method, Request, StatusCode, body::Bytes, header};
 use hyper_util::rt::TokioIo;
-use psst_proto::api::{
-    ApiError, Device, DeviceKind, DictionaryExport, HistoryRow, ModelState, ModelStatus, Pairing, PairingRequest,
-    ProfilesExport, Stats, routes,
+use psst_proto::{
+    Endpoint,
+    api::{
+        ApiError, Device, DeviceKind, DictionaryExport, HistoryRow, ModelState, ModelStatus, Pairing, PairingRequest,
+        ProfilesExport, Stats, routes,
+    },
 };
+use qrcodegen::{QrCode, QrCodeEcc};
 use serde::{Serialize, de::DeserializeOwned};
 
 #[derive(Debug, Clone)]
@@ -17,7 +21,7 @@ pub enum Action {
     ModelLoad,
     ModelUnload,
     ModelStatus,
-    Pair { name: String },
+    Pair { name: String, server: Option<Endpoint> },
     DevicesList,
     DevicesRevoke { id: String },
     Stats,
@@ -65,17 +69,12 @@ async fn execute(socket: &Path, json: bool, action: Action) -> Result<ExitCode> 
             print(json, &status, describe_model);
             Ok(if status.state == ModelState::Loaded { ExitCode::SUCCESS } else { ExitCode::FAILURE })
         }
-        Action::Pair { name } => {
-            let pairing: Pairing = api.call(Method::POST, routes::PAIRING, Some(PairingRequest { name })).await?;
-            print(json, &pairing, |pairing| {
-                format!(
-                    "Pairing code: {}\nValid until {} for one device.\nOn that device run: psst pair http://<this machine>:{} {}",
-                    pairing.code,
-                    pairing.expires_at,
-                    psst_proto::DEFAULT_PORT,
-                    pairing.code
-                )
-            });
+        Action::Pair { name, server } => {
+            let mut pairing: Pairing = api.call(Method::POST, routes::PAIRING, Some(PairingRequest { name })).await?;
+            if server.is_some() {
+                pairing.server = server;
+            }
+            print(json, &pairing, describe_pairing);
             Ok(ExitCode::SUCCESS)
         }
         Action::DevicesList => {
@@ -176,6 +175,48 @@ pub(crate) fn describe_model(status: &ModelStatus) -> String {
         ModelState::Failed => format!("failed: {}", status.error.as_deref().unwrap_or("unknown error")),
     };
     format!("{}: {state}", status.name)
+}
+
+fn describe_pairing(pairing: &Pairing) -> String {
+    let code = &pairing.code;
+    let mut out = format!("Pairing code: {code}\nValid until {} for one device.", pairing.expires_at);
+    let Some(server) = &pairing.server else {
+        out.push_str(&format!(
+            "\nOn that device run: psst pair http://<this machine>:{} {code}",
+            psst_proto::DEFAULT_PORT
+        ));
+        return out;
+    };
+    let link = format!("{server}{}?code={code}", routes::PAIR_PAGE);
+    out.push_str("\n\nOn a phone, scan this with the camera, or open the link:\n");
+    if std::io::stdout().is_terminal() {
+        out.push_str(&qr_code(&link));
+    }
+    out.push_str(&format!("{link}\n\nOn a computer, run: psst pair {server} {code}"));
+    out
+}
+
+/// Black on white whatever the terminal's colours, with the light border scanners need. A
+/// half-block character holds two modules, one above the other, so that modules come out about
+/// square.
+fn qr_code(text: &str) -> String {
+    const BORDER: i32 = 4;
+    let Ok(qr) = QrCode::encode_text(text, QrCodeEcc::Medium) else { return String::new() };
+    let mut out = String::new();
+    for y in (-BORDER..qr.size() + BORDER).step_by(2) {
+        out.push_str("\x1b[30;107m");
+        for x in -BORDER..qr.size() + BORDER {
+            // Light outside the code, which is the border.
+            out.push(match (qr.get_module(x, y), qr.get_module(x, y + 1)) {
+                (false, false) => ' ',
+                (true, false) => '▀',
+                (false, true) => '▄',
+                (true, true) => '█',
+            });
+        }
+        out.push_str("\x1b[0m\n");
+    }
+    out
 }
 
 fn print<T: Serialize>(json: bool, value: &T, human: impl FnOnce(&T) -> String) {

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use crate::{ClientTimings, DeviceId, Final, HistoryId, ServerTimings, SessionId, TermId, Token};
+use crate::{ClientTimings, DeviceId, Endpoint, Final, HistoryId, ServerTimings, SessionId, TermId, Token};
 
 pub mod routes {
     pub const CLIENT: &str = "/v1/client";
@@ -11,6 +11,8 @@ pub mod routes {
     pub const PAIR_REDEEM: &str = "/api/pair/redeem";
     /// No body: the server asks tailscaled which machine is calling, and checks its `auto_pair`.
     pub const PAIR_AUTO: &str = "/api/pair/auto";
+    /// A web page for a phone, with `?code=`: the link `psst-server pair` prints, and its QR code.
+    pub const PAIR_PAGE: &str = "/pair";
     pub const MODEL: &str = "/api/model";
     pub const MODEL_LOAD: &str = "/api/model/load";
     pub const MODEL_UNLOAD: &str = "/api/model/unload";
@@ -103,6 +105,10 @@ pub struct PairingRequest {
 pub struct Pairing {
     pub code: String,
     pub expires_at: Timestamp,
+    /// The server's best guess at how other devices reach it: its tailnet name, else its host
+    /// name, at its TCP port. `None` without a TCP listener.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<Endpoint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

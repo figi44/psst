@@ -29,6 +29,7 @@ class SetupActivity : Activity() {
     private lateinit var serverStatus: TextView
     private lateinit var connect: View
     private lateinit var pairGroup: View
+    private lateinit var pairWhere: TextView
     private lateinit var code: EditText
     private lateinit var micStatus: TextView
     private lateinit var micAllow: Button
@@ -52,11 +53,22 @@ class SetupActivity : Activity() {
     /** Pair was pressed: the core says `connecting` until the code is redeemed or refused. */
     private var pairing = false
 
+    /**
+     * A pairing link's server and code, followed once this listens for states: the state a new
+     * listener first gets is then the one the link is weighed against, not one that undoes [pairing].
+     */
+    private var link: Pair<String, String>? = null
+    private var listening = false
+
+    /** A link to a server other than the one in use filled in the fields; Pair switches to it. */
+    private var switching: String? = null
+
     /** The server as the field last showed it. Text that differs is the user's, and stays. */
     private var shownServer: String? = null
 
     private val onState: (State) -> Unit = { state ->
         if (state.link != Link.CONNECTING) pairing = false
+        followLink()
         render()
     }
 
@@ -78,6 +90,7 @@ class SetupActivity : Activity() {
         serverStatus = findViewById(R.id.setup_server_status)
         connect = findViewById(R.id.setup_connect)
         pairGroup = findViewById(R.id.setup_pair_group)
+        pairWhere = findViewById(R.id.setup_pair_where)
         code = findViewById(R.id.setup_code)
         micStatus = findViewById(R.id.setup_mic_status)
         micAllow = findViewById(R.id.setup_mic_allow)
@@ -119,6 +132,7 @@ class SetupActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
+        listening = true
         Psst.addListener(onState)
         Psst.warm()
     }
@@ -139,6 +153,7 @@ class SetupActivity : Activity() {
     }
 
     override fun onStop() {
+        listening = false
         Psst.removeListener(onState)
         super.onStop()
     }
@@ -205,9 +220,16 @@ class SetupActivity : Activity() {
                 (state.linkMessage ?: getString(R.string.setup_server_offline)) to R.color.danger
         }
         serverStatus.show(text, color)
-        val showCode = state.link == Link.NEEDS_PAIRING || (pairing && state.link == Link.CONNECTING)
+        val showCode =
+            state.link == Link.NEEDS_PAIRING || (pairing && state.link == Link.CONNECTING) || switching != null
         pairGroup.visibility = if (showCode) View.VISIBLE else View.GONE
-        if (state.link == Link.ONLINE && code.length() > 0) code.text.clear()
+        val from = state.server
+        pairWhere.text = if (switching != null && from != null) {
+            getString(R.string.setup_pair_switch, switching, from)
+        } else {
+            getText(R.string.setup_pair_where)
+        }
+        if (state.link == Link.ONLINE && switching == null && code.length() > 0) code.text.clear()
         connect.isActivated = state.link != Link.ONLINE
         serverStep.show(state.link == Link.ONLINE)
     }
@@ -244,6 +266,7 @@ class SetupActivity : Activity() {
     private fun connect() {
         val address = server.text.toString()
         if (address.isBlank()) return ask(server)
+        switching = null
         // The core answers with the address in its canonical form, which then replaces this.
         shownServer = address
         Psst.configure(address)
@@ -253,6 +276,13 @@ class SetupActivity : Activity() {
     private fun pair() {
         val text = code.text.toString()
         if (text.isBlank()) return ask(code)
+        val address = server.text.toString()
+        // An address entered, or linked, but not yet connected to: the code is for that server.
+        if (address.isNotBlank() && address != Psst.state.server) {
+            shownServer = address
+            Psst.configure(address)
+        }
+        switching = null
         pairing = true
         Psst.pair(text.trim())
         done(code)
@@ -268,6 +298,40 @@ class SetupActivity : Activity() {
 
     private fun followIntent(intent: Intent) {
         if (intent.getBooleanExtra(ASK_MICROPHONE, false) && !micGranted) allowMicrophone()
+        val data = intent.data
+        // Reopened from recents, the link would pair again with a code that is long gone.
+        val fromRecents = intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0
+        if (intent.action != Intent.ACTION_VIEW || data?.scheme != "psst" || data.host != "pair" || fromRecents) return
+        val address = data.getQueryParameter("server")
+        val linkCode = data.getQueryParameter("code")
+        if (address.isNullOrBlank() || linkCode.isNullOrBlank()) return
+        link = address to linkCode
+        if (listening) {
+            followLink()
+            render()
+        }
+    }
+
+    /**
+     * Pairs at once when the link replaces nothing. Replacing a server in use is left to the user,
+     * so that a link on any web page can't send their dictation elsewhere.
+     */
+    private fun followLink() {
+        val (address, linkCode) = link ?: return
+        val state = Psst.state
+        // Before the core's first state: no server known, but not `unconfigured` either.
+        if (state.server == null && state.link != Link.UNCONFIGURED) return
+        link = null
+        code.setText(linkCode)
+        if (state.server == null || state.server == address) {
+            // The core's next state shows the server in its field.
+            Psst.configure(address)
+            pairing = true
+            Psst.pair(linkCode)
+        } else {
+            server.setText(address)
+            switching = address
+        }
     }
 
     private fun open(action: String, data: Uri? = null) {

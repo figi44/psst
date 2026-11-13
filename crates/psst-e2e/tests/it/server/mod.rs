@@ -9,6 +9,7 @@ mod history;
 mod login;
 mod opus;
 mod pages;
+mod phone_pairing;
 mod profiles;
 mod reload;
 mod sessions;

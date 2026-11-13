@@ -1,4 +1,5 @@
-//! tailscaled's LocalAPI, which says which tailnet machine a peer address belongs to.
+//! tailscaled's LocalAPI, which says which tailnet machine a peer address belongs to, and what
+//! this machine is called on the tailnet.
 
 use std::{net::SocketAddr, path::Path, time::Duration};
 
@@ -35,8 +36,17 @@ struct Node {
 
 #[derive(Deserialize)]
 struct Status {
+    #[serde(rename = "Self")]
+    this: Option<SelfNode>,
     #[serde(rename = "CurrentTailnet")]
     current_tailnet: Option<Tailnet>,
+}
+
+#[derive(Deserialize)]
+struct SelfNode {
+    /// With a trailing dot; empty while logged out.
+    #[serde(rename = "DNSName", default)]
+    dns_name: String,
 }
 
 #[derive(Deserialize)]
@@ -63,6 +73,13 @@ pub async fn whois(socket: &Path, addr: SocketAddr) -> Result<Option<Machine>> {
     Ok(short
         .filter(|short| !short.is_empty() && !short.contains('.'))
         .map(|short| Machine { id: who.node.stable_id, name: short.to_owned() }))
+}
+
+/// This machine's full MagicDNS name. `None` while tailscaled isn't logged in to a tailnet.
+pub async fn own_name(socket: &Path) -> Result<Option<String>> {
+    let status = get::<Status>(socket, "/localapi/v0/status?peers=false").await?;
+    let name = status.and_then(|status| status.this).map(|node| node.dns_name);
+    Ok(name.map(|name| name.trim_end_matches('.').to_owned()).filter(|name| !name.is_empty()))
 }
 
 /// `None` for a 404.

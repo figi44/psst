@@ -7,13 +7,14 @@
     <string name="setup_server">Server</string>
     <string name="setup_server_hint" translatable="false">http://server:7341</string>
     <string name="setup_connect">Connect</string>
-    <string name="setup_server_unconfigured">Enter the name or address of the machine that runs psst-server.</string>
+    <string name="setup_server_unconfigured">Enter the name or address of the machine that runs psst-server, or scan the QR code that psst-server pair prints there.</string>
     <string name="setup_server_connecting">Connecting…</string>
     <string name="setup_server_online">Connected to psst</string>
     <string name="setup_server_online_version">Connected to psst %1$s</string>
     <string name="setup_server_offline">Not connected to the server.</string>
     <string name="setup_pair_label">Pairing code</string>
-    <string name="setup_pair_where">Run <tt>psst-server pair --name phone</tt> on the server machine, then enter the code it prints within 5 minutes.</string>
+    <string name="setup_pair_where">Run <tt>psst-server pair --name phone</tt> on the server machine, then scan its QR code or enter the code it prints within 5 minutes.</string>
+    <string name="setup_pair_switch">The link pairs psst with %1$s, in place of %2$s.</string>
     <string name="setup_pair">Pair</string>
     <string name="setup_pair_checking">Checking the code…</string>
 
