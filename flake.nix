@@ -13,7 +13,7 @@
         "x86_64-linux"
         "aarch64-linux"
       ];
-      # nixpkgs as the host config configures it (only `allowUnfree`), plus psst.
+      # nixpkgs as the host config configures it (only `allowUnfree`, for the CUDA engine), plus psst.
       pkgsFor = lib.genAttrs systems (
         system:
         import nixpkgs {
@@ -28,7 +28,7 @@
       overlays.default = import ./nix/overlay.nix;
 
       packages = forAllSystems (pkgs: {
-        inherit (pkgs) psst psst-server;
+        inherit (pkgs) psst psst-server psst-engine-faster-whisper-cuda;
         default = pkgs.psst;
       });
 
