@@ -24,7 +24,8 @@ const CODE_ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTVWXYZ23456789";
 const TOKEN_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 /// Prefix of every device token, so a leaked one is recognisable.
 pub const TOKEN_PREFIX: &str = "psst_";
-/// Redemptions allowed per source address, and from everyone together, per window.
+/// Redemptions (of pairing codes, and of login links) allowed per source address, and from
+/// everyone together, per window.
 const REDEEM_PER_ADDR: u32 = 10;
 const REDEEM_TOTAL: u32 = 30;
 const REDEEM_WINDOW: Duration = Duration::from_secs(60);
@@ -81,8 +82,7 @@ pub struct Pairings {
 #[derive(Debug, Default)]
 struct PairingState {
     codes: Vec<PendingCode>,
-    per_addr: HashMap<IpAddr, Window>,
-    total: Option<Window>,
+    limit: RedeemLimit,
 }
 
 #[derive(Debug)]
@@ -108,6 +108,26 @@ impl Window {
         };
         window.count += 1;
         window.count <= limit
+    }
+}
+
+/// The rate limit of unauthenticated redemptions: [`REDEEM_PER_ADDR`] per source address and
+/// [`REDEEM_TOTAL`] from everyone, per [`REDEEM_WINDOW`].
+#[derive(Debug, Default)]
+pub struct RedeemLimit {
+    per_addr: HashMap<IpAddr, Window>,
+    total: Option<Window>,
+}
+
+impl RedeemLimit {
+    /// Counts one attempt from `addr`; false if it's over either limit.
+    pub fn admit(&mut self, addr: IpAddr, now: Instant) -> bool {
+        self.per_addr.retain(|_, window| now.duration_since(window.start) < REDEEM_WINDOW);
+        let mut slot = self.per_addr.get(&addr).copied();
+        let addr_ok = Window::admit(&mut slot, now, REDEEM_PER_ADDR);
+        self.per_addr.insert(addr, slot.expect("admit fills the slot"));
+        let total_ok = Window::admit(&mut self.total, now, REDEEM_TOTAL);
+        addr_ok && total_ok
     }
 }
 
@@ -143,13 +163,7 @@ impl Pairings {
     pub fn redeem(&self, addr: IpAddr, code: &str) -> Result<String, RedeemError> {
         let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
-        let state = &mut *state;
-        state.per_addr.retain(|_, window| now.duration_since(window.start) < REDEEM_WINDOW);
-        let mut slot = state.per_addr.get(&addr).copied();
-        let addr_ok = Window::admit(&mut slot, now, REDEEM_PER_ADDR);
-        state.per_addr.insert(addr, slot.expect("admit fills the slot"));
-        let total_ok = Window::admit(&mut state.total, now, REDEEM_TOTAL);
-        if !addr_ok || !total_ok {
+        if !state.limit.admit(addr, now) {
             return Err(RedeemError::RateLimited);
         }
 
