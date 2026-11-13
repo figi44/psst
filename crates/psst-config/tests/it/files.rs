@@ -305,7 +305,7 @@ fn client_overlay_colours() {
 
 #[test]
 fn client_menu_opens_on_a_double_tap_unless_turned_off() {
-    assert_eq!(ClientConfig::default().menu.double_tap_ms, 300);
+    assert_eq!(ClientConfig::default().menu.double_tap_ms, 150);
     let config = ClientConfig::from_toml_str("[menu]\ndouble_tap_ms = 0").unwrap();
     assert_eq!(config.menu.double_tap_ms, 0);
     invalid::<ClientConfig>("[menu]\ndouble_tap = 300", "double_tap");

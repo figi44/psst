@@ -215,7 +215,9 @@ fn the_menu_switches_the_profile_and_adds_a_word_from_the_keyboard() {
             ..Default::default()
         },
     );
-    let desk = Desktop::start_with(server.endpoint(), &test_audio(3_000), |cfg| cfg.menu = MenuConfig::default());
+    // Each tap starts a `psst` process, slow on a loaded machine; the dictation below toggles 600 ms apart.
+    let menu = MenuConfig { double_tap_ms: 500 };
+    let desk = Desktop::start_with(server.endpoint(), &test_audio(3_000), |cfg| cfg.menu = menu);
     let mut keyboard = HostKeyboard::new(&desk.sandbox);
 
     assert!(desk.ok(&["toggle"]).starts_with("recording"));

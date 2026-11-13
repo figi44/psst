@@ -233,14 +233,15 @@ impl Default for OverlayConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct MenuConfig {
-    /// A `toggle` this soon after the one that started a recording opens the menu instead of
-    /// stopping it, and the recording is thrown away. 0 turns double-tapping off.
+    /// A second `toggle` this soon after the first opens the menu instead of a dictation. The
+    /// microphone starts at the first, so nothing said is lost, but the chime and the overlay
+    /// wait this long for a second. 0 turns double-tapping off: dictation starts at once.
     pub double_tap_ms: u32,
 }
 
 impl Default for MenuConfig {
     fn default() -> Self {
-        Self { double_tap_ms: 300 }
+        Self { double_tap_ms: 150 }
     }
 }
 

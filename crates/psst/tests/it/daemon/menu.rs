@@ -1,12 +1,13 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use psst::{
     daemon::Sound,
     ipc::{Request, Status},
 };
 use psst_config::{ClientConfig, MenuConfig};
+use psst_proto::SessionId;
 use psst_testkit::fake_server::{FakeServer, FakeServerConfig, Outcome};
-use psst_wayland::{MenuAction, MenuOutcome, WaylandCmd, WaylandEvent};
+use psst_wayland::{MenuAction, MenuOutcome, OverlayState, WaylandCmd, WaylandEvent};
 
 use super::{Daemon, WAIT, daemon, daemon_in, paste, wait_until};
 
@@ -23,11 +24,12 @@ async fn until(d: &Daemon, what: &str, check: impl Fn(&Status) -> bool) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_double_tap_throws_the_recording_away_and_opens_the_menu() {
+async fn a_double_tap_opens_the_menu_without_a_trace_of_the_recording_it_began() {
     let server = FakeServer::start(FakeServerConfig::default());
     let d = daemon(&server, |cfg, _| cfg.menu = MenuConfig::default()).await;
 
-    assert!(d.toggle().await.ok);
+    let first = d.toggle().await;
+    let first: SessionId = first.message.rsplit(' ').next().unwrap().parse().expect("recording");
     let tapped = d.toggle().await;
     assert_eq!(tapped.message, "opened the menu");
     let status = d.status().await;
@@ -35,10 +37,11 @@ async fn a_double_tap_throws_the_recording_away_and_opens_the_menu() {
     wait_until(|| d.wayland.menus().last().is_some_and(Option::is_some)).await;
     let spec = d.wayland.menus().last().cloned().flatten().unwrap();
     assert_eq!(spec.profile, "default");
-    assert!(!d.sounds().iter().any(|s| matches!(s, Sound::Stop | Sound::Error)), "{:?}", d.sounds());
 
     assert_eq!(d.toggle().await.message, "closed the menu", "the hotkey closes it again");
     wait_until(|| d.wayland.menus().last() == Some(&None)).await;
+    assert_eq!(d.sounds(), [], "no chime");
+    assert!(!d.wayland.showed(|_| true), "no overlay: {:?}", d.wayland.overlays());
     assert!(d.toggle().await.ok);
     assert!(!d.run(Request::Menu).await.ok, "not over a live microphone");
     assert!(d.run(Request::Cancel).await.ok);
@@ -47,12 +50,40 @@ async fn a_double_tap_throws_the_recording_away_and_opens_the_menu() {
     d.dictate(500).await;
     d.idle().await;
     assert_eq!(d.wayland.menus().len(), menus, "slow enough to dictate: no menu");
+    assert_eq!(server.session(first), None, "the server never heard of it");
     d.stop().await;
 
     let d = daemon(&server, |_, _| {}).await;
     assert!(d.toggle().await.ok);
     let stopped = d.toggle().await;
     assert!(stopped.ok && stopped.message.starts_with("stop"), "double-tapping is off: {stopped:?}");
+    d.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_single_tap_records_from_the_tap_but_chimes_only_once_no_second_can_come() {
+    let server = FakeServer::start(FakeServerConfig::default());
+    server.push_outcome(Outcome::Final("every word ".into()));
+    let window = Duration::from_millis(400);
+    let d = daemon(&server, |cfg, _| cfg.menu = MenuConfig { double_tap_ms: window.as_millis() as u32 }).await;
+
+    let tapped = Instant::now();
+    let started = d.toggle().await;
+    let id: SessionId = started.message.rsplit(' ').next().unwrap().parse().expect("recording");
+    wait_until(|| d.wayland.showed(|_| true)).await;
+    assert!(tapped.elapsed() >= window, "the overlay came after {:?}", tapped.elapsed());
+    wait_until(|| d.sounds() == [Sound::Start]).await;
+    assert!(tapped.elapsed() >= window, "the chime came after {:?}", tapped.elapsed());
+    assert!(d.wayland.showed(|s| matches!(s, OverlayState::Recording { .. })), "{:?}", d.wayland.overlays());
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(d.toggle().await.message.starts_with("stopped"));
+    d.idle().await;
+    assert_eq!(d.wayland.inserted(), vec![paste("every word ")]);
+    let seen = server.session(id).unwrap();
+    let samples = seen.stop_samples.unwrap() as usize;
+    assert!(samples >= 16 * 700, "{samples}");
+    assert_eq!(&seen.audio[..samples], &d.audio[..samples], "what was said before the chime is kept");
     d.stop().await;
 }
 

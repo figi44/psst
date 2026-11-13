@@ -397,6 +397,9 @@ struct Dictation {
     phase: Phase,
     recorder: Option<Recorder>,
     stop_requested: bool,
+    /// While a second `toggle` would still be a double tap. The microphone runs, so nothing said
+    /// is lost, but nothing shows, chimes or goes to the server: a double tap leaves no trace.
+    tap_until: Option<Instant>,
     frames: u64,
     level: f32,
     max_recording_s: u32,
@@ -429,6 +432,7 @@ impl Dictation {
             phase,
             recorder: None,
             stop_requested: false,
+            tap_until: None,
             frames: 0,
             level: 0.0,
             max_recording_s: 600,
@@ -692,9 +696,9 @@ impl Core {
         match request {
             Request::Toggle { .. } if self.menu.open => self.close_menu(),
             Request::Toggle { profile } => match &self.recording {
-                Some(rec) if self.double_tapped(rec) => self.double_tap(),
+                Some(rec) if rec.tap_until.is_some() => self.double_tap(),
                 Some(_) => self.stop_recording(),
-                None => self.start_recording(profile),
+                None => self.start_recording(profile, Duration::from_millis(self.cfg.menu.double_tap_ms.into())),
             },
             Request::Start => {
                 self.menu.open = false;
@@ -703,7 +707,7 @@ impl Core {
                         self.flash("already recording");
                         Response::err("already recording")
                     }
-                    None => self.start_recording(None),
+                    None => self.start_recording(None, Duration::ZERO),
                 }
             }
             Request::Menu if self.menu.open => self.close_menu(),
@@ -727,7 +731,7 @@ impl Core {
         }
     }
 
-    fn start_recording(&mut self, profile: Option<String>) -> Response {
+    fn start_recording(&mut self, profile: Option<String>, tap_window: Duration) -> Response {
         let usage = self.store.usage();
         if usage > STORAGE_BUDGET {
             let message = format!("saved recordings use {} MB: see psst status", usage / 1_000_000);
@@ -739,6 +743,7 @@ impl Core {
         let profile = profile.unwrap_or_else(|| self.profile.clone());
         let mut d = Dictation::new(id, profile, generation, Phase::Starting, Net::Pending);
         d.t_toggle = Some(Instant::now());
+        d.tap_until = (!tap_window.is_zero()).then(|| Instant::now() + tap_window);
         d.max_recording_s = self.max_recording_s;
         if let Err(err) = self.store.write_meta(id, &d.meta(RecState::Recording)) {
             let message = format!("cannot save the recording: {err}");
@@ -784,11 +789,6 @@ impl Core {
         self.stop_chime = Some((id, Instant::now() + self.t.stop_chime_wait));
         info!("stopped {id}");
         Response::ok(format!("stopped {id}"))
-    }
-
-    fn double_tapped(&self, rec: &Dictation) -> bool {
-        let window = Duration::from_millis(self.cfg.menu.double_tap_ms.into());
-        !window.is_zero() && rec.t_toggle.is_some_and(|t| t.elapsed() < window)
     }
 
     /// The first tap started a recording; it's thrown away unheard.
@@ -1429,7 +1429,7 @@ impl Core {
         d.net = Net::Offline(reason);
         d.backlog = Vec::new();
         let recording = matches!(d.phase, Phase::Starting | Phase::Recording);
-        if recording {
+        if recording && d.tap_until.is_none() {
             self.sound(Sound::Error);
         }
     }
@@ -1485,6 +1485,7 @@ impl Core {
         d.level = level;
         let first = d.t_first_frame.is_none();
         let live = first && d.phase == Phase::Starting;
+        let quiet = d.tap_until.is_some();
         if first {
             d.t_first_frame = Some(Instant::now());
             if live {
@@ -1509,7 +1510,7 @@ impl Core {
         }
         let over_limit = d.frames * FRAME_MS as u64 >= d.max_recording_s as u64 * 1000;
         let stop_now = is_recording && ((first && d.stop_requested) || over_limit);
-        if live && is_recording {
+        if live && is_recording && !quiet {
             self.sound(Sound::Start);
         }
         if let Some((reason, close)) = lost {
@@ -1861,7 +1862,7 @@ impl Core {
         }
         let now = Instant::now();
         let notice = self.notice.as_ref().filter(|(_, until)| *until > now).map(|(state, _)| state.clone());
-        if let Some(rec) = &self.recording {
+        if let Some(rec) = self.recording.as_ref().filter(|rec| rec.tap_until.is_none()) {
             if let Some(notice) = notice {
                 let message = match notice {
                     OverlayState::Flash { message } | OverlayState::Error { message } => message,
@@ -1938,6 +1939,7 @@ impl Core {
     fn next_deadline(&self) -> Option<Instant> {
         let mut deadlines = Vec::new();
         if let Some(rec) = &self.recording {
+            deadlines.extend(rec.tap_until);
             match rec.net {
                 Net::Checking { deadline } => deadlines.push(deadline),
                 Net::Live { ready: false, since } => deadlines.push(since + self.t.ready_timeout),
@@ -1960,6 +1962,17 @@ impl Core {
 
     fn on_tick(&mut self) {
         let now = Instant::now();
+        if let Some(rec) = &mut self.recording
+            && rec.tap_until.take_if(|until| *until <= now).is_some()
+        {
+            let (live, offline) = (rec.phase == Phase::Recording, matches!(rec.net, Net::Offline(_)));
+            if live {
+                self.sound(Sound::Start);
+            }
+            if offline {
+                self.sound(Sound::Error);
+            }
+        }
         if let Some(rec) = &self.recording {
             let id = rec.id;
             match rec.net {
@@ -1993,7 +2006,7 @@ impl Core {
         {
             if let Some(index) = self.pipeline.iter().position(|d| d.phase == Phase::Uploading && d.session.is_none()) {
                 self.start_upload(&mut client, index);
-            } else if self.recording.as_ref().is_some_and(|r| r.net == Net::Pending) {
+            } else if self.recording.as_ref().is_some_and(|r| r.net == Net::Pending && r.tap_until.is_none()) {
                 self.start_live(&mut client);
             }
         }
