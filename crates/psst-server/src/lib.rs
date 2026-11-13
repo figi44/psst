@@ -9,6 +9,7 @@
 
 mod auth;
 mod db;
+mod engine;
 
 use std::{
     net::SocketAddr,
