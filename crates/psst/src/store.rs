@@ -15,6 +15,10 @@ use std::{
     io::{self, Write},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -91,6 +95,8 @@ pub struct Recovery {
 pub struct Store {
     state_dir: PathBuf,
     recordings: PathBuf,
+    /// Counts changes to the recordings, shared with clones.
+    revision: Arc<AtomicU64>,
 }
 
 impl Store {
@@ -101,7 +107,17 @@ impl Store {
         for dir in [state_dir, &recordings] {
             fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
         }
-        Ok(Store { state_dir: state_dir.into(), recordings })
+        Ok(Store { state_dir: state_dir.into(), recordings, revision: Arc::default() })
+    }
+
+    /// Changes whenever this store (or a clone) writes or deletes a recording, so a caller can
+    /// tell that [`Store::list`] may differ without reading the directory.
+    pub fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Relaxed)
+    }
+
+    fn changed(&self) {
+        self.revision.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn state_dir(&self) -> &Path {
@@ -125,6 +141,7 @@ impl Store {
     }
 
     pub fn write_meta(&self, id: SessionId, meta: &Meta) -> io::Result<()> {
+        self.changed();
         write_json_atomic(&self.meta_path(id), meta, 0o600)
     }
 
@@ -134,6 +151,7 @@ impl Store {
 
     /// Deletes a recording: the WAV first, then its metadata.
     pub fn delete(&self, id: SessionId) -> io::Result<()> {
+        self.changed();
         for path in [self.wav_path(id), self.meta_path(id)] {
             match fs::remove_file(&path) {
                 Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(err),
