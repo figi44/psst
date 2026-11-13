@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Render the synthetic eval clips with Piper text-to-speech.
 #
-#   scripts/synth-evals.sh [--force] [--check]
+#   scripts/synth-evals.sh [--force] [--check] [--evals <dir> [--probe]]
 #
-# Reads evals/sentences/{en,cs}.txt and evals/dictionary.toml, writes evals/clips/syn-*.flac (16 kHz mono) and the
+# Reads evals/sentences/en.txt and evals/dictionary.toml, writes evals/clips/syn-*.flac (16 kHz mono) and the
 # synthetic lines of evals/cases.jsonl. Clips whose inputs haven't changed are left alone, so a re-run is cheap and,
 # because rendering is seeded, a --force re-run produces the same bytes. --check only validates the sentences and
-# prints the plan. Voices and licences: evals/SOURCES.md. The logic is in scripts/lib/synth_evals.py.
+# prints the plan. --evals renders another eval set, such as a term probe from scripts/lib/eval_terms.py (--probe:
+# no noise cases). Voices and licences: evals/SOURCES.md. The logic is in scripts/lib/synth_evals.py.
 #
 # Tools come from the flake's pinned nixpkgs: piper-tts 1.8.0, flac and Python with onnxruntime.
 # Voices are downloaded once (checked by sha256) into ${PSST_CACHE_DIR:-~/.cache/psst}/piper.

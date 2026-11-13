@@ -65,7 +65,7 @@ def report_quality(records, cases) -> str:
     rows = []
     for (path, terms_as), rs in groups.items():
         cells = [path, BIAS_NAMES[terms_as]]
-        for lang in ("en", "cs", None):
+        for lang in ("en",):
             errs = words = 0
             for r in rs:
                 c = cases[r["id"]]
@@ -73,7 +73,7 @@ def report_quality(records, cases) -> str:
                     e, n = bl.wer_counts(c["reference"], r["text"], c["lang"])
                     errs, words = errs + e, words + n
             cells.append(pct(errs, words))
-        for lang in ("en", "cs"):
+        for lang in ("en",):
             found = total = 0
             for r in rs:
                 c = cases[r["id"]]
@@ -93,7 +93,7 @@ def report_quality(records, cases) -> str:
     out = [
         "## Quality on all synthetic clips (one run each, word timestamps on)",
         "",
-        table(["path", "bias", "WER en %", "WER cs %", "WER all %", "term recall en %", "term recall cs %",
+        table(["path", "bias", "WER %", "term recall %",
                "noise with text", "short must-pass exact", "clips with leaks", "median ms, 2–5 s"], rows),
         "",
     ]
@@ -239,7 +239,7 @@ def report_targets(records) -> str:
     config = runs[0]
     rows = []
     for group in ("<=15s", "60s"):
-        for lang in ("en", "cs", None):
+        for lang in ("en",):
             xs = [r["seconds"] for r in runs if r["group"] == group and (lang is None or r["lang"] == lang)]
             if xs:
                 rows.append([group, lang or "all", len(xs), ms(quantile(xs, 0.5)), ms(quantile(xs, 0.95)),

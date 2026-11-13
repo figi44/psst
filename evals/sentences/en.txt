@@ -1,130 +1,193 @@
 # English sentences for the eval set. One entry per line: `<id> <text>`.
 #
 # - Dictionary terms are marked [[Term]]. In [[Term|spoken]], `spoken` is only what text-to-speech reads so that it
-#   says the term the way a person would; the reference text and the recording prompt show `Term`.
+#   says the term the way a person would; the reference text and the recording prompt show `Term`. A term is spoken as
+#   the Whisper probe spoke it: `spoken` in evals/terms.toml, or nothing.
 # - {pause 2.5} is a pause of 2.5 seconds (long entries only).
 # - A line starting with whitespace continues the entry above it.
 # - Ids: en-NNN are ordinary sentences, en-long-NN (35–90 s with pauses) and en-short-NN are must-pass cases.
-#   Odd numbers go to the tune split and even numbers to holdout. Ids are stable: add new entries at the end.
+#   Odd numbers go to the tune split and even numbers to holdout. Ids are stable: add new entries at the end. The
+#   entries before en-073, en-long-06 and en-short-07 named real products and were retired; their ids aren't reused.
 # - No numbers: the reference has to match what Whisper writes after normalisation, and it writes digits.
+# - Every term invented for the eval set (evals/terms.toml), and every word outside the marks either common or listed
+#   in words.txt. `scripts/synth-evals.sh --check` enforces these rules, the splits and the coverage of each term
+#   class; see check_rules in scripts/lib/synth_evals.py.
 
-en-001 Push the fix to [[psst|p s s t]] before lunch.
-en-002 I'm updating the [[NixOS|Nix O S]] config on the desktop tonight.
-en-003 Can you send me the notes from yesterday's meeting?
-en-004 I'll be about ten minutes late, so start without me.
-en-005 The [[Hyprland|hyper land]] session crashed again after the update, so I switched back to [[niri]] for now.
-en-006 Open a new tab in [[Ghostty|ghosty]] and run the tests there.
-en-007 Thanks for the quick review, I'll merge it as soon as the build goes green.
-en-008 Let's move the planning call to Thursday afternoon.
-en-009 Ask [[Claude Code|Claud Code]] to write the migration, and then read the diff yourself before you merge anything.
-en-010 The [[Tailscale]] node on the laptop keeps falling back to a relay.
-en-011 Please don't change the default settings without telling the rest of the team.
-en-012 The coffee machine on the second floor is broken again.
-en-013 Restart the [[Kubernetes]] deployment, watch the pods with [[k9s|canines]] until they're all running, and tell me
-  if the error in the logs is gone.
-en-014 I left a comment in [[t3code|t three code]] about the failing check.
-en-015 We should write this down somewhere so nobody has to guess next time.
-en-016 I think the second option is simpler, but it needs a lot more testing.
-en-017 [[Helium]] keeps asking for the password after every restart.
-en-018 Add the new machine to [[Tailscale]] and tag it as a server.
-en-019 Could you double check the numbers before we send the report?
-en-020 I'm going for a walk, back in half an hour.
-en-021 Bump [[nixpkgs|nix packages]] and rebuild the system with the new kernel.
-en-022 The [[localwhisper|hyper whisper]] model takes almost all of the free video memory.
-en-023 That sounds good to me, let's go with it.
-en-024 The meeting notes are in the shared folder under this week's date.
-en-025 Use [[kubectl|cube control]] to describe the pod and paste the events here.
-en-026 The [[Grafana]] dashboard shows the latency jumping every night around midnight.
-en-027 Remind me to call the bank tomorrow morning.
-en-028 I don't think we need another meeting for this.
-en-029 Move the secrets into [[sops-nix|sops nicks]] and delete the old environment file.
-en-030 The [[PipeWire|pipe wire]] graph shows the microphone on the wrong sample rate.
-en-031 The build is slow because it compiles everything from scratch every time, so I'd like to set up a shared cache
-  and see how much time we actually save on a clean checkout.
-en-032 Let me know if you need anything else from me.
-en-033 Write the history table in [[SQLite|sequel lite]] and keep the schema small.
-en-034 [[Ghostty|ghosty]] needs control shift V for pasting, everything else takes control V.
-en-035 I'd rather fix the root cause than add another retry.
-en-036 Can we keep this short? I have another call right after.
-en-037 The [[Cloudflare]] tunnel stopped working after I rotated the token.
-en-038 Check whether [[Prometheus]] is still scraping the node exporter.
-en-039 Everything is working now, thanks for your patience.
-en-040 The new laptop arrives next week, so I'll set it up then.
-en-041 Add a [[WebSocket|websocket]] ping so the client notices a dead connection.
-en-042 [[faster-whisper|faster whisper]] pads every window to the full length, so short clips still pay for a whole
-  encoder pass.
-en-043 I'll take a look at it after lunch.
-en-044 Sorry, I missed your message, my phone was on silent.
-en-045 Open the [[ThinkPad]] lid and check whether [[Tailscale]] reconnects on its own.
-en-046 The [[Penpot|pen pot]] board for the overlay has a few new variants.
-en-047 Let's talk about it on Monday when everyone is back.
-en-048 The documentation is out of date, I'll update it this week.
-en-049 Run [[nextest|next test]] on the whole workspace before you push.
-en-050 [[Codex]] and [[Claude Code|Claud Code]] both left reviews on the pull request.
-en-051 I need to renew my passport before the trip.
-en-052 Please keep the old version around until the new one is stable.
-en-053 The [[systemd|system D]] unit fails because the socket directory doesn't exist yet.
-en-054 The [[Noctalia]] bar hides the clipboard history behind a menu.
-en-055 The weather looks nice this weekend, maybe we can go hiking.
-en-056 I'm not sure that's the right approach, can we discuss it first?
-en-057 Deploy the [[Traefik|traffic]] config with [[Helm]] and check the ingress.
-en-058 The [[Wayland]] clipboard loses the text as soon as the app that copied it closes.
-en-059 Book a table for the whole team on Friday evening.
-en-060 I'll send the invoice once the work is done.
-en-061 [[Terraform]] wants to recreate the whole load balancer, so please don't apply it yet.
-en-062 The [[CUDA|kooda]] libraries are on the wrapper, not in the system path.
-en-063 Thanks again for dinner last night, it was lovely.
-en-064 Could you forward me the email from the landlord?
-en-065 Pull the GPU build from the [[Flox|flocks]] cache instead of compiling it on the laptop.
-en-066 The [[Electron]] apps paste fine, but [[VS Code]] needs a short delay first.
-en-067 I'm working from home today because the plumber is coming.
-en-068 The train was cancelled, so I'm taking the bus instead.
-en-069 Store the device tokens hashed, and use [[htmx|H T M X]] for the web pages.
-en-070 [[Anthropic]] released a new [[Opus]] model, so let's try it on the planning task.
-en-071 Let's keep the scope small and ship the first version.
-en-072 I'll write the summary and share it with everyone tonight.
+en-073 [[Wainora]] crashed again after the last update.
+en-074 [[Zoorko]] marked the build as failed, but every test passed.
+en-075 Run [[plisto]] on the whole folder before you commit.
+en-076 Parse the header with [[Fethix]] instead of the regular expression.
+en-077 Can you ask [[Joonda]] support why the invoices are missing?
+en-078 The [[Baimex]] importer skips rows without a date.
+en-079 The new build of [[Fleden]] drains the battery overnight.
+en-080 Point the migration at [[Zeskora]].
+en-081 I moved the queue from [[Quusta]] to the main database.
+en-082 [[plisto]] found three files with the wrong licence header.
+en-083 Let's write the importer in [[Gerbun]].
+en-084 Show me the [[Blakar]] roadmap before the meeting.
+en-085 The [[Fethix]] parser chokes on files with a byte order mark.
+en-086 The [[Joonda]] calendar invite has the wrong time zone.
+en-087 Please check whether [[Baimex]] still sends the weekly export, because the last one never arrived and the
+  finance team is asking.
+en-088 I reported the login bug to the [[Fleden]] developers last week, but they still haven't answered, so I'll ask
+  again on Monday.
+en-089 [[Zeskora]] keeps every version of the schema, so rolling back is easy.
+en-090 Every job that fails three times ends up in the dead letter queue of [[Quusta]].
+en-091 The [[Blakar]] prototype is ready for a first look.
+en-092 [[Zooskora]] paged me twice last night for the same disk.
+en-093 I opened the logs in [[Slalveen]] and searched for the timeout.
+en-094 Deploy the hotfix with [[Raxfoor]] and watch the error rate for an hour.
+en-095 Render the page with [[Carpett|carpet]] and compare the screenshots.
+en-096 [[Gerbun]] makes the routing code much shorter.
+en-097 Our config files are all in [[Kotton|cotton]] now.
+en-098 The [[Carpett|carpet]] renderer drops the last line of every table.
+en-099 Last night [[Laddur|ladder]] rebuilt everything because the lock file changed.
+en-100 Store the feature flags in [[Kotton|cotton]] next to the code.
+en-101 The mockups for the settings page are in [[Saddel|saddle]].
+en-102 Export the icons from [[Saddel|saddle]] as vector files.
+en-103 Turn up the log level in [[Kwarry|quarry]] and send me the output.
+en-104 The uploads go straight to [[Koppur|copper]].
+en-105 Convert the recordings with [[gjz|G J Z]] before you upload them.
+en-106 [[Kwarry|quarry]] writes one file per day, and nobody ever deletes them.
+en-107 [[jkz|J K Z]] prints a warning for every empty line.
+en-108 Pipe the output through [[gjz|G J Z]] to make it readable.
+en-109 The export is broken, so I'm using [[kxn|K X N]].
+en-110 I don't trust the numbers from [[jkz|J K Z]].
+en-111 Install [[wtz|W T Z]] and [[szj|S Z J]] on the new laptop.
+en-112 [[kxn|K X N]] needs the full path to the input file.
+en-113 Tag the release as [[rivet8|rivet eight]].
+en-114 Compress the archive with [[wtz|W T Z]], it's much smaller than the old format.
+en-115 [[v4loom|V four loom]] renders the charts twice as fast.
+en-116 Somebody broke the [[szj|S Z J]] plugin on the main branch.
+en-117 Route the webhooks through [[g6relay|G six relay]] until the firewall rule is fixed.
+en-118 [[rivet8|rivet eight]] is the last version that still supports the old protocol.
+en-119 Run [[q6shelf|Q six shelf]] on the documentation and fix every dead link it finds before we publish the new
+  pages tomorrow morning.
+en-120 Keep the database password in [[l3vault|L three vault]].
+en-121 [[TideSpool|tide spool]] uploads the nightly backups.
+en-122 The charts in the report come from [[v4loom|V four loom]], so the colours match the website.
+en-123 The [[SorrelTrellis|sorrel trellis]] dashboard shows which jobs are waiting.
+en-124 Restart [[g6relay|G six relay]] after you change the certificate.
+en-125 I filed a bug against [[FernHatch|fern hatch]].
+en-126 Write the incoming messages to disk in [[TideSpool|tide spool]] before anything else touches them.
+en-127 [[FernForge|fern forge]] and [[OtterForge|otter forge]] both build the same image, so let's keep only one of
+  them.
+en-128 [[SorrelTrellis|sorrel trellis]] shows every job that waited longer than five minutes, and the list gets longer
+  every day.
+en-129 Push the theme changes to [[SlateHatch|slate hatch]] and ask for a review.
+en-130 The new [[FernHatch|fern hatch]] release fixed the memory leak.
+en-131 The sensor data comes in over [[LichenWire|lichen wire]].
+en-132 Somebody changed the colours in [[SlateHatch|slate hatch]].
+en-133 [[quillkeep|quill keep]] stores the drafts on the server, not on the laptop.
+en-134 [[LichenWire|lichen wire]] drops packets when the signal is weak.
+en-135 Restart [[quillwatch|quill watch]] if the print jobs get stuck.
+en-136 The base image comes from [[OtterForge|otter forge]], not from the public registry.
+en-137 The [[graind|grain D]] service wrote a core dump at midnight.
+en-138 [[quillwatch|quill watch]] lost the queue when the disk filled up.
+en-139 I'd rather sync the folders with [[grainsync|grain sync]].
+en-140 Check the [[graind|grain D]] logs for permission errors.
+en-141 Use [[grainctl|grain control]] to list the running workers.
+en-142 The photos are copied to the backup drive by [[grainsync|grain sync]].
+en-143 [[birch-manager|birch manager]] reports the disk usage every minute.
+en-144 Make sure [[rivetd|rivet D]] starts after the network is up.
+en-145 The [[lichen-runner|lichen runner]] on the build box is out of memory again.
+en-146 The [[birch-manager|birch manager]] on the old server stopped sending reports on Monday.
+en-147 Give the deploy job permission to talk to the [[scribe-operator|scribe operator]].
+en-148 Update the [[lichen-runner|lichen runner]] image before you run the tests.
+en-149 [[Willow Almanac]] reminds me of every birthday in the family.
+en-150 [[scribe-operator|scribe operator]] creates a new volume for every customer.
+en-151 Save the trip notes in [[Lantern Compass]].
+en-152 The cluster upgrade failed because of the [[heron-manager|heron manager]].
+en-153 The [[Meadow Keeper]] app asks for my location every time I open it, which is really annoying when I just want
+  to read a recipe.
+en-154 Send the internal traffic through [[quill-runner|quill runner]] and leave the public routes alone.
+en-155 Book a room in [[Meadow Station]] for the planning session.
+en-156 [[Meadow Keeper]] keeps a list of every plant in the garden and tells me when to water them.
+en-157 Two people from support are climbing [[Kilimanjaro]] next month.
+en-158 The [[Granite Relay]] bridge forwards the alerts to my phone.
+en-159 [[Cappadocia]] was the best part of the whole trip.
+en-160 I booked the big room in [[Meadow Station]].
+en-161 Our new designer lives in [[Yerevan]].
+en-162 The team in [[Thessaloniki]] starts an hour earlier than we do.
+en-163 The conference in [[Antananarivo]] moved to the spring.
+en-164 We spent four days in [[Cappadocia]] and still didn't see everything.
+en-165 Dictate the reply with [[psst|p s s t]] and paste it into the ticket.
+en-166 Our new office manager just moved here from [[Antananarivo]].
+en-167 Can you check the logs again?
+en-168 The [[psst|p s s t]] daemon reconnects on its own after the laptop wakes up.
+en-169 I'll be back in ten minutes.
+en-170 Lunch is ready, come downstairs.
+en-171 That fix looks good to me.
+en-172 The tests pass on my machine.
+en-173 Merge it once the build is green.
+en-174 Please call me when you land.
+en-175 Who's picking up the kids today?
+en-176 Let's ship it on Thursday.
+en-177 The staging server ran out of disk space again, so I cleaned up the old logs.
+en-178 We need more coffee in the kitchen.
+en-179 Could you review the pull request before lunch? It only touches the error messages.
+en-180 I moved the planning meeting to Wednesday afternoon because half the team is travelling.
+en-181 Please write down the steps you took, so we can reproduce the crash tomorrow.
+en-182 The heating in the office is broken, so I'm working from the library today.
+en-183 Remind me to renew the domain before the end of the month.
+en-184 My train is delayed by twenty minutes, start the call without me.
+en-185 The cache keeps the old value for an hour, which explains the stale page.
+en-186 The new monitor is much brighter, but the colours look a bit too warm.
+en-187 Thanks for covering my shift on Saturday, I owe you one.
+en-188 I think the timeout is too short for large uploads on a slow connection.
+en-189 Before we release anything, I'd like everyone to run the full test suite on a clean checkout, because last time
+  a stale cache hid a broken migration.
+en-190 We should rename this function, because nobody understands what it actually returns.
+en-191 If the backup finishes tonight, we can switch the database over tomorrow morning and keep the old one around
+  for a week, just in case.
+en-192 The customer says the export takes almost a minute for a small file, so let's profile it and find out where the
+  time actually goes.
+en-193 The release notes are almost done, I only need a short paragraph about the new settings page and a screenshot
+  of the dark theme.
+en-194 I spent the morning reading the old design notes, and most of the decisions still make sense, but the retry
+  logic needs a second look.
+en-195 I'm not sure the new onboarding flow is clearer, so let's test it with a few people before we change anything.
+en-196 Could you ask the landlord whether the plumber can come on Friday, because the kitchen tap is still dripping
+  and it keeps me awake at night?
+en-197 The meeting room on the third floor has no working projector.
+en-198 When you have a moment, please send me the slides from yesterday's talk, I want to borrow two of the diagrams
+  for my own presentation.
+en-199 Let's keep the old endpoint until every client has moved to the new one.
+en-200 The password reset email goes to spam for some people.
+en-201 Sorry for the late reply, I was out sick yesterday.
+en-202 Please don't merge anything until the release branch is cut.
 
-en-long-01 Quick update on the dictation work. The server side is mostly done: the engine runs as a separate process,
-  and every recording stays on disk until its text has been delivered. {pause 2.5} I tested it on the desktop with
-  [[NixOS|Nix O S]] and [[niri]], and pasting works in [[Ghostty|ghosty]], [[Helium]] and [[VS Code]]. The only
-  problem is the [[Electron]] apps, which sometimes need a short delay before the paste goes through. {pause 3}
-  Next I want to try the laptop over [[Tailscale]]. If the connection is direct, the latency should be close to the
-  desktop. If it falls back to a relay, we'll see a few hundred milliseconds more, which is still fine for
-  dictation. {pause 2} I'll write everything up in the decisions document tomorrow, and then we can talk about the
-  dictionary on Monday.
-en-long-02 Okay, here's what I want you to do. Look at the clipboard code in the [[Wayland]] crate and find out why
-  the restore sometimes runs before the paste has finished. {pause 2.5} I suspect the timer starts when we send the
-  key event, not when the compositor has actually processed it. [[niri]] handles requests in order on one
-  connection, so a sync after the virtual keyboard events should be enough. {pause 3.5} Please don't change the
-  public types, and keep the new tests in the end to end crate. When you're done, run [[nextest|next test]] on the
-  whole workspace, and then open a pull request on [[GitHub|git hub]] with a short description. {pause 2} If
-  anything is unclear, ask me before you start, not halfway through.
-en-long-03 Notes from this morning's incident. Early in the morning the [[Grafana]] alerts started firing for the API
-  gateway. {pause 2} The pods were restarting in a loop, and [[kubectl|cube control]] showed them being killed for
-  running out of memory. {pause 3} It turned out that the new release of the [[Helm]] chart had dropped the memory
-  limit override, so the default limit was far too small. We rolled back with [[Argo CD|Argo C D]], and the service
-  recovered within a few minutes. {pause 2.5} Follow-ups: add a check to the pipeline that compares the rendered
-  manifests, move the alert thresholds into [[Prometheus]] rules that live next to the chart, and write a short
-  runbook, so whoever is on call next time doesn't have to dig through the history. {pause 2} I'll create the
-  tickets after lunch.
-en-long-04 Hi Martin, thanks for getting back to me so quickly. {pause 2} I had a look at the proposal over the
-  weekend, and I think it makes sense overall. My main concern is the timeline. Moving everything to the new cluster
-  in one go feels risky, especially with the holidays coming up. {pause 3} Could we split it into two phases
-  instead? First the internal tools, which nobody outside the team depends on, and then the customer facing
-  services, once we're confident that the monitoring works. {pause 2.5} I'm happy to join a call later this week if
-  that's easier. Wednesday and Thursday afternoons are mostly free for me. {pause 2} Best regards, and say hi to the
-  team.
-en-long-05 Note to self about the desktop setup. The [[localwhisper|hyper whisper]] service has to stay installed until
-  [[psst|p s s t]] has been running for a week without problems. {pause 2.5} After that, disable the service but
-  keep the package, so rolling back is a single rebuild. [[Home Manager]] owns the user service for the daemon, and
-  the server runs as a system service with its own state directory. {pause 3} Remember to change the gaming mode
-  script, so it unloads the model through the server instead of stopping the whole service. {pause 2} And check
-  that [[Noctalia]] still records the clipboard history after the switch, because the restore logic changes who owns
-  the selection. {pause 2} That's it for now.
+en-long-06 Okay, here's the plan for today. Open the plugin folder in [[Slalveen]] and find out why the spell checker
+  stops after the first file. {pause 2.5} I suspect it reads the settings once and never notices when the project
+  changes. {pause 3} When you've fixed it, run [[q6shelf|Q six shelf]] on the documentation, because a few pages still
+  point at the old guide. {pause 2} Then use [[grainctl|grain control]] to restart the workers, and check that
+  [[FernForge|fern forge]] builds the image without warnings. {pause 3.5} Don't touch the drafts in [[quillkeep|quill
+  keep]], they belong to the writers. If anything is unclear, ask me before you start, not halfway through.
+en-long-07 Quick update on the dictation work. The server side is mostly done, and [[psst|p s s t]] now keeps every
+  recording on disk until its text has been delivered. {pause 2.5} [[Zoorko]] runs the whole test suite on every push,
+  and the secrets moved into [[l3vault|L three vault]] last week. {pause 3} The only open problem is the
+  [[heron-manager|heron manager]], which sometimes restarts the server in the middle of a dictation. {pause 2} I'll look
+  into it before the team trip to [[Thessaloniki]], and then we can talk about the dictionary when everyone is back.
+en-long-08 Hi Anna, thanks for sending the contract so quickly. {pause 2} I read it over the weekend, and it looks
+  fine to me, apart from the part about the notice period. {pause 3} Three months feels long for a project of this size.
+  Could we agree on one month instead, with the option to extend it if both sides are happy? {pause 2.5} I'm free for a
+  call on Tuesday or Wednesday afternoon, if that's easier than writing back and forth. {pause 2} Best regards, and have
+  a good week.
+en-long-09 Notes from this morning's incident. Just after six, [[Zooskora]] started paging about failed uploads.
+  {pause 2} The [[quill-runner|quill runner]] was sending every request to a single node, and that node had run out of
+  disk space. {pause 3} It turned out that [[rivetd|rivet D]] had stopped cleaning up temporary files after the last
+  update, so the files from [[Koppur|copper]] piled up for days. {pause 2.5} We cleared the disk, restarted the service,
+  and the alerts in [[Granite Relay]] stopped within a few minutes. {pause 2} Follow-ups: add a disk check to the
+  dashboard, and write a short runbook for whoever is on call next time.
+en-long-10 Note to self before the holiday. Export the shared calendar from [[Willow Almanac]], so the dates for
+  [[Yerevan]] are on my phone. {pause 2.5} The flight to [[Kilimanjaro]] leaves very early, so pack the night before and
+  set two alarms. {pause 3} At work, make sure [[Wainora]] has a second admin while I'm away, and tell the team that
+  [[Laddur|ladder]] builds will be slow until the new runner is ready. {pause 2} And water the plants on Sunday evening.
+  That's it for now.
 
-en-short-01 Okay.
-en-short-02 No.
-en-short-03 [[Hyprland|hyper land]].
-en-short-04 [[Tailscale]].
-en-short-05 Thanks.
-en-short-06 No.
+en-short-07 Okay.
+en-short-08 No.
+en-short-09 [[Raxfoor]].
+en-short-10 [[Lantern Compass]].
+en-short-11 Thanks.
+en-short-12 Sounds good.

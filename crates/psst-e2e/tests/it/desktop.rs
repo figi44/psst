@@ -357,7 +357,7 @@ fn dictation_timings() {
 
 /// The eval clip the GPU run dictates.
 const GPU_CLIP: (&str, &str) =
-    ("syn-en-007-lj", "Thanks for the quick review, I'll merge it as soon as the build goes green.");
+    ("syn-en-181-lj", "Please write down the steps you took, so we can reproduce the crash tomorrow.");
 
 /// The same dictation with the real engine on the GPU, from `nix develop .#gpu` inside
 /// `scripts/gpu-session.sh` (see the top of this file).

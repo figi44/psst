@@ -5,7 +5,8 @@ evals/stress/ from Common Voice's CC0 sentences.
     python3 -I derive-common-words.py <download dir>
 
 Downloads the files listed in SOURCES at COMMIT into <download dir> (once), checks their SHA-256,
-and rewrites common-words/<lang>.txt next to this script and evals/stress/<lang>.txt.
+and rewrites common-words/<lang>.txt next to this script, and evals/stress/<lang>.txt for the
+languages in STRESS_WORDS.
 evals/SOURCES.md records the same files and commit.
 
 Sentences are split in two halves by a hash of their text: split A feeds the lists, and split B
@@ -33,8 +34,8 @@ from pathlib import Path
 COMMIT = "3cf5dd0f81555dced52fa5a1b85f3956cdfe0c76"
 BASE = f"https://raw.githubusercontent.com/common-voice/common-voice/{COMMIT}/server/data"
 SIZE = 5000
-# Words per language in evals/stress/: about 50,000 in all.
-STRESS_WORDS = {"en": 30_000, "cs": 20_000}
+# Words per language in evals/stress/; the eval set is English only.
+STRESS_WORDS = {"en": 30_000}
 
 # Every file in server/data/en at COMMIT but its LICENSE; for Czech, sentence-collector.txt and
 # wiki.cs.txt only (never europarl-v7-cs.txt). Each with its SHA-256 at COMMIT.
@@ -158,6 +159,8 @@ def main() -> None:
             f"{COMMIT};\n# see evals/SOURCES.md.\n"
         )
         (out / f"{lang}.txt").write_text(header + "\n".join(ranked) + "\n", encoding="utf-8")
+        if lang not in STRESS_WORDS:
+            continue
 
         chosen, total = stress_sentences(lang, all_sentences)
         header = (

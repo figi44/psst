@@ -5,8 +5,8 @@ Where the data in this repository comes from, and its licences.
 ## Common-word lists and stress sentences
 
 `crates/psst-dict/data/common-words/en.txt` and `cs.txt` hold the 5,000 most frequent word forms
-of each language, and `evals/stress/en.txt` and `cs.txt` the ordinary sentences of the
-stress test. Both come from Common Voice's sentence collection, which is **CC0 1.0**
+of each language, and `evals/stress/en.txt` the ordinary sentences of the stress test (the eval set
+is English only). Both come from Common Voice's sentence collection, which is **CC0 1.0**
 (`server/data/en/LICENSE` in the repository).
 
 - **Repository:** [common-voice/common-voice](https://github.com/common-voice/common-voice),
@@ -22,16 +22,15 @@ stress test. Both come from Common Voice's sentence collection, which is **CC0 1
   | Language | Sentences | Split A | Stress sentences (split B) | Stress words |
   |---|---|---|---|---|
   | en | 1,584,591 | 792,290 | 2,924 | 30,009 |
-  | cs | 351,867 | 175,672 | 2,500 | 20,000 |
+  | cs | 351,867 | 175,672 | – | – |
 - **Word forms** are runs of letters joined by inner apostrophes, after case folding and NFC, with
   typographic apostrophes as `'`. Ties at equal counts go by code point order.
 - **Stress sentences** are split B's sentences in the order of their SHA-256 (as hex), taken until
-  the language has its word count (30,000 English, 20,000 Czech words, split on whitespace), leaving
-  out any that starts with `#`. Nothing else is filtered: a sentence that happens to contain a
+  there are 30,000 words (split on whitespace), leaving out any that starts with `#`. Nothing else is filtered: a sentence that happens to contain a
   dictionary term stays, and replay reports the edit.
 - **Regenerating:** `python3 -I crates/psst-dict/data/derive-common-words.py <download dir>`
-  downloads the files below at the commit, checks their SHA-256, and rewrites both lists and both
-  stress files.
+  downloads the files below at the commit, checks their SHA-256, and rewrites both lists and the
+  stress file.
 
 | File | SHA-256 |
 |---|---|
@@ -63,8 +62,22 @@ stress test. Both come from Common Voice's sentence collection, which is **CC0 1
 
 ## The eval set
 
-Everything in `evals/` is scripted: the sentences were written for psst, and the synthetic clips are rendered from
-them. Nothing here is a recording of a real person.
+Everything in `evals/` is scripted: the sentences were written for psst (drafted with an LLM, and checked by
+`scripts/synth-evals.sh --check`), and the synthetic clips are rendered from them. Nothing here is a recording of a
+real person, and nothing names a product or company: the dictionary terms are invented.
+
+### Terms (`terms.toml`, `dictionary.toml`)
+
+`scripts/lib/eval_terms.py` generates candidate terms from fixed seeds, by class: made-up names, respelled ordinary
+words, letters, letters with a digit, inner capitals, lowercase compounds, hyphenated and two-word names, and a few
+real place and science names (`real`) that Whisper already knows. It leaves out candidates that are common English
+words. Every candidate was then probed: rendered in "Please add … to the list." and transcribed without a prompt. A
+class keeps the candidates Whisper gets wrong, and `real` the ones it gets right. Candidates that turned out to be an
+existing name, or that Whisper heard as one, were dropped by hand; `eval_terms.py` lists them by hash, so the names
+stay out of the repository. `terms.toml` records every other candidate and why it was kept or dropped, but not what
+Whisper wrote instead, since a mishearing can be an existing name; `dictionary.toml` is written from it, with
+`sounds_like` spellings taken from the tune split's traces only. A few spellings Whisper wrote are ordinary words,
+phrases or names, and are kept out of `sounds_like` by hand.
 
 ### Synthetic clips (`clips/syn-*.flac`)
 
@@ -81,7 +94,6 @@ matters for the audio is each voice's training data, from its `MODEL_CARD`:
 | `lj` | [`en_US-ljspeech-high`](https://huggingface.co/rhasspy/piper-voices/tree/e7229f7d33a10e145e109b886d661984201ac3c4/en/en_US/ljspeech/high) | US English, female | [LJ Speech](https://keithito.com/LJ-Speech-Dataset/), public domain; trained from scratch | English, 1 in 3 |
 | `norman` | [`en_US-norman-medium`](https://huggingface.co/rhasspy/piper-voices/tree/e7229f7d33a10e145e109b886d661984201ac3c4/en/en_US/norman/medium) | US English, male | LibriVox recordings, public domain; trained from scratch | English, 1 in 3 |
 | `cori` | [`en_GB-cori-high`](https://huggingface.co/rhasspy/piper-voices/tree/e7229f7d33a10e145e109b886d661984201ac3c4/en/en_GB/cori/high) | UK English, female | LibriVox recordings, public domain; trained from scratch | English, 1 in 3 |
-| `jirka-fast`, `jirka-slow` | [`cs_CZ-jirka-medium`](https://huggingface.co/rhasspy/piper-voices/tree/e7229f7d33a10e145e109b886d661984201ac3c4/cs/cs_CZ/jirka/medium) | Czech, male | [OHF-Voice/voice-datasets](https://github.com/OHF-Voice/voice-datasets), CC0; fine-tuned from the `lessac` voice (see below) | Czech, at `length_scale` 0.9 and 1.15 |
 
 The exact files and their sha256 sums are pinned in `scripts/lib/synth_evals.py`.
 
@@ -89,20 +101,17 @@ The exact files and their sha256 sums are pinned in `scripts/lib/synth_evals.py`
 attribution or share-alike terms. Voices with non-commercial data (`ryan`, `hfc_*`, `semaine`), with unclear terms
 (`amy`, `alan`, `jenny_dioco`, `kusal`) or fine-tuned from `lessac` (`joe`, `lessac` itself) were left out.
 
-**The Czech voice's licence is unsettled.** Piper has only one Czech voice. Its data
-is CC0 and the model is published under MIT, but it was fine-tuned from the `lessac` checkpoint, whose data (Blizzard
-2013, Voice Factory and Lessac Technologies) is under a [research-only licence](https://www.cstr.ed.ac.uk/projects/blizzard/2013/lessac_blizzard2013/license.html).
-Whether that reaches audio rendered by the fine-tuned model is unclear. If it's a problem, the 33 clips in that voice
-(`syn-cs-*-jirka-*`) can be dropped without touching anything else.
-
 ### What is in the set
 
-- `sentences/en.txt` and `sentences/cs.txt`: the scripts, with dictionary terms marked `[[Term]]` (format in the
-  file headers). Each entry is rendered once, with the voice picked by its number, so both splits get every voice.
-- Silence and noise cases (`syn-<lang>-silence`, `-roomtone`, `-fan`, `-white`, `-hum`, `-typing`), generated with
+- `sentences/en.txt`: the scripts, with dictionary terms marked `[[Term]]` (format in the file header). Each entry
+  is rendered once, with the voice picked by its number, so both splits get every voice.
+- `sentences/words.txt`: the ordinary words the scripts use beyond the 5,000 most common ones. `--check` refuses any
+  other word, so a name can't slip in unreviewed.
+- Silence and noise cases (`syn-en-silence`, `-roomtone`, `-fan`, `-white`, `-hum`, `-typing`), generated with
   seeded NumPy noise. They must transcribe to nothing.
-- `dictionary.toml` and `profiles.toml`: fixed snapshots, written for psst.
+- `terms.toml` and `dictionary.toml`: the terms, above. `profiles.toml`: a fixed snapshot, written for psst.
 - `cases.jsonl`: one line per clip, in the format `psst-eval` reads (`crates/psst-eval/src/cases.rs`).
 
 The audio is fully reproducible: Piper's noise is seeded from each clip id, so `scripts/synth-evals.sh --force`
-renders byte-identical files with the same nixpkgs and voices. Checked on 2026-11-06 by rendering the whole set twice.
+renders byte-identical files with the same nixpkgs and voices. Checked on 2026-11-06 by rendering the whole set twice,
+and on 2026-11-08 by rendering a sample of the current clips again.

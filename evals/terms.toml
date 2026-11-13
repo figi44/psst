@@ -1,0 +1,891 @@
+# Candidate terms for the eval set, by class, and the Whisper probe's verdict on them. Written by
+# scripts/lib/eval_terms.py (`generate`, then `heard`); evals/dictionary.toml takes the first kept ones of
+# each class. Candidates that turned out to be an existing name are left out (REVIEW_DROPS).
+#
+# - class: what the term tests (CLASSES in eval_terms.py).
+# - spoken: what text-to-speech reads, when the spelling alone would mislead it.
+# - status: kept, or why it was dropped, from how Whisper wrote it without a prompt in
+#   "Please add … to the list."
+
+[[terms]]
+text = "psst"
+class = "project"
+spoken = "p s s t"
+status = "kept"
+
+[[terms]]
+text = "Zoorko"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "Fethix"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "Baimex"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "Zeskora"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "plisto"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "Blakar"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "Joonda"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "traikrix"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "frarvai"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "greeret"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "Treenix"
+class = "coinage"
+status = "dropped: Whisper already spells it"
+
+[[terms]]
+text = "poxsol"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "Quusta"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "Zooskora"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "Fleden"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "Jomsil"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "Raxfoor"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "kreexa"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "Slalveen"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "Wainora"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "Froothix"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "Gerbun"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "Hanmeex"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "Stunsir"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "Deenden"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "prinly"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "Preethix"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "froxti"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "Frallo"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "Floxora"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "Flammil"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "Fikma"
+class = "coinage"
+status = "kept"
+
+[[terms]]
+text = "Carpett"
+class = "soundalike"
+spoken = "carpet"
+status = "kept"
+
+[[terms]]
+text = "Kotton"
+class = "soundalike"
+spoken = "cotton"
+status = "kept"
+
+[[terms]]
+text = "Saddel"
+class = "soundalike"
+spoken = "saddle"
+status = "kept"
+
+[[terms]]
+text = "Peppur"
+class = "soundalike"
+spoken = "pepper"
+status = "kept"
+
+[[terms]]
+text = "Koppur"
+class = "soundalike"
+spoken = "copper"
+status = "kept"
+
+[[terms]]
+text = "Thistel"
+class = "soundalike"
+spoken = "thistle"
+status = "kept"
+
+[[terms]]
+text = "Laddur"
+class = "soundalike"
+spoken = "ladder"
+status = "kept"
+
+[[terms]]
+text = "Kwarry"
+class = "soundalike"
+spoken = "quarry"
+status = "kept"
+
+[[terms]]
+text = "Junipur"
+class = "soundalike"
+spoken = "juniper"
+status = "kept"
+
+[[terms]]
+text = "gjz"
+class = "letters"
+spoken = "G J Z"
+status = "kept"
+
+[[terms]]
+text = "jkz"
+class = "letters"
+spoken = "J K Z"
+status = "kept"
+
+[[terms]]
+text = "kxn"
+class = "letters"
+spoken = "K X N"
+status = "kept"
+
+[[terms]]
+text = "wtz"
+class = "letters"
+spoken = "W T Z"
+status = "kept"
+
+[[terms]]
+text = "vwh"
+class = "letters"
+spoken = "V W H"
+status = "kept"
+
+[[terms]]
+text = "bkw"
+class = "letters"
+spoken = "B K W"
+status = "kept"
+
+[[terms]]
+text = "szj"
+class = "letters"
+spoken = "S Z J"
+status = "kept"
+
+[[terms]]
+text = "jzq"
+class = "letters"
+spoken = "J Z Q"
+status = "kept"
+
+[[terms]]
+text = "vqb"
+class = "letters"
+spoken = "V Q B"
+status = "kept"
+
+[[terms]]
+text = "vqp"
+class = "letters"
+spoken = "V Q P"
+status = "kept"
+
+[[terms]]
+text = "wqh"
+class = "letters"
+spoken = "W Q H"
+status = "kept"
+
+[[terms]]
+text = "ksz"
+class = "letters"
+spoken = "K S Z"
+status = "kept"
+
+[[terms]]
+text = "kqh"
+class = "letters"
+spoken = "K Q H"
+status = "kept"
+
+[[terms]]
+text = "jpx"
+class = "letters"
+spoken = "J P X"
+status = "kept"
+
+[[terms]]
+text = "jkg"
+class = "letters"
+spoken = "J K G"
+status = "kept"
+
+[[terms]]
+text = "krw"
+class = "letters"
+spoken = "K R W"
+status = "kept"
+
+[[terms]]
+text = "twq"
+class = "letters"
+spoken = "T W Q"
+status = "kept"
+
+[[terms]]
+text = "pqx"
+class = "letters"
+spoken = "P Q X"
+status = "kept"
+
+[[terms]]
+text = "rivet8"
+class = "alnum"
+spoken = "rivet eight"
+status = "kept"
+
+[[terms]]
+text = "l3vault"
+class = "alnum"
+spoken = "L three vault"
+status = "kept"
+
+[[terms]]
+text = "quill8"
+class = "alnum"
+spoken = "quill eight"
+status = "kept"
+
+[[terms]]
+text = "v4loom"
+class = "alnum"
+spoken = "V four loom"
+status = "kept"
+
+[[terms]]
+text = "g6relay"
+class = "alnum"
+spoken = "G six relay"
+status = "kept"
+
+[[terms]]
+text = "s8core"
+class = "alnum"
+spoken = "S eight core"
+status = "kept"
+
+[[terms]]
+text = "quill4"
+class = "alnum"
+spoken = "quill four"
+status = "kept"
+
+[[terms]]
+text = "q6shelf"
+class = "alnum"
+spoken = "Q six shelf"
+status = "kept"
+
+[[terms]]
+text = "s9gate"
+class = "alnum"
+spoken = "S nine gate"
+status = "kept"
+
+[[terms]]
+text = "d5shelf"
+class = "alnum"
+spoken = "D five shelf"
+status = "kept"
+
+[[terms]]
+text = "b8beam"
+class = "alnum"
+spoken = "B eight beam"
+status = "kept"
+
+[[terms]]
+text = "rivet7"
+class = "alnum"
+spoken = "rivet seven"
+status = "kept"
+
+[[terms]]
+text = "v4link"
+class = "alnum"
+spoken = "V four link"
+status = "kept"
+
+[[terms]]
+text = "TideSpool"
+class = "camel"
+spoken = "tide spool"
+status = "kept"
+
+[[terms]]
+text = "SorrelTrellis"
+class = "camel"
+spoken = "sorrel trellis"
+status = "kept"
+
+[[terms]]
+text = "FernHatch"
+class = "camel"
+spoken = "fern hatch"
+status = "kept"
+
+[[terms]]
+text = "SorrelSpool"
+class = "camel"
+spoken = "sorrel spool"
+status = "kept"
+
+[[terms]]
+text = "FernForge"
+class = "camel"
+spoken = "fern forge"
+status = "kept"
+
+[[terms]]
+text = "FernLatch"
+class = "camel"
+spoken = "fern latch"
+status = "kept"
+
+[[terms]]
+text = "SlateHatch"
+class = "camel"
+spoken = "slate hatch"
+status = "kept"
+
+[[terms]]
+text = "LichenWire"
+class = "camel"
+spoken = "lichen wire"
+status = "kept"
+
+[[terms]]
+text = "TideHatch"
+class = "camel"
+spoken = "tide hatch"
+status = "kept"
+
+[[terms]]
+text = "OtterForge"
+class = "camel"
+spoken = "otter forge"
+status = "kept"
+
+[[terms]]
+text = "OtterTrellis"
+class = "camel"
+spoken = "otter trellis"
+status = "kept"
+
+[[terms]]
+text = "MossVault"
+class = "camel"
+spoken = "moss vault"
+status = "kept"
+
+[[terms]]
+text = "SorrelForge"
+class = "camel"
+spoken = "sorrel forge"
+status = "kept"
+
+[[terms]]
+text = "FlintLoom"
+class = "camel"
+spoken = "flint loom"
+status = "kept"
+
+[[terms]]
+text = "SlateWire"
+class = "camel"
+spoken = "slate wire"
+status = "kept"
+
+[[terms]]
+text = "FlintRelay"
+class = "camel"
+spoken = "flint relay"
+status = "kept"
+
+[[terms]]
+text = "QuartzBeam"
+class = "camel"
+spoken = "quartz beam"
+status = "kept"
+
+[[terms]]
+text = "BasaltLatch"
+class = "camel"
+spoken = "basalt latch"
+status = "kept"
+
+[[terms]]
+text = "CedarLoom"
+class = "camel"
+spoken = "cedar loom"
+status = "kept"
+
+[[terms]]
+text = "LichenForge"
+class = "camel"
+spoken = "lichen forge"
+status = "kept"
+
+[[terms]]
+text = "OtterRelay"
+class = "camel"
+spoken = "otter relay"
+status = "kept"
+
+[[terms]]
+text = "CloverBeam"
+class = "camel"
+spoken = "clover beam"
+status = "kept"
+
+[[terms]]
+text = "BasaltLoom"
+class = "camel"
+spoken = "basalt loom"
+status = "kept"
+
+[[terms]]
+text = "SorrelWire"
+class = "camel"
+spoken = "sorrel wire"
+status = "kept"
+
+[[terms]]
+text = "SlateLatch"
+class = "camel"
+spoken = "slate latch"
+status = "kept"
+
+[[terms]]
+text = "quillkeep"
+class = "joined"
+spoken = "quill keep"
+status = "kept"
+
+[[terms]]
+text = "graind"
+class = "joined"
+spoken = "grain D"
+status = "kept"
+
+[[terms]]
+text = "grainsync"
+class = "joined"
+spoken = "grain sync"
+status = "kept"
+
+[[terms]]
+text = "kilnfmt"
+class = "joined"
+spoken = "kiln format"
+status = "kept"
+
+[[terms]]
+text = "ledgerd"
+class = "joined"
+spoken = "ledger D"
+status = "dropped: Whisper already spells it"
+
+[[terms]]
+text = "rivetd"
+class = "joined"
+spoken = "rivet D"
+status = "kept"
+
+[[terms]]
+text = "ledgerfmt"
+class = "joined"
+spoken = "ledger format"
+status = "kept"
+
+[[terms]]
+text = "quillfmt"
+class = "joined"
+spoken = "quill format"
+status = "kept"
+
+[[terms]]
+text = "quillwatch"
+class = "joined"
+spoken = "quill watch"
+status = "kept"
+
+[[terms]]
+text = "grainctl"
+class = "joined"
+spoken = "grain control"
+status = "kept"
+
+[[terms]]
+text = "tilesync"
+class = "joined"
+spoken = "tile sync"
+status = "kept"
+
+[[terms]]
+text = "loomsync"
+class = "joined"
+spoken = "loom sync"
+status = "kept"
+
+[[terms]]
+text = "kilnkeep"
+class = "joined"
+spoken = "kiln keep"
+status = "kept"
+
+[[terms]]
+text = "scribefmt"
+class = "joined"
+spoken = "scribe format"
+status = "kept"
+
+[[terms]]
+text = "lichen-runner"
+class = "hyphen"
+spoken = "lichen runner"
+status = "kept"
+
+[[terms]]
+text = "scribe-operator"
+class = "hyphen"
+spoken = "scribe operator"
+status = "kept"
+
+[[terms]]
+text = "heron-manager"
+class = "hyphen"
+spoken = "heron manager"
+status = "kept"
+
+[[terms]]
+text = "quartz-keeper"
+class = "hyphen"
+spoken = "quartz keeper"
+status = "kept"
+
+[[terms]]
+text = "clover-agent"
+class = "hyphen"
+spoken = "clover agent"
+status = "kept"
+
+[[terms]]
+text = "birch-runner"
+class = "hyphen"
+spoken = "birch runner"
+status = "kept"
+
+[[terms]]
+text = "quill-runner"
+class = "hyphen"
+spoken = "quill runner"
+status = "kept"
+
+[[terms]]
+text = "birch-manager"
+class = "hyphen"
+spoken = "birch manager"
+status = "kept"
+
+[[terms]]
+text = "tile-operator"
+class = "hyphen"
+spoken = "tile operator"
+status = "kept"
+
+[[terms]]
+text = "grain-manager"
+class = "hyphen"
+spoken = "grain manager"
+status = "kept"
+
+[[terms]]
+text = "basalt-runner"
+class = "hyphen"
+spoken = "basalt runner"
+status = "kept"
+
+[[terms]]
+text = "trowel-router"
+class = "hyphen"
+spoken = "trowel router"
+status = "kept"
+
+[[terms]]
+text = "heron-router"
+class = "hyphen"
+spoken = "heron router"
+status = "kept"
+
+[[terms]]
+text = "Ember Ledger"
+class = "multiword"
+status = "dropped: Whisper already spells it"
+
+[[terms]]
+text = "Cedar Station"
+class = "multiword"
+status = "dropped: Whisper already spells it"
+
+[[terms]]
+text = "Willow Almanac"
+class = "multiword"
+status = "kept"
+
+[[terms]]
+text = "Willow Compass"
+class = "multiword"
+status = "kept"
+
+[[terms]]
+text = "Lantern Compass"
+class = "multiword"
+status = "kept"
+
+[[terms]]
+text = "Cedar Compass"
+class = "multiword"
+status = "dropped: Whisper already spells it"
+
+[[terms]]
+text = "Meadow Keeper"
+class = "multiword"
+status = "kept"
+
+[[terms]]
+text = "Heron Ledger"
+class = "multiword"
+status = "dropped: Whisper already spells it"
+
+[[terms]]
+text = "Harbor Ledger"
+class = "multiword"
+status = "dropped: Whisper already spells it"
+
+[[terms]]
+text = "Granite Relay"
+class = "multiword"
+status = "kept"
+
+[[terms]]
+text = "Kestrel Relay"
+class = "multiword"
+status = "dropped: Whisper already spells it"
+
+[[terms]]
+text = "Thistle Compass"
+class = "multiword"
+status = "dropped: Whisper already spells it"
+
+[[terms]]
+text = "Meadow Station"
+class = "multiword"
+status = "kept"
+
+[[terms]]
+text = "Ember Relay"
+class = "multiword"
+status = "dropped: Whisper already spells it"
+
+[[terms]]
+text = "Kestrel Compass"
+class = "multiword"
+status = "dropped: Whisper already spells it"
+
+[[terms]]
+text = "Granite Desk"
+class = "multiword"
+status = "kept"
+
+[[terms]]
+text = "Reykjavik"
+class = "real"
+status = "dropped: Whisper misspells it"
+
+[[terms]]
+text = "Ljubljana"
+class = "real"
+status = "dropped: Whisper misspells it"
+
+[[terms]]
+text = "Tbilisi"
+class = "real"
+status = "dropped: Whisper misspells it"
+
+[[terms]]
+text = "Thessaloniki"
+class = "real"
+status = "kept"
+
+[[terms]]
+text = "Kilimanjaro"
+class = "real"
+status = "kept"
+
+[[terms]]
+text = "Okavango"
+class = "real"
+status = "dropped: Whisper misspells it"
+
+[[terms]]
+text = "Svalbard"
+class = "real"
+status = "dropped: Whisper misspells it"
+
+[[terms]]
+text = "Lofoten"
+class = "real"
+status = "dropped: Whisper misspells it"
+
+[[terms]]
+text = "Cappadocia"
+class = "real"
+status = "kept"
+
+[[terms]]
+text = "Aldebaran"
+class = "real"
+status = "kept"
+
+[[terms]]
+text = "Ouagadougou"
+class = "real"
+status = "dropped: Whisper misspells it"
+
+[[terms]]
+text = "Kathmandu"
+class = "real"
+status = "dropped: Whisper misspells it"
+
+[[terms]]
+text = "Yerevan"
+class = "real"
+status = "kept"
+
+[[terms]]
+text = "Antananarivo"
+class = "real"
+status = "kept"
+
+[[terms]]
+text = "Nunavut"
+class = "real"
+status = "dropped: Whisper misspells it"
+
+[[terms]]
+text = "Galapagos"
+class = "real"
+status = "kept"
+
+[[terms]]
+text = "Arabidopsis"
+class = "real"
+status = "kept"

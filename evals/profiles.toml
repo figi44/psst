@@ -3,14 +3,8 @@
 
 [profiles.default]
 language = "en"
-prompt_style = "I'm updating the NixOS config. Claude Code and t3code run fine."
-rules = ["fillers", "whitespace", "capitalize", "trailing_space"]
-
-[profiles.czech]
-language = "cs"
-prompt_style = "Upravuji konfiguraci NixOS a spouštím t3code."
+prompt_style = "I'm updating the server config. The psst daemon and its tests run fine."
 rules = ["fillers", "whitespace", "capitalize", "trailing_space"]
 
 [fillers]
 en = ["um", "uh", "erm"]
-cs = ["ehm", "eee"]

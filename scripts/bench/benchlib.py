@@ -109,9 +109,9 @@ def duration_composites(cases: list[Case], targets=(2, 5, 15, 30, 60, 180)) -> d
 
 
 def term_composites(cases: list[Case]) -> list[Composite]:
-    """60 and 180 s of English sentences with terms, and 60 s of Czech: terms after the first 30 s window."""
+    """60 and 180 s of English sentences with terms: terms after the first 30 s window."""
     out = []
-    for lang, target in (("en", 60), ("en", 180), ("cs", 60)):
+    for lang, target in (("en", 60), ("en", 180)):
         pool = [c for c in cases if c.lang == lang and c.terms and "-long-" not in c.id and "-short-" not in c.id]
         out.append(composite(f"{lang}-terms-{target}s", pool, target))
     return out

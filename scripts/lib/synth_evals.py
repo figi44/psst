@@ -3,7 +3,7 @@
 Run through scripts/synth-evals.sh, which provides Piper, Python and flac from the pinned nixpkgs.
 
 What it does:
-- Reads evals/sentences/{en,cs}.txt and checks them against evals/dictionary.toml.
+- Reads evals/sentences/en.txt and checks it against evals/dictionary.toml and the eval set's rules (check_rules).
 - Downloads the Piper voices (pinned commit, checked by sha256) into the psst cache.
 - Renders every entry with one voice, plus a few silence and noise cases, as 16 kHz mono FLAC in evals/clips/.
 - Rewrites the synthetic lines of evals/cases.jsonl, and keeps any other line.
@@ -32,6 +32,9 @@ from pathlib import Path
 
 import numpy as np
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import eval_terms  # noqa: E402
+
 SR = 16000
 # Bump to re-render every clip when the rendering itself changes.
 RENDER_VERSION = 1
@@ -56,20 +59,13 @@ MODELS = {
         "470b4dd634c98f8a4850d7626ffc3dfc90774628eeef6605a6dd8f88f30a5903",
         "9e7fb5b5671612c22f3c81cbe46c1ae87b031a4632bcb509e499dad6f1e2adec",
     ),
-    "cs_CZ-jirka-medium": (
-        "cs/cs_CZ/jirka/medium",
-        "cbd5c900acacc8e8cbecd64347abb8de39c00a9d3104bed06fee92e4f319efc8",
-        "fb38b1799b7354808227c065efa97b1ffa2b0cde59505babb56a36d35af9c637",
-    ),
 }
 
-# voice tag (part of the clip id) -> (model stem, length_scale). Piper has one Czech voice, used at two speeds.
+# voice tag (part of the clip id) -> (model stem, length_scale).
 VOICES = {
     "lj": ("en_US-ljspeech-high", 1.0),
     "norman": ("en_US-norman-medium", 1.0),
     "cori": ("en_GB-cori-high", 1.0),
-    "jirka-fast": ("cs_CZ-jirka-medium", 0.9),
-    "jirka-slow": ("cs_CZ-jirka-medium", 1.15),
 }
 EN_VOICES = ["lj", "norman", "cori"]
 
@@ -79,7 +75,7 @@ LONG_TAIL_S = 4.0  # the silent tail of long must-pass clips
 SENTENCE_GAP_S = 0.2  # between sentences inside one segment
 PEAK = 10 ** (-1 / 20)  # normalise speech to -1 dBFS peak
 
-ENTRY_ID = re.compile(r"^(en|cs)-(?:(long|short)-)?(\d+)$")
+ENTRY_ID = re.compile(r"^(en)-(?:(long|short)-)?(\d+)$")
 MARK = re.compile(r"\[\[([^\[\]|{}]+?)(?:\|([^\[\]|{}]+?))?\]\]")
 PAUSE = re.compile(r"\{pause (\d+(?:\.\d+)?)\}")
 
@@ -166,7 +162,7 @@ def parse_sentences(path: Path) -> list[Entry]:
         entry_id, _, text = line.partition(" ")
         m = ENTRY_ID.match(entry_id)
         if not m or not text.strip():
-            raise InputError(f"{where}: expected '<id> <text>' with an id like en-001, en-long-01 or cs-short-01")
+            raise InputError(f"{where}: expected '<id> <text>' with an id like en-001, en-long-01 or en-short-01")
         entries.append(Entry(entry_id, m.group(1), m.group(2) or "regular", int(m.group(3)), text.strip(), where))
     return entries
 
@@ -193,6 +189,154 @@ def check_entries(entries: list[Entry], dictionary: dict[str, str]) -> None:
                 raise InputError(f"{e.source_line}: {e.id}: [[{term}]] isn't valid for {e.lang}")
 
 
+# --- the eval set's rules -------------------------------------------------------------------------------------------
+
+WORDS_FILE = Path("sentences") / "words.txt"
+WORD = re.compile(r"[^\W\d_]+(?:['’-][^\W\d_]+)*")
+SHORT_WORDS, LONG_WORDS = 8, 20  # regular sentences up to SHORT_WORDS words are short, from LONG_WORDS on long
+MIN_PER_LENGTH = 5  # regular sentences of each length in each split
+MIN_PLAIN = 0.25  # the share of regular sentences without terms in each split
+
+
+def lowercase_words(stress: Path) -> set[str]:
+    """Words the stress sentences write in lowercase in mid-sentence more often than capitalised.
+
+    The common-word list is casefolded and holds names too ("microsoft"); a common word counts as ordinary only if it's
+    also in here.
+    """
+    lower: dict[str, int] = {}
+    upper: dict[str, int] = {}
+    lines = stress.read_text(encoding="utf-8").splitlines() if stress.exists() else []
+    for line in lines:
+        if line.startswith("#"):
+            continue
+        initial, pos = True, 0
+        for m in WORD.finditer(line):
+            initial = initial or bool(re.search(r"[.!?]", line[pos:m.start()]))
+            pos = m.end()
+            if not initial:
+                counts = upper if m.group()[0].isupper() else lower
+                key = m.group().casefold().replace("’", "'")
+                counts[key] = counts.get(key, 0) + 1
+            initial = False
+    return {word for word, n in lower.items() if n > upper.get(word, 0)}
+
+
+def read_words(path: Path) -> set[str]:
+    """The words in words.txt: whitespace-separated, after any `#` comment lines."""
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    return {word for line in lines if not line.startswith("#") for word in line.split()}
+
+
+def unknown_words(e: Entry, common: set[str], allowed: set[str]) -> list[str]:
+    """Words outside [[Term]] marks that are neither common words nor in words.txt.
+
+    A word with a capital needs words.txt to list it that way, unless it's capitalised only because it starts a
+    sentence. A possessive counts as its word, and a hyphenated word as its parts.
+    """
+    vocabulary = common | {w.casefold() for w in allowed}
+
+    def known(word: str) -> bool:
+        folded = word.casefold()
+        return (folded in vocabulary or re.sub(r"'s$", "", folded) in vocabulary
+                or ("-" in folded and all(part in vocabulary for part in folded.split("-"))))
+
+    text = PAUSE.sub(" ", MARK.sub(" ⟦⟧ ", e.text))
+    out = []
+    initial, pos = True, 0
+    for m in re.finditer(WORD.pattern + "|⟦⟧", text):
+        initial = initial or bool(re.search(r"[.!?]", text[pos:m.start()]))
+        pos = m.end()
+        word = m.group().replace("’", "'")
+        if word != "⟦⟧":
+            capital_ok = (word == word.lower() or (initial and word[1:] == word[1:].lower())
+                          or word in allowed or re.sub(r"'s$", "", word) in allowed)
+            if not (known(word) and capital_ok):
+                out.append(word)
+        initial = False
+    return out
+
+
+def position(reference: str, start: int, end: int) -> str:
+    """Where a term occurrence sits in its sentence: start, middle or end."""
+    before = reference[:start].rstrip(" \"'‘“")
+    if not before or before[-1] in ".!?":
+        return "start"
+    after = reference[end:].lstrip("\"'’”")
+    if not after or after[0] in ".!?":
+        return "end"
+    return "middle"
+
+
+def check_rules(entries: list[Entry], evals: Path) -> list[str]:
+    """The eval set's rules, beyond well-formed entries:
+
+    - Vocabulary: every word outside [[Term]] marks is listed in sentences/words.txt, or is one of the 5,000 most
+      common English words that the stress sentences mostly write in lowercase (names are among the common words), and
+      nothing outside the marks has a digit. A product or company name can't slip into the sentences without a
+      reviewer reading it in words.txt.
+    - Speech: a term is spoken as the probe spoke it (terms.toml's `spoken`, or its spelling).
+    - Splits: every term the sentences use occurs in both the tune and the holdout split.
+    - Classes: every term the sentences use has a class in terms.toml, and each class has at least its minimum of
+      distinct terms (eval_terms.CLASSES), occurring at the start, in the middle and at the end of a sentence.
+    - Each split's regular sentences: at least MIN_PLAIN of them without terms, and MIN_PER_LENGTH of each length.
+    """
+    problems = []
+    common = eval_terms.common_words() & lowercase_words(evals / "stress" / "en.txt")
+    allowed = read_words(evals / WORDS_FILE)
+    for e in entries:
+        if re.search(r"\d", PAUSE.sub("", MARK.sub("", e.text))):
+            problems.append(f"{e.source_line}: {e.id}: a digit outside [[Term]] marks (spell numbers out)")
+        if unknown := unknown_words(e, common, allowed):
+            problems.append(f"{e.source_line}: {e.id}: not in the common words or {WORDS_FILE}: {', '.join(unknown)}")
+
+    terms = eval_terms.read_terms(evals / "terms.toml")
+    classes = {t.text: t.cls for t in terms}
+    spoken = {t.text: t.spoken for t in terms}
+    for e in entries:
+        for m in MARK.finditer(e.text):
+            if m.group(1) in spoken and (m.group(2) or "") != spoken[m.group(1)]:
+                want = f"[[{m.group(1)}|{spoken[m.group(1)]}]]" if spoken[m.group(1)] else f"[[{m.group(1)}]]"
+                problems.append(f"{e.source_line}: {e.id}: write {m.group()} as {want}, as the probe spoke it")
+    used: dict[str, set[str]] = {}
+    positions: dict[str, set[str]] = {}
+    for e in entries:
+        split = "tune" if e.number % 2 else "holdout"
+        ref = e.reference
+        for term in e.terms:
+            used.setdefault(term, set()).add(split)
+            for start, end in eval_terms.term_spans(ref, term):
+                positions.setdefault(classes.get(term, "?"), set()).add(position(ref, start, end))
+    for term, splits in sorted(used.items()):
+        if term not in classes:
+            problems.append(f"[[{term}]] has no class in terms.toml")
+        if len(splits) < 2:
+            problems.append(f"[[{term}]] occurs only in the {next(iter(splits))} split")
+    for cls, (_, minimum, _) in eval_terms.CLASSES.items():
+        n = sum(classes.get(t) == cls for t in used)
+        if n < minimum:
+            problems.append(f"class {cls}: the sentences use {n} terms, at least {minimum} wanted")
+        missing = {"start", "middle", "end"} - positions.get(cls, set())
+        if n and missing and cls != "project":
+            problems.append(f"class {cls}: no term at the {', '.join(sorted(missing))} of a sentence")
+
+    for split, parity in (("tune", 1), ("holdout", 0)):
+        regular = [e for e in entries if e.kind == "regular" and e.number % 2 == parity]
+        if not regular:
+            continue
+        plain = sum(not e.terms for e in regular)
+        if plain < MIN_PLAIN * len(regular):
+            problems.append(f"{split}: {plain} of {len(regular)} regular sentences without terms, "
+                            f"at least {MIN_PLAIN:.0%} wanted")
+        lengths = [len(e.reference.split()) for e in regular]
+        for name, n in (("short", sum(n <= SHORT_WORDS for n in lengths)),
+                        ("medium", sum(SHORT_WORDS < n < LONG_WORDS for n in lengths)),
+                        ("long", sum(n >= LONG_WORDS for n in lengths))):
+            if n < MIN_PER_LENGTH:
+                problems.append(f"{split}: {n} {name} regular sentences, at least {MIN_PER_LENGTH} wanted")
+    return problems
+
+
 def load_dictionary(path: Path) -> dict[str, str]:
     """Term text -> its `languages`: "any" or one language code."""
     terms = tomllib.loads(path.read_text(encoding="utf-8"))["terms"]
@@ -200,22 +344,17 @@ def load_dictionary(path: Path) -> dict[str, str]:
 
 
 def voice_for(e: Entry) -> str:
-    if e.lang == "en":
-        return EN_VOICES[(e.number - 1) % len(EN_VOICES)]
-    # Czech: blocks of four ordinary sentences (both splits, with and without terms) alternate between the speeds.
-    fast = ((e.number - 1) // 4) % 2 == 0 if e.kind == "regular" else e.number % 2 == 1
-    return "jirka-fast" if fast else "jirka-slow"
+    return EN_VOICES[(e.number - 1) % len(EN_VOICES)]
 
 
 # Silence and noise cases: the guard must leave them empty. (id suffix, kind, seconds)
 NOISE_CASES = {
     "en": [("silence", "silence", 5.0), ("roomtone", "roomtone", 8.0), ("fan", "fan", 6.0),
            ("white", "white", 4.0), ("hum", "hum", 6.0), ("typing", "typing", 6.0)],
-    "cs": [("silence", "silence", 5.0), ("roomtone", "roomtone", 8.0), ("typing", "typing", 6.0)],
 }
 
 
-def plan_clips(entries: list[Entry]) -> list[Clip]:
+def plan_clips(entries: list[Entry], noise: bool = True) -> list[Clip]:
     clips = []
     for e in entries:
         voice = voice_for(e)
@@ -224,7 +363,7 @@ def plan_clips(entries: list[Entry]) -> list[Clip]:
             reference=e.reference, terms=e.terms, must_pass=e.kind != "regular", voice=voice,
             segments=e.spoken_segments(),
         ))
-    for lang, cases in NOISE_CASES.items():
+    for lang, cases in NOISE_CASES.items() if noise else ():
         for i, (name, kind, seconds) in enumerate(cases):
             clips.append(Clip(
                 id=f"syn-{lang}-{name}", lang=lang, split="tune" if i % 2 == 0 else "holdout", reference="",
@@ -370,18 +509,25 @@ def main() -> int:
     ap.add_argument("--piper-site", required=True, help="site-packages of the piper-tts package")
     ap.add_argument("--force", action="store_true", help="re-render every clip, even if its tag matches")
     ap.add_argument("--check", action="store_true", help="only check the sentences and list the plan")
+    ap.add_argument("--evals", type=Path, help="the eval set to render (default: evals/ in --repo)")
+    ap.add_argument("--probe", action="store_true",
+                    help="the set is a term probe from scripts/lib/eval_terms.py: no noise cases, no rules")
     args = ap.parse_args()
     sys.path.insert(0, args.piper_site)
 
-    evals = args.repo / "evals"
+    evals = args.evals or args.repo / "evals"
     try:
         dictionary = load_dictionary(evals / "dictionary.toml")
-        entries = [e for lang in ("en", "cs") for e in parse_sentences(evals / "sentences" / f"{lang}.txt")]
+        entries = parse_sentences(evals / "sentences" / "en.txt")
         check_entries(entries, dictionary)
     except InputError as err:
         print(f"error: {err}", file=sys.stderr)
         return 1
-    clips = plan_clips(entries)
+    if not args.probe and (problems := check_rules(entries, evals)):
+        for problem in problems:
+            print(f"error: {problem}", file=sys.stderr)
+        return 1
+    clips = plan_clips(entries, noise=not args.probe)
 
     if args.check:
         for c in clips:
@@ -437,14 +583,15 @@ def summarize(clips: list[Clip], clip_dir: Path) -> None:
     secs = {c.id: flac_seconds(clip_dir / f"{c.id}.flac") for c in clips}
     size = sum((clip_dir / f"{c.id}.flac").stat().st_size for c in clips)
     print(f"{len(clips)} synthetic clips, {sum(secs.values()) / 60:.1f} min, {size / 1e6:.1f} MB", file=sys.stderr)
-    for lang in ("en", "cs"):
+    for lang in ("en",):
         mine = [c for c in clips if c.lang == lang]
         for split in ("tune", "holdout"):
             s = [c for c in mine if c.split == split]
             print(f"  {lang} {split:7}: {len(s):3} clips, {sum(bool(c.terms) for c in s):2} with terms, "
                   f"{sum(c.must_pass for c in s):2} must-pass", file=sys.stderr)
     longs = [secs[c.id] for c in clips if "-long-" in c.id]
-    print(f"  long clips: {len(longs)}, {min(longs):.0f}–{max(longs):.0f} s", file=sys.stderr)
+    if longs:
+        print(f"  long clips: {len(longs)}, {min(longs):.0f}–{max(longs):.0f} s", file=sys.stderr)
 
 
 if __name__ == "__main__":

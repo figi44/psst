@@ -1,423 +1,429 @@
-# Fixed dictionary snapshot for the eval set.
+# The eval set's dictionary, written by scripts/lib/eval_terms.py from evals/terms.toml: don't edit it by
+# hand.
 #
-# It's large on purpose: the bias terms (pinned first, then the rest alphabetically) overflow the 223-token budget
-# for style plus terms, so evals exercise dropping terms from the end. Every [[Term]] in
-# evals/sentences/*.txt must be here (scripts/synth-evals.sh checks it). Changing this file means re-running the audio
-# eval.
+# Every term is invented, or in the `real` class a real place or science name, so the eval set names no
+# product or company. `notes` is the term's class (CLASSES in eval_terms.py). It's large on purpose: the bias
+# terms (pinned first, then the rest alphabetically) overflow the 223-token budget for style plus terms, so
+# evals exercise dropping terms from the end. The first term of each class is pinned.
 #
-# The format is the server's dictionary.toml. Defaults: sounds_like = [], languages = "any" ("en" or "cs" restricts a term),
-# fuzzy = true (English only), pin = false.
+# sounds_like holds what Whisper wrote for a term in the tune split's traces, never the holdout split's, so
+# holdout measures the dictionary on errors it wasn't tuned on. Spellings that are common words, occur in
+# evals/stress/, or are the ordinary word a soundalike respells are left out: as exact spellings they would
+# rewrite every ordinary use of the word.
 #
-# sounds_like holds spellings Whisper actually produced for these terms during the engine benchmarks. Common words that a term
-# sounds like (Traefik → "traffic", Flox → "flocks") are left out on purpose: as exact spellings they would rewrite
-# every ordinary use of the word.
-
-# --- pinned: always in the prompt --------------------------------------------------------------------------------
+# The format is the server's dictionary.toml. Defaults: sounds_like = [], languages = "any", fuzzy = true,
+# pin = false. Changing the terms or pins means re-running the audio eval; sounds_like doesn't.
 
 [[terms]]
 text = "psst"
-sounds_like = ["pst", "P S S T", "PSSSD"]
 pin = true
-notes = "this project"
+notes = "project"
 
 [[terms]]
-text = "t3code"
-sounds_like = ["T3 code", "T3 kód", "t three code"]
+text = "Zoorko"
 pin = true
+notes = "coinage"
 
 [[terms]]
-text = "Hyprland"
-sounds_like = ["hyperland", "hyper land"]
+text = "Carpett"
 pin = true
+notes = "soundalike of “carpet”"
 
 [[terms]]
-text = "niri"
-sounds_like = ["Níry"]
+text = "gjz"
 pin = true
+notes = "letters"
 
 [[terms]]
-text = "NixOS"
-sounds_like = ["Nix OS", "Niksos"]
+text = "rivet8"
 pin = true
+notes = "alnum"
 
 [[terms]]
-text = "Claude Code"
-sounds_like = ["Cloud Code", "Clod Code"]
+text = "TideSpool"
 pin = true
+notes = "camel"
 
 [[terms]]
-text = "localwhisper"
-sounds_like = ["hyper whisper", "hyperwhisper"]
+text = "quillkeep"
 pin = true
+notes = "joined"
 
 [[terms]]
-text = "Ghostty"
-sounds_like = ["ghosty", "ghosti", "gosty"]
+text = "lichen-runner"
+sounds_like = ["lichen runner"]
 pin = true
+notes = "hyphen"
 
 [[terms]]
-text = "Tailscale"
-sounds_like = ["tail scale", "Taleskill"]
+text = "Willow Almanac"
 pin = true
+notes = "multiword"
 
 [[terms]]
-text = "Helium"
+text = "Thessaloniki"
 pin = true
-notes = "the browser; also an ordinary English word, so only casing is fixed"
+notes = "real"
 
-# --- the rest ----------------------------------------------------------------------------------------------------
-
-[[terms]]
-text = "agenix"
-sounds_like = ["age nix"]
-
-[[terms]]
-text = "Alza"
-languages = "cs"
-
-[[terms]]
-text = "Ansible"
-
-[[terms]]
-text = "Anthropic"
-
-[[terms]]
-text = "Argo CD"
-sounds_like = ["Argo C D", "ArgoCD"]
-
-[[terms]]
-text = "Axum"
-
-[[terms]]
-text = "Bitwarden"
-sounds_like = ["bit warden"]
-
-[[terms]]
-text = "Btrfs"
-sounds_like = ["butter FS", "better FS"]
-
-[[terms]]
-text = "Cachix"
-
-[[terms]]
-text = "Caddy"
-
-[[terms]]
-text = "cert-manager"
-sounds_like = ["cert manager"]
-
-[[terms]]
-text = "Chromium"
-
-[[terms]]
-text = "Cilium"
-
-[[terms]]
-text = "cliphist"
-sounds_like = ["clip hist"]
-
 [[terms]]
-text = "Cloudflare"
-sounds_like = ["cloud flare"]
+text = "Fethix"
+notes = "coinage"
 
 [[terms]]
-text = "Codex"
+text = "Baimex"
+sounds_like = ["Baymix"]
+notes = "coinage"
 
 [[terms]]
-text = "Colmena"
+text = "Zeskora"
+sounds_like = ["Zeskar"]
+notes = "coinage"
 
 [[terms]]
-text = "containerd"
-sounds_like = ["container d"]
+text = "plisto"
+sounds_like = ["plistome"]
+notes = "coinage"
 
 [[terms]]
-text = "ČSOB"
-languages = "cs"
+text = "Blakar"
+notes = "coinage"
 
 [[terms]]
-text = "CTranslate2"
-sounds_like = ["C translate 2", "C translate two"]
+text = "Joonda"
+notes = "coinage"
 
 [[terms]]
-text = "CUDA"
-sounds_like = ["Kuda"]
+text = "traikrix"
+notes = "coinage"
 
 [[terms]]
-text = "direnv"
-sounds_like = ["dir env"]
+text = "frarvai"
+notes = "coinage"
 
 [[terms]]
-text = "disko"
+text = "greeret"
+notes = "coinage"
 
 [[terms]]
-text = "Docker"
+text = "poxsol"
+notes = "coinage"
 
 [[terms]]
-text = "Electron"
+text = "Quusta"
+sounds_like = ["Quaster"]
+notes = "coinage"
 
 [[terms]]
-text = "etcd"
-sounds_like = ["E T C D"]
+text = "Zooskora"
+sounds_like = ["Zuskora"]
+notes = "coinage"
 
 [[terms]]
-text = "Fable"
-languages = "en"
+text = "Fleden"
+notes = "coinage"
 
 [[terms]]
-text = "faster-whisper"
-sounds_like = ["faster whisper"]
+text = "Jomsil"
+notes = "coinage"
 
 [[terms]]
-text = "Flox"
+text = "Raxfoor"
+notes = "coinage"
 
 [[terms]]
-text = "fzf"
-sounds_like = ["F Z F"]
+text = "kreexa"
+notes = "coinage"
 
 [[terms]]
-text = "GitHub"
-sounds_like = ["Git Hub"]
+text = "Slalveen"
+notes = "coinage"
 
 [[terms]]
-text = "Grafana"
+text = "Wainora"
+sounds_like = ["Wayneura", "Wayne Oro"]
+notes = "coinage"
 
 [[terms]]
-text = "gRPC"
-sounds_like = ["G R P C"]
+text = "Froothix"
+notes = "coinage"
 
 [[terms]]
-text = "Helm"
+text = "Gerbun"
+sounds_like = ["Dribun"]
+notes = "coinage"
 
 [[terms]]
-text = "Hetzner"
+text = "Hanmeex"
+notes = "coinage"
 
 [[terms]]
-text = "Home Assistant"
+text = "Stunsir"
+notes = "coinage"
 
 [[terms]]
-text = "Home Manager"
+text = "Deenden"
+notes = "coinage"
 
 [[terms]]
-text = "htmx"
-sounds_like = ["H T M X"]
+text = "Kotton"
+notes = "soundalike of “cotton”"
 
 [[terms]]
-text = "Immich"
+text = "Saddel"
+notes = "soundalike of “saddle”"
 
 [[terms]]
-text = "Istio"
+text = "Peppur"
+notes = "soundalike of “pepper”"
 
 [[terms]]
-text = "Jellyfin"
-sounds_like = ["jelly fin"]
+text = "Koppur"
+notes = "soundalike of “copper”"
 
 [[terms]]
-text = "jq"
-sounds_like = ["J Q"]
+text = "Thistel"
+notes = "soundalike of “thistle”"
 
 [[terms]]
-text = "k3s"
-sounds_like = ["K three S"]
+text = "Laddur"
+notes = "soundalike of “ladder”"
 
 [[terms]]
-text = "k9s"
-sounds_like = ["canines", "K nine S"]
+text = "Kwarry"
+notes = "soundalike of “quarry”"
 
 [[terms]]
-text = "Kafka"
+text = "Junipur"
+notes = "soundalike of “juniper”"
 
 [[terms]]
-text = "kubectl"
-sounds_like = ["cube control", "cube CTRL", "kube control", "cube cuttle"]
+text = "jkz"
+notes = "letters"
 
 [[terms]]
-text = "Kubernetes"
+text = "kxn"
+notes = "letters"
 
 [[terms]]
-text = "Loki"
+text = "wtz"
+notes = "letters"
 
 [[terms]]
-text = "Longhorn"
+text = "vwh"
+notes = "letters"
 
 [[terms]]
-text = "MetalLB"
-sounds_like = ["metal LB", "metal L B"]
+text = "bkw"
+notes = "letters"
 
 [[terms]]
-text = "minijinja"
-sounds_like = ["mini jinja"]
+text = "szj"
+notes = "letters"
 
 [[terms]]
-text = "Mobbin"
+text = "jzq"
+notes = "letters"
 
 [[terms]]
-text = "Neovim"
-sounds_like = ["neo vim"]
+text = "l3vault"
+sounds_like = ["L3 Vault"]
+notes = "alnum"
 
 [[terms]]
-text = "nextest"
-sounds_like = ["next test"]
+text = "quill8"
+notes = "alnum"
 
 [[terms]]
-text = "nginx"
-sounds_like = ["engine x"]
+text = "v4loom"
+sounds_like = ["foreloom"]
+notes = "alnum"
 
 [[terms]]
-text = "nixpkgs"
-sounds_like = ["nix packages", "nix pkgs", "next pkgs"]
+text = "g6relay"
+notes = "alnum"
 
 [[terms]]
-text = "Noctalia"
-sounds_like = ["noctalier"]
+text = "s8core"
+notes = "alnum"
 
 [[terms]]
-text = "NVIDIA"
+text = "quill4"
+notes = "alnum"
 
 [[terms]]
-text = "OpenTelemetry"
-sounds_like = ["open telemetry"]
+text = "q6shelf"
+sounds_like = ["q6 shelf"]
+notes = "alnum"
 
 [[terms]]
-text = "OpenTofu"
-sounds_like = ["open tofu"]
+text = "SorrelTrellis"
+sounds_like = ["soil trellis"]
+notes = "camel"
 
 [[terms]]
-text = "Opus"
-languages = "en"
+text = "FernHatch"
+notes = "camel"
 
 [[terms]]
-text = "Penpot"
-sounds_like = ["pen pot"]
+text = "SorrelSpool"
+notes = "camel"
 
 [[terms]]
-text = "PipeWire"
-sounds_like = ["pipe wire"]
+text = "FernForge"
+sounds_like = ["Firmed Forge"]
+notes = "camel"
 
 [[terms]]
-text = "Piper"
+text = "FernLatch"
+notes = "camel"
 
 [[terms]]
-text = "Podman"
+text = "SlateHatch"
+notes = "camel"
 
 [[terms]]
-text = "PostgreSQL"
-sounds_like = ["Postgre SQL", "PostgresQL"]
+text = "LichenWire"
+notes = "camel"
 
 [[terms]]
-text = "Prometheus"
+text = "TideHatch"
+notes = "camel"
 
 [[terms]]
-text = "protobuf"
-sounds_like = ["proto buf"]
+text = "OtterForge"
+sounds_like = ["UtterForge", "Utter Forge"]
+notes = "camel"
 
 [[terms]]
-text = "Proxmox"
+text = "OtterTrellis"
+notes = "camel"
 
 [[terms]]
-text = "Redis"
+text = "MossVault"
+notes = "camel"
 
 [[terms]]
-text = "ripgrep"
-sounds_like = ["rip grep"]
+text = "graind"
+sounds_like = ["graindee"]
+notes = "joined"
 
 [[terms]]
-text = "Ryzen"
+text = "grainsync"
+sounds_like = ["grain sync"]
+notes = "joined"
 
 [[terms]]
-text = "sccache"
-sounds_like = ["S C cache"]
+text = "kilnfmt"
+notes = "joined"
 
 [[terms]]
-text = "Sentry"
+text = "rivetd"
+sounds_like = ["Rivet D"]
+notes = "joined"
 
 [[terms]]
-text = "serde"
+text = "ledgerfmt"
+notes = "joined"
 
 [[terms]]
-text = "Silero"
+text = "quillfmt"
+notes = "joined"
 
 [[terms]]
-text = "Slack"
+text = "quillwatch"
+sounds_like = ["quill watch"]
+notes = "joined"
 
 [[terms]]
-text = "smithay"
+text = "grainctl"
+notes = "joined"
 
 [[terms]]
-text = "sops-nix"
-sounds_like = ["sops nix", "Sobsnix", "subsnix"]
+text = "tilesync"
+notes = "joined"
 
 [[terms]]
-text = "SQLite"
-sounds_like = ["sequel light", "sequel lite", "SQL lite"]
+text = "scribe-operator"
+sounds_like = ["scribe operator"]
+notes = "hyphen"
 
 [[terms]]
-text = "Syncthing"
-sounds_like = ["sync thing"]
+text = "heron-manager"
+sounds_like = ["Heron manager"]
+notes = "hyphen"
 
 [[terms]]
-text = "systemd"
-sounds_like = ["system D", "systemD"]
+text = "quartz-keeper"
+notes = "hyphen"
 
 [[terms]]
-text = "Talos"
+text = "clover-agent"
+notes = "hyphen"
 
 [[terms]]
-text = "Terraform"
+text = "birch-runner"
+notes = "hyphen"
 
 [[terms]]
-text = "ThinkPad"
-sounds_like = ["think pad"]
+text = "quill-runner"
+sounds_like = ["Quill Runner"]
+notes = "hyphen"
 
 [[terms]]
-text = "tmux"
-sounds_like = ["T mux"]
+text = "birch-manager"
+sounds_like = ["Verge Manager"]
+notes = "hyphen"
 
 [[terms]]
-text = "Tokio"
+text = "Willow Compass"
+notes = "multiword"
 
 [[terms]]
-text = "Traefik"
-notes = "pronounced like 'traffic', which is too common to be a spelling"
+text = "Lantern Compass"
+notes = "multiword"
 
 [[terms]]
-text = "Velero"
+text = "Meadow Keeper"
+sounds_like = ["meadow-keeper"]
+notes = "multiword"
 
 [[terms]]
-text = "VS Code"
-sounds_like = ["VSCode", "V S Code"]
+text = "Granite Relay"
+notes = "multiword"
 
 [[terms]]
-text = "Wayland"
-sounds_like = ["way land"]
+text = "Meadow Station"
+notes = "multiword"
 
 [[terms]]
-text = "Waybar"
-sounds_like = ["way bar"]
+text = "Granite Desk"
+notes = "multiword"
 
 [[terms]]
-text = "WebSocket"
-sounds_like = ["web socket"]
+text = "Kilimanjaro"
+notes = "real"
 
 [[terms]]
-text = "WireGuard"
-sounds_like = ["wire guard"]
+text = "Cappadocia"
+notes = "real"
 
 [[terms]]
-text = "wl-clipboard"
-sounds_like = ["WL clipboard"]
+text = "Aldebaran"
+notes = "real"
 
 [[terms]]
-text = "XWayland"
-sounds_like = ["X Wayland"]
+text = "Yerevan"
+notes = "real"
 
 [[terms]]
-text = "ZFS"
-sounds_like = ["Z F S"]
+text = "Antananarivo"
+sounds_like = ["Antoinette Rivo"]
+notes = "real"
 
 [[terms]]
-text = "Zigbee"
-sounds_like = ["zig bee"]
+text = "Galapagos"
+notes = "real"
 
 [[terms]]
-text = "zsh"
-sounds_like = ["Z shell"]
+text = "Arabidopsis"
+notes = "real"

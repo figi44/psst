@@ -1,0 +1,25 @@
+# Ordinary words the eval sentences use beyond the common ones: the 5,000 most common English words
+# (crates/psst-dict/data/common-words/en.txt) that evals/stress/en.txt mostly writes in lowercase, since names are
+# among them. Separated by whitespace. scripts/synth-evals.sh refuses any other word outside [[Term]] marks, so a
+# product or company name can't slip into the sentences without a reviewer reading it here. A word written with a
+# capital in the middle of a sentence (a weekday, a first name, I) is listed that way.
+
+admin agree alarms alerts annoying app archive ask asking awake backup backups battery belong big birthday booked
+borrow box brighter bug builds byte cache calendar certificate charts check checker checkout chokes cleaned cleaning
+clearer client climbing cluster commit compare compress conference config contract convert copied crash crashed
+creates customer daemon dashboard database decisions delayed deletes delivered deploy developers diagrams dictate
+dictation dictionary didn't documentation domain downstairs drafts dripping drops dump easy email empty endpoint
+export extend fails feels filled finishes firewall fix flags floor folder folders follow-ups forth forwards guide
+halfway haven't header heating hi hid holiday hotfix hour icons importer incident incoming input install invite
+invoices keeps kitchen landlord laptop late leak letter licence lock log logic login logs looks lunch machine mark
+match meeting merge messages midnight migration minute missing mockups monitor nightly node notice notices okay
+onboarding option overnight owe pack packets paged paging paragraph parse parser password paste phone photos picking
+piled pipe plugin plumber presentation prints projector protocol prototype publish pull push queue readable reads
+recipe reconnects regards registry remind reminds rename render renderer renders renew reply reproduce request reset
+restart restarted restarts retry roadmap routing rows runbook runner save says schema screenshot screenshots searched
+secrets sending sends sensor server settings shared shift shorter sick signal skips slides somebody sorry spam spell
+staging stale stopped stops stuck suite supports sure suspect switch sync tag tap tests thanks ticket timeout tomorrow
+tonight touch touches traffic travelling trust understands update upgrade upload uploads usage vector waited waiting
+wakes warning warnings watch webhooks weekend weekly whether whoever yesterday you've zone
+
+I I'd I'll I'm Anna Monday Tuesday Wednesday Thursday Friday Saturday Sunday
