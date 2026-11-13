@@ -79,7 +79,7 @@ Whisper wrote instead, since a mishearing can be an existing name; `dictionary.t
 `sounds_like` spellings taken from the tune split's traces only. A few spellings Whisper wrote are ordinary words,
 phrases or names, and are kept out of `sounds_like` by hand.
 
-### Synthetic clips (`clips/syn-*.flac`)
+### Piper clips (`clips/syn-*.flac`, except `-qwen-`)
 
 Rendered by `scripts/synth-evals.sh` with **Piper 1.8.0** (`piper-tts` from nixpkgs
 `1d060086d60cb76a40cf37109f979d88a5bd6396`, upstream [OHF-Voice/piper1-gpl](https://github.com/OHF-Voice/piper1-gpl),
@@ -101,10 +101,44 @@ The exact files and their sha256 sums are pinned in `scripts/lib/synth_evals.py`
 attribution or share-alike terms. Voices with non-commercial data (`ryan`, `hfc_*`, `semaine`), with unclear terms
 (`amy`, `alan`, `jenny_dioco`, `kusal`) or fine-tuned from `lessac` (`joe`, `lessac` itself) were left out.
 
+### Qwen3-TTS clips (`clips/syn-*-qwen-*.flac`, `voices/`)
+
+Every entry is also spoken by a second voice, from
+[Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS), whose prosody is much closer to a person's than Piper's. Rendered
+by `scripts/synth-evals.sh --qwen` on the GPU, with `qwen-tts` 0.1.1 from PyPI in the Python of
+`scripts/lib/qwen-tts.nix` (nixpkgs `3ecb4acfab0e44aa78fc3080c79698ff3c2ec714`, for its transformers 4.57.3, which
+`qwen-tts` pins). Code and weights are **Apache-2.0**; the models are pinned by revision in
+`scripts/lib/synth_evals.py`:
+
+- [`Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign`](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign) designed each
+  voice from a written description (`QWEN_VOICES`) into `voices/<tag>.flac`, a recording of one fixed sentence, on
+  the CPU. No voice is a clone of a real person.
+- [`Qwen/Qwen3-TTS-12Hz-1.7B-Base`](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) speaks every clip as a
+  clone of those recordings, so a voice stays the same across clips and across the segments of a long entry. It
+  needs about 5 GB of GPU memory.
+
+| Tag in clip ids | Voice | Used for |
+|---|---|---|
+| `qwen-usf` | US English, female | English, 1 in 3 |
+| `qwen-usm` | US English, male | English, 1 in 3 |
+| `qwen-gbm` | UK English, male | English, 1 in 3 |
+
+An entry's Qwen voice is one step ahead of its Piper voice, so no sentence is spoken twice with the same accent and
+sex. Unlike the Piper voices, Qwen3-TTS doesn't say what it was trained on beyond "over 5 million hours of speech",
+so these clips don't meet the public-domain rule above; nothing in its licence restricts the audio.
+
+Qwen3-TTS samples on the GPU. Each segment is seeded from the clip id, but the audio repeats only on the same GPU and
+software, so the committed clips and voices are the reference: re-rendering one gives a slightly different
+recording. It reads plain text with no phoneme control, so a term may come out differently from Piper's; the clips
+are checked by the transcripts in `cases.jsonl`, and the script warns when a segment's pace suggests dropped or
+invented speech.
+
 ### What is in the set
 
 - `sentences/en.txt`: the scripts, with dictionary terms marked `[[Term]]` (format in the file header). Each entry
-  is rendered once, with the voice picked by its number, so both splits get every voice.
+  is rendered twice, once by Piper and once by Qwen3-TTS, with the voices picked by its number, so both splits get
+  every voice.
+- `voices/`: the designed Qwen3-TTS voices, above.
 - `sentences/words.txt`: the ordinary words the scripts use beyond the 5,000 most common ones. `--check` refuses any
   other word, so a name can't slip in unreviewed.
 - Silence and noise cases (`syn-en-silence`, `-roomtone`, `-fan`, `-white`, `-hum`, `-typing`), generated with
@@ -112,8 +146,8 @@ attribution or share-alike terms. Voices with non-commercial data (`ryan`, `hfc_
 - `terms.toml` and `dictionary.toml`: the terms, above. `profiles.toml`: a fixed snapshot, written for psst.
 - `cases.jsonl`: one line per clip, in the format `psst-eval` reads (`crates/psst-eval/src/cases.rs`).
 
-The audio is fully reproducible: Piper's noise is seeded from each clip id, so `scripts/synth-evals.sh --force`
-renders byte-identical files with the same nixpkgs and voices. Checked on 2026-11-06 by rendering the whole set twice,
+The Piper and noise audio is fully reproducible: Piper's noise is seeded from each clip id, so `scripts/synth-evals.sh --force`
+renders byte-identical files with the same nixpkgs and voices (the Qwen3-TTS clips aren't, above). Checked on 2026-11-06 by rendering the whole set twice,
 and on 2026-11-08 by rendering a sample of the current clips again.
 
 ## Test fixtures
