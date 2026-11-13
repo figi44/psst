@@ -594,7 +594,9 @@ impl Core {
         }
         d.net = self.begin_check();
         self.recording = Some(d);
-        self.awaiting_shown = Some(id);
+        // `OverlayShown` comes only when the overlay appears. One already on screen (a notice, or
+        // the previous dictation finishing) just changes state, and the time isn't measured.
+        self.awaiting_shown = (!self.overlay_visible()).then_some(id);
         info!("recording {id}");
         Response::ok(format!("recording {id}"))
     }
@@ -1333,7 +1335,10 @@ impl Core {
             WaylandEvent::Disconnected => {
                 info!("the Wayland thread disconnected");
                 self.sink = None;
+                // The overlay is gone with the connection; it's sent again (and shown again) on
+                // the next refresh, which isn't the `toggle` a recording waits to see.
                 self.overlay = None;
+                self.awaiting_shown = None;
                 if let Some(inserting) = &self.inserting {
                     let generation = inserting.generation;
                     self.insert_failed(generation, "the Wayland connection closed".into());
@@ -1412,6 +1417,11 @@ impl Core {
         if let Some(sink) = &mut self.sink {
             sink.send(cmd);
         }
+    }
+
+    /// Whether the last overlay command showed it.
+    fn overlay_visible(&self) -> bool {
+        matches!(self.overlay, Some(Some(_)))
     }
 
     fn notice(&mut self, state: OverlayState, shown: Duration) {
