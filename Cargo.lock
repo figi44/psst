@@ -1923,6 +1923,8 @@ name = "psst-overlay"
 version = "0.1.0"
 dependencies = [
  "cosmic-text",
+ "psst-testkit",
+ "psst-wayland",
  "tiny-skia",
 ]
 
