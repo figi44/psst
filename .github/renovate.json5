@@ -6,9 +6,6 @@
   timezone: 'Europe/Prague',
   // Wider than the hosted app's 4 hours between runs of a repository, so every day has one.
   schedule: ['* 0-5 * * *'],
-  // Without branch protection, which private repositories on the free plan don't get, GitHub's
-  // auto-merge has no checks to wait for. Renovate merges itself once every check has passed.
-  platformAutomerge: false,
   reviewers: ['figi44'],
   osvVulnerabilityAlerts: true,
   // The engine's Python packages come from nixpkgs; pyproject.toml's ranges only have to admit them.

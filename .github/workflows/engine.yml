@@ -2,18 +2,8 @@ name: Engine
 
 on:
   pull_request:
-    paths:
-      - engines/**
-      - flake.nix
-      - flake.lock
-      - .github/workflows/engine.yml
   push:
     branches: [main]
-    paths:
-      - engines/**
-      - flake.nix
-      - flake.lock
-      - .github/workflows/engine.yml
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -23,8 +13,21 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Changes
+    uses: ./.github/workflows/changes.yml
+    with:
+      paths: |
+        engines/*
+        flake.nix
+        flake.lock
+        .github/workflows/engine.yml
+        .github/workflows/changes.yml
+
   pytest:
     name: pytest
+    needs: changes
+    if: needs.changes.outputs.changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
