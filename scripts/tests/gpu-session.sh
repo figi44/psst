@@ -63,6 +63,10 @@ sleep 0.5; s0=$SECONDS; kill -INT $A; wait $A; rc=$?
 check "SIGINT handled at once" '[[ $((SECONDS-s0)) -le 2 ]]'
 check "SIGINT exits 130" '[[ $rc == 130 ]]'
 check "child sleep 31 gone" '! pgrep -f "^sleep 31$" >/dev/null'
+# A wrapper script with a worker under it (like bench/run.sh -> python): the worker is stopped too.
+$G bash -c 'sleep 34; true' 2>/dev/null & A=$!
+sleep 0.5; kill -TERM $A; wait $A
+check "worker under a wrapper stopped on SIGTERM" '! pgrep -f "^sleep 34$" >/dev/null'
 # 6. nested call runs directly
 out=$($G bash -c "$G echo nested" 2>/dev/null)
 check "nested call does not deadlock" '[[ $out == nested ]]'
@@ -80,6 +84,11 @@ $P sleep 32 2>/dev/null & A=$!
 sleep 0.5; s0=$SECONDS; kill -INT $A; wait $A
 check "psst Ctrl-C handled at once" '[[ $((SECONDS-s0)) -le 2 ]]'
 check "psst loaded again after Ctrl-C" '[[ $(cat "$T/psst") == loaded ]]'
+# The psst model is loaded again only once the worker under a wrapper is gone.
+sed -i 's|^psst_model_load() {|&  pgrep -f "^sleep 36$" >/dev/null \&\& echo alive >> "$T/alive-at-load";|' "$P"
+$P bash -c 'sleep 36; true' 2>/dev/null & A=$!
+sleep 0.5; kill -INT $A; wait $A
+check "worker stopped before the psst model is loaded" '[[ ! -e $T/alive-at-load ]] && ! pgrep -f "^sleep 36$" >/dev/null'
 # SIGKILL the script: the command keeps the lock until it ends; the next run repairs from the marker
 $P sleep 3 2>/dev/null & A=$!
 sleep 0.5; kill -KILL $A; wait $A 2>/dev/null
@@ -92,7 +101,7 @@ check "repair message" 'grep -q "repairing" "$T/err7"'
 check "carried-over unload kept during next command" '[[ $rc == 0 ]]'
 check "psst restored by the next run" '[[ $(cat "$T/psst") == loaded ]]'
 check "marker gone after repair" '[[ ! -e $PSST_CACHE_DIR/gpu-session.marker ]]'
-check "load/unload sequence" '[[ $(tr "\n" " " < "$T/psst.log") == "unload load unload load unload load " ]]'
+check "load/unload sequence" '[[ $(tr "\n" " " < "$T/psst.log") == "unload load unload load unload load unload load " ]]'
 # 8. localwhisper refuses (busy): times out with 75 and runs nothing
 rm -f "$XDG_RUNTIME_DIR/localwhisper/model_unloaded"
 cat > "$T/bin/localwhisper" <<'F'

@@ -7,7 +7,7 @@
 # - Unloads localwhisper's model with `localwhisper model unload` if it's loaded, and never reloads it. That happens once,
 #   by hand (`localwhisper model reload`), when the work ends. No other localwhisper command is ever run.
 # - Unloads a psst server's model if one is loaded, and loads it again when the command ends, also on Ctrl-C,
-#   SIGTERM or SIGHUP.
+#   SIGTERM or SIGHUP. On a signal, the command and every process under it are stopped first.
 # - Records what it unloaded in a marker file next to the lock. A run that was killed outright is repaired by the next
 #   one, from the marker.
 # - Exits with the command's status. A nested call (from inside a session) just runs the command.
@@ -126,12 +126,45 @@ write_marker "$@"
 
 child=
 
+# Every process under this script. Collected before anything is signalled, because a process whose parent dies is
+# reparented out of the tree (a wrapper script killed before its Python worker, for example).
+descendants() {
+    local pid
+    for pid in $(pgrep -P "$1"); do
+        echo "$pid"
+        descendants "$pid"
+    done
+}
+
+running() { # running <pid>: exists and isn't a zombie
+    local state
+    state=$(ps -o stat= -p "$1" 2>/dev/null) && [[ $state != Z* ]]
+}
+
+# Stops the command and everything it started, and waits until they're gone, so nothing still holds the GPU when the
+# psst model is loaded again: SIGTERM, then SIGKILL after 10 s.
+stop_command() {
+    local pids pid deadline signal
+    pids=$(descendants $$)
+    [[ -n $pids ]] || return 0
+    # shellcheck disable=SC2086 # one pid per word
+    kill -TERM $pids 2>/dev/null || true
+    for signal in KILL ''; do
+        deadline=$((SECONDS + 10))
+        for pid in $pids; do
+            while running "$pid" && ((SECONDS < deadline)); do sleep 0.1; done
+        done
+        # shellcheck disable=SC2086
+        [[ -z $signal ]] || kill "-$signal" $pids 2>/dev/null || true
+    done
+    wait "$child" 2>/dev/null || true
+}
+
 cleanup() {
     local rc=$?
     trap - EXIT INT TERM HUP
-    if [[ -n $child ]] && kill -0 "$child" 2>/dev/null; then
-        kill -TERM "$child" 2>/dev/null || true
-        wait "$child" 2>/dev/null || true
+    if [[ -n $child ]]; then
+        stop_command
     fi
     if ((psst_unloaded)); then
         log "loading the psst model again"
