@@ -26,7 +26,7 @@ async fn server_settings_change_and_reset_through_the_page() {
 
     let page = browser.get("/settings").await;
     assert_eq!(page.status, 200);
-    for text in ["Longest recording", "action=\"/settings/limits.max_recording_s\"", "Set in your Nix config"] {
+    for text in ["Longest recording", "action=\"/settings/limits.max_recording_s\"", "configured via your Nix config"] {
         assert!(page.body.contains(text), "{text} on the page: {}", page.body);
     }
     assert!(!page.body.contains("action=\"/settings/listen\""), "a read-only setting has no form: {}", page.body);

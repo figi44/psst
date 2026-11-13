@@ -434,7 +434,6 @@ body:has(.panel) { overflow: hidden; }
 .s-help { font-size: 13px; color: var(--muted); }
 .s-when { color: var(--faint); }
 .s-note { font-size: 13px; color: var(--faint); display: flex; flex-wrap: wrap; gap: 2px 10px; align-items: center; margin-top: 3px; }
-.s-note.locked { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px; align-items: start; }
 .s-note .icon { width: 14px; height: 14px; margin-top: 2px; }
 .s-note .linkbtn { color: var(--fg-2); }
 .s-text .err { padding: 0; margin-top: 3px; }
@@ -454,6 +453,8 @@ body:has(.panel) { overflow: hidden; }
 .s-value code { white-space: pre-line; overflow-wrap: anywhere; background: none; padding: 0; font-size: 13px; }
 .s-none { color: var(--faint); }
 .srow.ro .s-label { color: var(--fg-2); }
+.s-lock { display: inline-flex; margin-left: 8px; color: var(--faint); vertical-align: -2px; cursor: help; }
+.s-lock .icon { width: 14px; height: 14px; }
 .js .s-save { display: none; }
 .s-saved { position: absolute; right: 0; top: calc(100% + 2px); display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--ok); white-space: nowrap; animation: settle 2.6s ease-in forwards; }
 .s-saved .icon { width: 14px; height: 14px; }

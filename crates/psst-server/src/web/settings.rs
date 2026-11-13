@@ -127,10 +127,6 @@ fn field(setting: &Setting, action: &str, source: &str, query: &PageQuery, refus
             .collect(),
         _ => Vec::new(),
     };
-    let readonly = match &setting.access {
-        SettingAccess::Editable => None,
-        SettingAccess::ReadOnly { reason } => Some(reason.clone()),
-    };
     context! {
         key => setting.key.clone(),
         id => format!("s-{}", setting.key.replace('.', "-")),
@@ -150,7 +146,7 @@ fn field(setting: &Setting, action: &str, source: &str, query: &PageQuery, refus
         file => setting.file.as_ref().map(label_of),
         default => label_of(&setting.default),
         source,
-        readonly,
+        readonly => matches!(setting.access, SettingAccess::ReadOnly { .. }),
         applies => applies(setting.applies),
         problem => setting.problem.clone(),
         error => mine.map(|r| r.message.clone()),

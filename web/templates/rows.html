@@ -6,9 +6,8 @@
 {%- if f.readonly %}
 <div class="srow ro" id="{{ f.id }}">
   <div class="s-text">
-    <span class="s-label">{{ f.label }}</span>
+    <span class="s-label">{{ f.label }}<span class="s-lock" role="img" title="This setting is configured via your Nix config or the config file." aria-label="Read-only: configured via your Nix config or the config file.">{{ icon("lock") }}</span></span>
     <p class="s-help">{{ f.help }}</p>
-    <p class="s-note locked">{{ icon("lock") }}<span>{{ f.readonly }}</span></p>
   </div>
   <div class="s-value">{% if f.shown %}<code>{{ f.shown }}</code>{% else %}<span class="s-none">None</span>{% endif %}</div>
 </div>
