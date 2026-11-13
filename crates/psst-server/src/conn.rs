@@ -52,6 +52,7 @@ pub async fn run(state: Arc<AppState>, mut ws: WebSocket, identity: Result<Ident
             let message = match refusal {
                 Refusal::Unauthorized => "missing, unknown or revoked device token",
                 Refusal::Forbidden => "this user isn't in the server's local_users",
+                Refusal::CrossSite => "cross-site request refused",
             };
             send(&mut ws, &ServerMsg::Error(ErrorMsg::new(None, ErrorCode::Unauthorized, message))).await;
             close(&mut ws, close_code::POLICY, "unauthorized").await;

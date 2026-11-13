@@ -6,17 +6,21 @@ use std::{collections::BTreeMap, sync::Arc};
 use axum::{
     Json, Router,
     extract::{ConnectInfo, FromRequest, FromRequestParts, Path, Query, Request, State, WebSocketUpgrade},
-    http::{HeaderMap, StatusCode, header::AUTHORIZATION, request::Parts},
+    http::{
+        HeaderMap, HeaderName, HeaderValue, Method, StatusCode,
+        header::{AUTHORIZATION, COOKIE, HOST, ORIGIN},
+        request::Parts,
+    },
     response::{IntoResponse, Response},
     routing::{delete, get, post, put},
 };
 use psst_dict::term_id;
 use psst_pipeline::PipelineOptions;
 use psst_proto::{
-    ClientTimings, EngineResult, EngineTrace, Final, Segment, ServerTimings, Token,
+    ClientTimings, DeviceId, EngineResult, EngineTrace, Final, Segment, ServerTimings, Token,
     api::{
         ApiError, ApiErrorCode, Device, DictionaryExport, DictionaryTest, DictionaryView, Health, HistoryQuery,
-        HistoryRow, ModelStatus, NeverRule, NeverRuleId, NewNeverRule, PairRedeem, PairRedeemed, Pairing,
+        HistoryRow, LoginLink, ModelStatus, NeverRule, NeverRuleId, NewNeverRule, PairRedeem, PairRedeemed, Pairing,
         PairingRequest, Percentiles, Profile, ProfileChange, ProfilesExport, ProfilesView, Stats, Term, TermChange,
         routes,
     },
@@ -65,8 +69,19 @@ pub fn router(state: AppRef) -> Router {
         .route(routes::PROFILES_EXPORT, get(export_profiles))
         .route(routes::PROFILE, put(put_profile))
         .route(routes::PROFILE_RESET, post(reset_profile))
-        .fallback(async || ApiErr::new(ApiErrorCode::NotFound, "no such route"))
+        .route(routes::LOGIN_LINK, post(login_link))
+        .merge(crate::web::router())
+        .fallback(not_found)
         .with_state(state)
+}
+
+/// An [`ApiError`] under `/api` and `/v1`, a page elsewhere.
+async fn not_found(uri: axum::http::Uri) -> Response {
+    if uri.path().starts_with("/api/") || uri.path().starts_with("/v1/") {
+        ApiErr::new(ApiErrorCode::NotFound, "no such route").into_response()
+    } else {
+        crate::web::message(StatusCode::NOT_FOUND, "Not found", "There's no such page.", None)
+    }
 }
 
 /// An `/api` error: a status and an [`ApiError`] body.
@@ -132,11 +147,12 @@ impl<T: DeserializeOwned + Send, S: Send + Sync> FromRequestParts<S> for Id<T> {
     }
 }
 
-fn peer(parts: &Parts) -> Peer {
+pub(crate) fn peer(parts: &Parts) -> Peer {
     parts.extensions.get::<ConnectInfo<Peer>>().map(|info| info.0.clone()).unwrap_or(Peer::Unix { uid: None })
 }
 
 /// Who is calling: a local user by peer credentials, or a paired device by its bearer token.
+/// Browser sessions don't count here; see [`authenticate`].
 fn identify(state: &AppState, peer: &Peer, headers: &HeaderMap) -> Result<Identity, Refusal> {
     match peer {
         Peer::Unix { uid } => state.local.identify(*uid),
@@ -158,21 +174,110 @@ fn identify(state: &AppState, peer: &Peer, headers: &HeaderMap) -> Result<Identi
     }
 }
 
-/// An authenticated `/api` caller. Local users are admins; so are paired devices (plan 5.2).
-struct Admin(#[allow(dead_code)] Identity);
+/// How an `/api` or web UI caller was authenticated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Caller {
+    /// A local user over the socket, or a paired device by its token.
+    Identity(Identity),
+    /// A browser by its session cookie, on behalf of the device that asked for its login link.
+    Browser {
+        /// The SHA-256 of the session cookie.
+        session: String,
+        #[allow(dead_code)]
+        device: DeviceId,
+    },
+}
+
+/// Authenticates an `/api` or web UI request (plan 5.2): over the socket by peer credentials;
+/// over TCP by a device token, or else by a browser session cookie. A cookie-authenticated request
+/// that changes something must come from the web UI's own origin.
+pub(crate) fn authenticate(state: &AppState, parts: &Parts) -> Result<Caller, Refusal> {
+    let peer = peer(parts);
+    if matches!(peer, Peer::Tcp(_))
+        && !parts.headers.contains_key(AUTHORIZATION)
+        && let Some(cookie) = session_cookie(&parts.headers)
+    {
+        let session = auth::hash_token(cookie);
+        let device = browser_session(state, &session)?;
+        if !matches!(parts.method, Method::GET | Method::HEAD) && !same_origin(state, &parts.headers) {
+            return Err(Refusal::CrossSite);
+        }
+        return Ok(Caller::Browser { session, device });
+    }
+    identify(state, &peer, &parts.headers).map(Caller::Identity)
+}
+
+/// The value of the session cookie, if the request has one.
+pub(crate) fn session_cookie(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get_all(COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(';'))
+        .find_map(|pair| pair.trim().strip_prefix(auth::SESSION_COOKIE)?.strip_prefix('='))
+        .filter(|value| !value.is_empty())
+}
+
+/// The device of a live browser session. A session ends with its 7 days, and when its device is
+/// revoked or its local user is no longer allowed.
+fn browser_session(state: &AppState, session: &str) -> Result<DeviceId, Refusal> {
+    let device = match state.db.web_session(session) {
+        Ok(Some(device)) => device,
+        Ok(None) => return Err(Refusal::Unauthorized),
+        Err(err) => {
+            tracing::error!("cannot check a browser session: {err:#}");
+            return Err(Refusal::Unauthorized);
+        }
+    };
+    if device_allowed(state, &device) { Ok(device) } else { Err(Refusal::Unauthorized) }
+}
+
+/// Whether `device` (`local:<user>` or a paired device's id) is still let in.
+pub(crate) fn device_allowed(state: &AppState, device: &str) -> bool {
+    match device.strip_prefix("local:") {
+        Some(user) => state.local.allows_user(user),
+        None => state.db.device_active(device).unwrap_or_else(|err| {
+            tracing::error!("cannot check device {device}: {err:#}");
+            false
+        }),
+    }
+}
+
+/// Whether a browser request comes from the web UI's own origin: its `Origin` is `http://` or
+/// `https://` and its `Host` (or `web_url`), or without an `Origin`, `Sec-Fetch-Site` says
+/// `same-origin`.
+pub(crate) fn same_origin(state: &AppState, headers: &HeaderMap) -> bool {
+    let header = |name| headers.get(name).and_then(|value: &HeaderValue| value.to_str().ok());
+    let Some(origin) = header(ORIGIN) else {
+        return header(HeaderName::from_static("sec-fetch-site")) == Some("same-origin");
+    };
+    let authority = origin.strip_prefix("http://").or_else(|| origin.strip_prefix("https://"));
+    let host = header(HOST);
+    let same_host = authority.zip(host).is_some_and(|(authority, host)| authority.eq_ignore_ascii_case(host));
+    let web_url = state.server.web_url.as_deref().and_then(psst_config::web_origin);
+    same_host || web_url.is_some_and(|url| url.eq_ignore_ascii_case(origin))
+}
+
+/// An authenticated `/api` caller. Local users are admins; so are paired devices (plan 5.2), and
+/// browsers they logged in.
+struct Admin(#[allow(dead_code)] Caller);
 
 impl FromRequestParts<AppRef> for Admin {
     type Rejection = ApiErr;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppRef) -> Result<Self, ApiErr> {
-        match identify(state, &peer(parts), &parts.headers) {
-            Ok(identity) => Ok(Admin(identity)),
-            Err(Refusal::Unauthorized) => {
-                Err(ApiErr::new(ApiErrorCode::Unauthorized, "missing or unknown device token"))
-            }
-            Err(Refusal::Forbidden) => {
-                Err(ApiErr::new(ApiErrorCode::Forbidden, "this user isn't in the server's local_users"))
-            }
+        authenticate(state, parts).map(Admin).map_err(refused)
+    }
+}
+
+fn refused(refusal: Refusal) -> ApiErr {
+    match refusal {
+        Refusal::Unauthorized => {
+            ApiErr::new(ApiErrorCode::Unauthorized, "missing or unknown device token, or an expired browser session")
+        }
+        Refusal::Forbidden => ApiErr::new(ApiErrorCode::Forbidden, "this user isn't in the server's local_users"),
+        Refusal::CrossSite => {
+            ApiErr::new(ApiErrorCode::Forbidden, "cross-site request refused: it must come from the web UI")
         }
     }
 }
@@ -212,6 +317,64 @@ async fn pair_redeem(
     let device_id = state.db.add_token_device(&name, &auth::hash_token(&token))?;
     tracing::info!("paired device {device_id} ({name}, which calls itself {:?}) from {addr}", req.name);
     Ok(Json(PairRedeemed { device_id, token: Token::new(token) }))
+}
+
+/// `POST /api/login/link`: over the socket or with a device token, never from a browser session,
+/// so a session can't extend itself.
+async fn login_link(
+    State(state): State<AppRef>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+) -> Result<Json<LoginLink>, ApiErr> {
+    if matches!(peer, Peer::Tcp(_)) && !headers.contains_key(AUTHORIZATION) && session_cookie(&headers).is_some() {
+        return Err(ApiErr::new(
+            ApiErrorCode::Forbidden,
+            "a browser session can't ask for login links; run `psst ui` on a paired machine",
+        ));
+    }
+    let identity = identify(&state, &peer, &headers).map_err(refused)?;
+    let base = link_base(&state, &peer, &headers)?;
+    let token = state.logins.create(identity.device(), std::time::Instant::now());
+    let expires_at = jiff::Timestamp::now() + auth::LINK_TTL;
+    let expires_at = expires_at.round(jiff::Unit::Second).unwrap_or(expires_at);
+    tracing::info!("login link for {} created; valid until {expires_at}", identity.device());
+    Ok(Json(LoginLink { url: format!("{base}/login?token={token}"), expires_at }))
+}
+
+/// Where a login link starts (plan 6.6): `web_url`; else, over TCP, the address the client reached
+/// the server by; else (over the socket) a TCP listener this machine reaches on loopback.
+fn link_base(state: &AppState, peer: &Peer, headers: &HeaderMap) -> Result<String, ApiErr> {
+    if let Some(url) = state.server.web_url.as_deref().and_then(psst_config::web_origin) {
+        return Ok(url.to_owned());
+    }
+    if let Peer::Tcp(_) = peer {
+        let host = headers.get(HOST).and_then(|host| host.to_str().ok()).unwrap_or_default();
+        let base = format!("http://{host}");
+        return match psst_config::web_origin(&base) {
+            Some(base) => Ok(base.to_owned()),
+            None => Err(ApiErr::new(ApiErrorCode::BadRequest, format!("cannot build a link for Host `{host}`"))),
+        };
+    }
+    let loopback = |addr: &std::net::SocketAddr| match addr.ip() {
+        std::net::IpAddr::V4(ip) if ip.is_unspecified() || ip.is_loopback() => {
+            Some(format!("http://127.0.0.1:{}", addr.port()))
+        }
+        std::net::IpAddr::V6(ip) if ip.is_unspecified() || ip.is_loopback() => {
+            Some(format!("http://[::1]:{}", addr.port()))
+        }
+        _ => None,
+    };
+    state
+        .tcp_addrs
+        .iter()
+        .find_map(loopback)
+        .or_else(|| state.tcp_addrs.first().map(|addr| format!("http://{addr}")))
+        .ok_or_else(|| {
+            ApiErr::new(
+                ApiErrorCode::BadRequest,
+                "the server has no TCP listener (listen = []), and browsers reach the web UI only over TCP",
+            )
+        })
 }
 
 async fn model(_: Admin, State(state): State<AppRef>) -> Json<ModelStatus> {

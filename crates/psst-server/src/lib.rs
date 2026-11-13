@@ -9,6 +9,7 @@
 //! - `engine`: the engine supervisor; `db`: SQLite; `auth`: identities, tokens and pairing.
 //! - `dictionary`: the dictionary's database layer and the `/api/dictionary` operations.
 //! - `profiles`: profiles stored over `profiles.toml` and the `/api/profiles` operations.
+//! - `web`: the web UI's pages and the browser login.
 //! - `admin`: the admin subcommands, as thin clients of `/api` over the socket.
 
 mod admin;
@@ -23,6 +24,7 @@ mod profiles;
 mod registry;
 mod sleep;
 mod state;
+mod web;
 
 use std::{
     fs,
@@ -201,8 +203,10 @@ async fn start(cfg: ServeConfig, systemd: Option<std::os::unix::net::UnixListene
         registry: Registry::new(server.limits.max_active_sessions as usize),
         engine,
         pairings: Default::default(),
+        logins: Default::default(),
         conns: ConnTable::default(),
         local: LocalPolicy { users: server.local_users.clone(), own_uid },
+        tcp_addrs: tcp_addrs.clone(),
         shutdown: shutdown_rx.clone(),
         server,
     });
@@ -238,10 +242,13 @@ async fn start(cfg: ServeConfig, systemd: Option<std::os::unix::net::UnixListene
             sweep.tick().await;
             maintenance.registry.sweep();
             ticks += 1;
-            if ticks.is_multiple_of(720)
-                && let Err(err) = maintenance.db.prune_history(maintenance.server.history_days)
-            {
-                tracing::warn!("cannot prune history: {err:#}");
+            if ticks.is_multiple_of(720) {
+                if let Err(err) = maintenance.db.prune_history(maintenance.server.history_days) {
+                    tracing::warn!("cannot prune history: {err:#}");
+                }
+                if let Err(err) = maintenance.db.prune_web_sessions() {
+                    tracing::warn!("cannot prune browser sessions: {err:#}");
+                }
             }
         }
     }));

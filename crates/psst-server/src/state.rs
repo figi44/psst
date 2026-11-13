@@ -2,6 +2,7 @@
 
 use std::{
     collections::HashMap,
+    net::SocketAddr,
     path::PathBuf,
     sync::{
         Arc, Mutex, MutexGuard, RwLock,
@@ -16,7 +17,7 @@ use psst_proto::{DeviceId, api::ModelState};
 use tokio::sync::watch;
 
 use crate::{
-    auth::{Identity, Pairings, Refusal},
+    auth::{Identity, LoginLinks, Pairings, Refusal},
     db::Db,
     dictionary::Layered,
     engine::Supervisor,
@@ -33,8 +34,11 @@ pub struct AppState {
     pub registry: Arc<Registry>,
     pub engine: Supervisor,
     pub pairings: Pairings,
+    pub logins: LoginLinks,
     pub conns: ConnTable,
     pub local: LocalPolicy,
+    /// The TCP addresses it listens on, with their actual ports.
+    pub tcp_addrs: Vec<SocketAddr>,
     /// Becomes true when the server shuts down.
     pub shutdown: watch::Receiver<bool>,
 }
@@ -68,6 +72,15 @@ impl LocalPolicy {
             return Ok(Identity::Local { user: name.unwrap_or_else(|| uid.to_string()) });
         }
         Err(Refusal::Forbidden)
+    }
+
+    /// Whether `local:<user>` is still let in, for a browser session that user started.
+    pub fn allows_user(&self, user: &str) -> bool {
+        if self.users.iter().any(|allowed| allowed == user) {
+            return true;
+        }
+        let uid = User::from_name(user).ok().flatten().map(|user| user.uid.as_raw()).or_else(|| user.parse().ok());
+        uid.is_some_and(|uid| self.own_uid == Some(uid))
     }
 }
 
