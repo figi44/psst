@@ -8,7 +8,7 @@
 //!   there is one.
 //! - **Language:** the engine transcribed in the profile's language.
 //! - **Options:** every requested option is in `trace.options` with the requested value. The
-//!   engine may add options it resolved, and may resolve `path = "auto"` to the path it took.
+//!   engine may add options.
 //! - **Bias:** with `eval.bias = false` the prompt is empty. Otherwise it's the style and the
 //!   first `k` terms, rendered as in docs/protocol.md (`style + " " + terms.join(", ") + "."`),
 //!   or a tail of the style alone when the style is over the budget. Since the engine drops terms
@@ -17,8 +17,8 @@
 //!
 //! The prompt check can't see a change to the terms past the ones the engine kept, when the
 //! prompt with the next term really is over the budget; that needs the tokenizer. Nor can the
-//! options check see an option removed from the config (only `batch_size` can be unset): the
-//! engine may report the default it used under the same key.
+//! options check see an option deleted from [`psst_config::ModelOptions`]: the engine may still
+//! report the value it used under the same key.
 
 use psst_config::{ModelConfig, Profile};
 use psst_dict::Dictionary;
@@ -101,7 +101,6 @@ fn check_options(requested: &Value, recorded: &Value) -> Result<(), String> {
     for (key, want) in requested {
         match recorded.get(key) {
             Some(got) if got == want => {}
-            Some(got) if key == "path" && want == "auto" && matches!(got.as_str(), Some("sequential" | "batched")) => {}
             Some(got) => return Err(format!("option `{key}` is {got} in the trace, {want} now")),
             None => return Err(format!("option `{key}` (now {want}) is missing from the trace")),
         }

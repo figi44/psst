@@ -3,7 +3,6 @@
 
 use std::time::{Duration, Instant};
 
-use psst_config::DecodePath;
 use psst_engine_proto::{
     EngineErrorCode,
     fake::{HelloScript, LoadScript, Script, TranscribeStep},
@@ -59,10 +58,7 @@ async fn a_request_that_runs_out_of_its_budget_twice_fails_with_timeout() {
 
 #[tokio::test]
 async fn out_of_memory_gets_one_more_attempt_with_batch_size_one() {
-    let server = server(script(vec![oom(), result("fits now", 0), oom(), oom()]), |cfg| {
-        cfg.server.model.options.path = DecodePath::Batched;
-        cfg.server.model.options.batch_size = Some(8);
-    });
+    let server = server(script(vec![oom(), result("fits now", 0), oom(), oom()]), |_| {});
     let mut client = Client::connect(&server).await;
     client.upload(SessionId::new_v4(), SECOND).await;
     let fin = client.final_msg().await;

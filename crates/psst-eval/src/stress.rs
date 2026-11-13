@@ -77,7 +77,7 @@ fn trace(lang: &str, sentence: &str) -> EngineTrace {
         engine: "stress".into(),
         model: "stress".into(),
         revision: "stress".into(),
-        path: "sequential".into(),
+        path: "batched".into(),
         options: serde_json::json!({}),
         prompt: String::new(),
         result: EngineResult {

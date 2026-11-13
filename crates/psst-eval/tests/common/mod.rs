@@ -22,11 +22,12 @@ command = ["psst-engine-dev"]
 model = "large-v3-turbo"
 
 [model.options]
-path = "sequential"
+path = "batched"
 beam_size = 5
 word_timestamps = true
 vad_filter = true
 terms_as = "prompt"
+batch_size = 8
 "#;
 
 pub const PROFILES_TOML: &str = r#"
@@ -57,7 +58,8 @@ pub const EN_PROMPT: &str = "I'm updating the NixOS config. Hyprland, psst, t3co
 pub const CS_PROMPT: &str = "Upravuji konfiguraci NixOS. Hyprland, psst, t3code.";
 
 pub fn options() -> Value {
-    json!({"path": "sequential", "beam_size": 5, "word_timestamps": true, "vad_filter": true, "terms_as": "prompt"})
+    json!({"path": "batched", "beam_size": 5, "word_timestamps": true, "vad_filter": true, "terms_as": "prompt",
+           "batch_size": 8})
 }
 
 pub struct Evals {
@@ -166,7 +168,7 @@ pub fn trace(lang: &str, prompt: &str, text: &str) -> EngineTrace {
         engine: "faster-whisper".into(),
         model: "large-v3-turbo".into(),
         revision: "0123456789abcdef".into(),
-        path: "sequential".into(),
+        path: "batched".into(),
         options: options(),
         prompt: prompt.into(),
         result: EngineResult {

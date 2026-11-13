@@ -48,7 +48,8 @@ class FakeWhisper:
     downloads: list[dict[str, Any]] = field(default_factory=list)
     models: list[dict[str, Any]] = field(default_factory=list)
     runs: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
-    """``(path, kwargs)`` of every ``transcribe`` call, ``path`` being sequential or batched."""
+    """``(runner, kwargs)`` of every ``transcribe`` call except warm-ups: ``batched`` for the
+    ``BatchedInferencePipeline``, ``model`` for ``WhisperModel`` itself."""
     warmed_up: list[Any] = field(default_factory=list)
     warm_up_error: Exception | None = None
 
@@ -104,7 +105,7 @@ class FakeWhisper:
         if path in self.broken:
             raise self.broken[path]
         tokenizer = SimpleNamespace(encode=lambda text, add_special_tokens=True: SimpleNamespace(ids=fake_encode(text)))
-        return SimpleNamespace(hf_tokenizer=tokenizer, transcribe=lambda audio, **kw: self._run("sequential", audio, kw))
+        return SimpleNamespace(hf_tokenizer=tokenizer, transcribe=lambda audio, **kw: self._run("model", audio, kw))
 
     def _run(self, path: str, audio: Any, kwargs: dict[str, Any]) -> tuple[Iterator[Any], Any]:
         self.runs.append((path, kwargs))

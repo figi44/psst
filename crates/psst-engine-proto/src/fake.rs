@@ -341,11 +341,7 @@ impl TranscribeResultScript {
     fn reply(self, model: &Loaded, request: &Transcribe, samples: usize) -> TranscribeResult {
         let audio_ms = u32::try_from(samples / 16).unwrap_or(u32::MAX);
         let with_words = request.options.get("word_timestamps").and_then(Value::as_bool) == Some(true);
-        let path = match request.options.get("path").and_then(Value::as_str) {
-            Some("batched") => "batched",
-            Some("auto") if audio_ms > 30_000 => "batched",
-            _ => "sequential",
-        };
+        let path = request.options.get("path").and_then(Value::as_str).unwrap_or("batched");
         let segments = if self.text.trim().is_empty() {
             Vec::new()
         } else {

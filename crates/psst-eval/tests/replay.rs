@@ -185,15 +185,13 @@ fn a_raw_trace_recorded_with_a_prompt_is_stale() {
 }
 
 #[test]
-fn traces_with_options_the_engine_resolved_or_added_are_current() {
+fn traces_with_options_the_engine_added_are_current() {
     let evals = Evals::new();
-    evals.write("server.toml", &common::SERVER_TOML.replace("path = \"sequential\"", "path = \"auto\""));
-    let mut resolved = case("en-1", REFERENCE, &["psst"], REFERENCE, REFERENCE);
-    for trace in [resolved.engine_output.as_mut().unwrap(), resolved.engine_output_raw.as_mut().unwrap()] {
-        trace.options["path"] = "batched".into();
-        trace.options["batch_size"] = 8.into();
+    let mut added = case("en-1", REFERENCE, &["psst"], REFERENCE, REFERENCE);
+    for trace in [added.engine_output.as_mut().unwrap(), added.engine_output_raw.as_mut().unwrap()] {
+        trace.options["chunk_length"] = 30.into();
     }
-    evals.set_cases(&[resolved]);
+    evals.set_cases(&[added]);
     evals.run("replay", &["--write"]).success();
 }
 

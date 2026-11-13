@@ -32,10 +32,10 @@ fn server_to_engine_messages() {
             id: 42,
             language: "en".into(),
             bias: Bias { style: "Hi.".into(), terms: vec!["psst".into()] },
-            options: json!({"path": "sequential"}),
+            options: json!({"path": "batched"}),
         }),
         json!({"type": "transcribe", "id": 42, "language": "en", "bias": {"style": "Hi.", "terms": ["psst"]},
-               "options": {"path": "sequential"}}),
+               "options": {"path": "batched"}}),
     );
     assert_wire(ToEngine::Shutdown, json!({"type": "shutdown"}));
 }

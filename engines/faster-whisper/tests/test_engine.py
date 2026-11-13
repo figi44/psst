@@ -20,7 +20,7 @@ def transcribe(request_id: int) -> dict[str, Any]:
         "id": request_id,
         "language": "en",
         "bias": {"style": "", "terms": []},
-        "options": {"path": "sequential"},
+        "options": {"path": "batched"},
     }
 
 

@@ -59,21 +59,21 @@ def test_loads_and_transcribes_on_cuda(model):
             }
             return result
 
-        # The first request also loads the VAD model and warms CUDA up.
-        first = run("first_sequential", 1, short, style=STYLE, terms=TERMS)
+        # The first request also loads the VAD model.
+        first = run("first", 1, short, style=STYLE, terms=TERMS)
         assert KEY_WORDS <= set(words(first))
+        assert first["trace"]["options"]["batch_size"] == 8
         for request_id in (2, 3):
-            assert KEY_WORDS <= set(words(run(f"sequential_{request_id}", request_id, short, style=STYLE, terms=TERMS)))
-        hotwords = run("hotwords", 4, short, style=STYLE, terms=TERMS, terms_as="hotwords")
-        assert hotwords["trace"]["options"]["condition_on_previous_text"] is False
-        assert KEY_WORDS <= set(words(run("batched", 5, short, style=STYLE, terms=TERMS, path="batched")))
+            assert KEY_WORDS <= set(words(run(f"short_{request_id}", request_id, short, style=STYLE, terms=TERMS)))
+        assert KEY_WORDS <= set(words(run("hotwords", 4, short, style=STYLE, terms=TERMS, terms_as="hotwords")))
+        assert KEY_WORDS <= set(words(run("batch_size_1", 5, short, style=STYLE, terms=TERMS, batch_size=1)))
         no_timestamps = run("no_word_timestamps", 6, short, word_timestamps=False)
         assert "words" not in no_timestamps["trace"]["result"]["segments"][0]
 
         full = run("full_budget", 7, short, style=STYLE, terms=[f"{t}{i}" for i in range(40) for t in TERMS])
         assert 200 <= full["timings"]["prompt_tokens"] <= 223
 
-        assert_covers_long_speech(run("long_auto", 8, long, style=STYLE, terms=TERMS, path="auto"))
+        assert_covers_long_speech(run("long", 8, long, style=STYLE, terms=TERMS))
 
     print(f"\ngpu smoke {model}: {json.dumps(report)}")
     if path := os.environ.get("PSST_GPU_REPORT"):

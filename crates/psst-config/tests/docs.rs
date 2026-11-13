@@ -54,7 +54,7 @@ fn every_server_and_client_key_has_a_table_row() {
     let mut keys = Vec::new();
     leaf_keys(&check_defaults::<ServerConfig>(), "", &mut keys);
     leaf_keys(&check_defaults::<ClientConfig>(), "", &mut keys);
-    keys.extend(["model.revision", "model.options.batch_size"].map(String::from));
+    keys.push("model.revision".into());
     for key in keys.iter().filter(|k| *k != "apps") {
         assert!(DOC.contains(&format!("| `{key}` |")), "docs/config.md has no table row for `{key}`");
     }

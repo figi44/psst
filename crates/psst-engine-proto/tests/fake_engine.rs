@@ -23,7 +23,7 @@ fn transcribe(id: u64, word_timestamps: bool) -> ToEngine {
         id,
         language: "en".into(),
         bias: Bias { style: "I'm updating the NixOS config.".into(), terms: vec!["Hyprland".into(), "psst".into()] },
-        options: json!({"path": "sequential", "word_timestamps": word_timestamps}),
+        options: json!({"path": "batched", "word_timestamps": word_timestamps}),
     })
 }
 

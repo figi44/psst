@@ -61,31 +61,34 @@ fn server_model_section_as_in_the_plan() {
         device = "cuda"
         compute_type = "int8_float16"
         preload = true
-        options = { path = "auto", beam_size = 5, word_timestamps = true, vad_filter = true, terms_as = "hotwords", batch_size = 8 }
+        options = { path = "batched", beam_size = 5, word_timestamps = true, vad_filter = true, terms_as = "hotwords", batch_size = 4 }
         "#,
     )
     .unwrap();
     assert_eq!(config.load_deadline_s, 90);
     assert!(config.listen.is_empty());
     assert_eq!(config.model.revision.as_deref(), Some("abc123"));
-    assert_eq!(config.model.options.path, DecodePath::Auto);
+    assert_eq!(config.model.options.path, DecodePath::Batched);
     assert_eq!(config.model.options.terms_as, TermsAs::Hotwords);
     assert_eq!(
         config.model.options.to_json(),
-        serde_json::json!({"path": "auto", "beam_size": 5, "word_timestamps": true, "vad_filter": true,
-                           "terms_as": "hotwords", "batch_size": 8})
+        serde_json::json!({"path": "batched", "beam_size": 5, "word_timestamps": true, "vad_filter": true,
+                           "terms_as": "hotwords", "batch_size": 4})
     );
 }
 
 #[test]
 fn server_rejects_settings_that_cannot_work() {
-    invalid::<ServerConfig>("[model.options]\npath = \"batched\"\nvad_filter = false", "vad_filter");
-    invalid::<ServerConfig>("[model.options]\npath = \"auto\"\nvad_filter = false", "vad_filter");
+    invalid::<ServerConfig>("[model.options]\nvad_filter = false", "vad_filter");
     invalid::<ServerConfig>("[model]\ncommand = []", "model.command");
     invalid::<ServerConfig>("[model.options]\nbeam_size = 0", "beam_size");
+    invalid::<ServerConfig>("[model.options]\nbatch_size = 0", "batch_size");
     invalid::<ServerConfig>("[limits]\nmax_active_sessions = 0", "limits");
     invalid::<ServerConfig>("listen = [\"desktop:7341\"]", "listen");
     invalid::<ServerConfig>("[model.options]\npath = \"parallel\"", "parallel");
+    // Phase 0 deleted the other decoding paths.
+    invalid::<ServerConfig>("[model.options]\npath = \"sequential\"", "sequential");
+    invalid::<ServerConfig>("[model.options]\npath = \"auto\"", "auto");
 }
 
 const PLAN_PROFILES: &str = r#"
