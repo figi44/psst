@@ -157,29 +157,74 @@ jobs:
         with:
           path: ~/.gradle/caches
           key: ${{ steps.gradle.outputs.cache-primary-key }}
+      # Unsigned: the key stays out of every job that runs Gradle plugins or crates' build scripts.
       - name: Build the release APK
         if: github.event_name == 'push'
         env:
-          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
-          PSST_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           VERSION: ${{ steps.version.outputs.name }}
           VERSION_CODE: ${{ steps.version.outputs.code }}
-        run: |
-          if [[ -z $KEYSTORE || -z $PSST_KEYSTORE_PASSWORD ]]; then
-            echo "::error::Releases are signed with the repository's ANDROID_KEYSTORE secret, a base64 PKCS12 keystore holding the key psst, and ANDROID_KEYSTORE_PASSWORD. Add both under Settings > Secrets and variables > Actions."
-            exit 1
-          fi
-          export PSST_KEYSTORE=$RUNNER_TEMP/psst.p12
-          base64 -d <<< "$KEYSTORE" > "$PSST_KEYSTORE"
-          just android-release -Ppsst.abis=arm64-v8a -Ppsst.versionName="$VERSION" -Ppsst.versionCode="$VERSION_CODE"
+        run: just android-release -Ppsst.abis=arm64-v8a -Ppsst.versionName="$VERSION" -Ppsst.versionCode="$VERSION_CODE"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: github.event_name == 'push'
         with:
-          path: android/app/build/outputs/apk/release/app-release.apk
+          path: android/app/build/outputs/apk/release/app-release-unsigned.apk
           archive: false
           retention-days: 1
           # A re-run uploads it again. Unarchived, the artifact takes the file's name, and overwrite
           # deletes the one called `name`.
+          name: app-release-unsigned.apk
+          overwrite: true
+
+  # Runs no code of the build's, and nothing from a cache. The `release` environment holds the
+  # keystore and lets in only main and v* tags.
+  sign:
+    name: Sign
+    needs: apk
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      # SHA-256 of the release certificate, as the README gives it for Obtainium.
+      CERT: e6e42b0c40341b7da59813d833b99a5df4dd9dc75ae76f27954c72ab7191df0e
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: app-release-unsigned.apk
+      # The runner image's build tools, so this job installs nothing. v2 alone, as AGP signed it.
+      - name: Sign the APK
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+          PSST_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [[ -z $KEYSTORE || -z $PSST_KEYSTORE_PASSWORD ]]; then
+            echo "::error::Releases are signed with the ANDROID_KEYSTORE secret, a base64 PKCS12 keystore holding the key psst, and ANDROID_KEYSTORE_PASSWORD. Add both to the release environment under Settings > Environments."
+            exit 1
+          fi
+          tools=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 | sort -V | tail -n1)
+          "$tools/zipalign" -c -P 16 4 app-release-unsigned.apk
+          base64 -d <<< "$KEYSTORE" > "$RUNNER_TEMP/psst.p12"
+          "$tools/apksigner" sign --ks "$RUNNER_TEMP/psst.p12" --ks-type PKCS12 --ks-key-alias psst \
+            --ks-pass env:PSST_KEYSTORE_PASSWORD --v2-signing-enabled true --v3-signing-enabled false \
+            --in app-release-unsigned.apk --out app-release.apk
+          rm "$RUNNER_TEMP/psst.p12"
+          digests=$("$tools/apksigner" verify --print-certs app-release.apk | sed -n 's/.*certificate SHA-256 digest: //p' | sort -u)
+          if [[ $digests != "$CERT" ]]; then
+            echo "::error::The APK is signed by $digests, not the release certificate $CERT. Obtainium refuses an update from any other key."
+            exit 1
+          fi
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: app-release.apk
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: app-release.apk
+          archive: false
+          retention-days: 1
           name: app-release.apk
           overwrite: true
 
@@ -187,7 +232,7 @@ jobs:
   # build scripts.
   release:
     name: Release
-    needs: apk
+    needs: [apk, sign]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
