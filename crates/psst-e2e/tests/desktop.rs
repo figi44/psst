@@ -165,8 +165,10 @@ fn transcriptions(server: &TestServer) -> Vec<LoggedRequest> {
     server.engine_requests().into_iter().filter(|r| r.header["type"] == "transcribe").collect()
 }
 
-/// The engine got the whole recording, which ran about `recorded` (toggle to toggle, less the
-/// first frame's wait and the command's own time), not just the part after the network failed.
+/// The engine got the whole recording, not just the part after the network failed. The recording
+/// ran at least `recorded`, from the first `toggle`'s reply (the daemon starts the recorder before
+/// it answers) to sending the second, less the first frame's wait; timing the commands themselves
+/// too would count their start-up, which takes longer than the slack on a loaded machine.
 #[track_caller]
 fn assert_whole(request: &LoggedRequest, recorded: Duration) {
     let ms = request.samples as u128 / 16;
@@ -254,6 +256,7 @@ fn with_the_server_down_at_start_it_records_offline_and_uploads_at_stop() {
 
     let toggled = Instant::now();
     desk.ok(&["toggle"]);
+    let recording = Instant::now();
     let offline = watcher.wait_for(Seen::Offline, Duration::from_secs(3));
     eprintln!("server unreachable at start → offline seen on screen: {:?}", offline - toggled);
     let status = desk.status();
@@ -262,8 +265,8 @@ fn with_the_server_down_at_start_it_records_offline_and_uploads_at_stop() {
 
     thread::sleep(Duration::from_millis(500));
     server.restart();
+    let recorded = recording.elapsed();
     desk.ok(&["toggle"]);
-    let recorded = toggled.elapsed();
     assert_pasted(&desk.pasted(Duration::from_secs(10)), "Recorded offline. ");
     desk.wait_idle();
     assert_eq!(desk.recordings(), 0);
@@ -284,8 +287,8 @@ fn a_connection_dropped_while_recording_is_uploaded_with_resume_at_stop() {
     let desk = Desktop::start(Endpoint::Unix(proxy.path().to_owned()), &test_audio(3_000));
     let mut watcher = desk.watch();
 
-    let toggled = Instant::now();
     desk.ok(&["toggle"]);
+    let recording = Instant::now();
     watcher.wait_for(Seen::Recording, Duration::from_secs(3));
     // Streaming live: the server has the session.
     server.wait_for_log(": recording", 1, WAIT);
@@ -296,8 +299,8 @@ fn a_connection_dropped_while_recording_is_uploaded_with_resume_at_stop() {
     eprintln!("connection lost while recording → offline seen on screen: {:?}", offline - cut);
 
     thread::sleep(Duration::from_millis(500));
+    let recorded = recording.elapsed();
     desk.ok(&["toggle"]);
-    let recorded = toggled.elapsed();
     assert_pasted(&desk.pasted(Duration::from_secs(10)), "After the drop. ");
     desk.wait_idle();
     assert_eq!(desk.recordings(), 0);
