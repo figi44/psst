@@ -155,6 +155,8 @@ def exp_targets(args, out):
         if lc.seconds > 59.8:
             continue
         comp = bl.composite(f"{lc.id}-60s", pool, 60)
+        bl.write(out, {"kind": "composite", "name": comp.name, "lang": comp.lang, "reference": comp.reference,
+                       "terms": comp.terms, "parts": comp.parts})
         for run in range(5):
             r.run("targets", comp.audio, comp.lang, args.path, args.terms_as,
                   {"id": comp.name, "run": run, "seconds_audio": 60.0, "group": "60s"})
