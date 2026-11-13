@@ -381,8 +381,12 @@ impl Conn {
         let Some(handle) =
             self.state.registry.stop(&key, epoch, self.attachment.conn_id, audio_ms, || engine.submit(request))
         else {
+            // Only a resume on another connection takes a recording away from its connection; as
+            // with `Detached`, closing is how this client learns.
+            tracing::info!("session {} of {} was resumed on another connection", key.session_id, key.device);
             self.active = None;
-            return Flow::Continue;
+            close(ws, close_code::NORMAL, "the session was resumed on another connection").await;
+            return Flow::Closed;
         };
         tracing::info!("session {} of {}: stopped after {audio_ms} ms", key.session_id, key.device);
 
