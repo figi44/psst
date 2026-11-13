@@ -54,3 +54,50 @@ of each language (plan 7.2). They come from Common Voice's sentence collection, 
 | `server/data/en/wiki.en.txt` | `438e55e8bc91dfa6cbe098a7233702c6b177c5ae07137a01d66b9c75c9789ae5` |
 | `server/data/cs/sentence-collector.txt` | `67bbf84823641f367082ab46dcafabf8e548f6fe20f50ab32dc2202c593a0b99` |
 | `server/data/cs/wiki.cs.txt` | `a3c1131438133a5e30c32b9f0df7e1b37503f1b96a303be48b7971ac0c733cce` |
+
+## The eval set
+
+Everything in `evals/` is scripted: the sentences were written for psst, and the synthetic clips are rendered from
+them. Nothing here is a recording of a real person, apart from the author's own clips once `scripts/record-evals.sh` adds
+them.
+
+### Synthetic clips (`clips/syn-*.flac`)
+
+Rendered by `scripts/synth-evals.sh` with **Piper 1.8.0** (`piper-tts` from nixpkgs
+`1d060086d60cb76a40cf37109f979d88a5bd6396`, upstream [OHF-Voice/piper1-gpl](https://github.com/OHF-Voice/piper1-gpl),
+GPL-3.0-only). Piper is only the tool that renders the audio; its licence doesn't extend to the output.
+
+Voices come from [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) at commit
+`e7229f7d33a10e145e109b886d661984201ac3c4`. That repository is published under the MIT licence; the licence that
+matters for the audio is each voice's training data, from its `MODEL_CARD`:
+
+| Tag in clip ids | Voice | Speaker | Training data and licence | Used for |
+|---|---|---|---|---|
+| `lj` | [`en_US-ljspeech-high`](https://huggingface.co/rhasspy/piper-voices/tree/e7229f7d33a10e145e109b886d661984201ac3c4/en/en_US/ljspeech/high) | US English, female | [LJ Speech](https://keithito.com/LJ-Speech-Dataset/), public domain; trained from scratch | English, 1 in 3 |
+| `norman` | [`en_US-norman-medium`](https://huggingface.co/rhasspy/piper-voices/tree/e7229f7d33a10e145e109b886d661984201ac3c4/en/en_US/norman/medium) | US English, male | LibriVox recordings, public domain; trained from scratch | English, 1 in 3 |
+| `cori` | [`en_GB-cori-high`](https://huggingface.co/rhasspy/piper-voices/tree/e7229f7d33a10e145e109b886d661984201ac3c4/en/en_GB/cori/high) | UK English, female | LibriVox recordings, public domain; trained from scratch | English, 1 in 3 |
+| `jirka-fast`, `jirka-slow` | [`cs_CZ-jirka-medium`](https://huggingface.co/rhasspy/piper-voices/tree/e7229f7d33a10e145e109b886d661984201ac3c4/cs/cs_CZ/jirka/medium) | Czech, male | [OHF-Voice/voice-datasets](https://github.com/OHF-Voice/voice-datasets), CC0; fine-tuned from the `lessac` voice (see below) | Czech, at `length_scale` 0.9 and 1.15 |
+
+The exact files and their sha256 sums are pinned in `scripts/lib/synth_evals.py`.
+
+**English voices were chosen** from those trained from scratch on public-domain data, so the clips carry no
+attribution or share-alike terms. Voices with non-commercial data (`ryan`, `hfc_*`, `semaine`), with unclear terms
+(`amy`, `alan`, `jenny_dioco`, `kusal`) or fine-tuned from `lessac` (`joe`, `lessac` itself) were left out.
+
+**The Czech voice is a caveat to settle before the repository goes public.** Piper has only one Czech voice. Its data
+is CC0 and the model is published under MIT, but it was fine-tuned from the `lessac` checkpoint, whose data (Blizzard
+2013, Voice Factory and Lessac Technologies) is under a [research-only licence](https://www.cstr.ed.ac.uk/projects/blizzard/2013/lessac_blizzard2013/license.html).
+Whether that reaches audio rendered by the fine-tuned model is unclear. If it's a problem, the 35 Czech clips
+(`syn-cs-*`) can be dropped or replaced by the author's own recordings without touching anything else.
+
+### What is in the set
+
+- `sentences/en.txt` and `sentences/cs.txt`: the scripts, with dictionary terms marked `[[Term]]` (format in the
+  file headers). Each entry is rendered once, with the voice picked by its number, so both splits get every voice.
+- Silence and noise cases (`syn-<lang>-silence`, `-roomtone`, `-fan`, `-white`, `-hum`, `-typing`), generated with
+  seeded NumPy noise. They must transcribe to nothing.
+- `dictionary.toml` and `profiles.toml`: fixed snapshots, written for psst.
+- `cases.jsonl`: one line per clip, in the format of plan 7.3.
+
+The audio is fully reproducible: Piper's noise is seeded from each clip id, so `scripts/synth-evals.sh --force`
+renders byte-identical files with the same nixpkgs and voices. Checked on 2026-11-06 by rendering the whole set twice.
