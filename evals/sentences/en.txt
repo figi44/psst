@@ -1,0 +1,130 @@
+# English sentences for the eval set (plan 7.3). One entry per line: `<id> <text>`.
+#
+# - Dictionary terms are marked [[Term]]. In [[Term|spoken]], `spoken` is only what text-to-speech reads so that it
+#   says the term the way a person would; the reference text and the recording prompt show `Term`.
+# - {pause 2.5} is a pause of 2.5 seconds (long entries only).
+# - A line starting with whitespace continues the entry above it.
+# - Ids: en-NNN are ordinary sentences, en-long-NN (35–90 s with pauses) and en-short-NN are must-pass cases.
+#   Odd numbers go to the tune split and even numbers to holdout. Ids are stable: add new entries at the end.
+# - No numbers: the reference has to match what Whisper writes after normalisation, and it writes digits.
+
+en-001 Push the fix to [[psst|p s s t]] before lunch.
+en-002 I'm updating the [[NixOS|Nix O S]] config on the desktop tonight.
+en-003 Can you send me the notes from yesterday's meeting?
+en-004 I'll be about ten minutes late, so start without me.
+en-005 The [[Hyprland|hyper land]] session crashed again after the update, so I switched back to [[niri]] for now.
+en-006 Open a new tab in [[Ghostty|ghosty]] and run the tests there.
+en-007 Thanks for the quick review, I'll merge it as soon as the build goes green.
+en-008 Let's move the planning call to Thursday afternoon.
+en-009 Ask [[Claude Code|Claud Code]] to write the migration, and then read the diff yourself before you merge anything.
+en-010 The [[Tailscale]] node on the laptop keeps falling back to a relay.
+en-011 Please don't change the default settings without telling the rest of the team.
+en-012 The coffee machine on the second floor is broken again.
+en-013 Restart the [[Kubernetes]] deployment, watch the pods with [[k9s|canines]] until they're all running, and tell me
+  if the error in the logs is gone.
+en-014 I left a comment in [[t3code|t three code]] about the failing check.
+en-015 We should write this down somewhere so nobody has to guess next time.
+en-016 I think the second option is simpler, but it needs a lot more testing.
+en-017 [[Helium]] keeps asking for the password after every restart.
+en-018 Add the new machine to [[Tailscale]] and tag it as a server.
+en-019 Could you double check the numbers before we send the report?
+en-020 I'm going for a walk, back in half an hour.
+en-021 Bump [[nixpkgs|nix packages]] and rebuild the system with the new kernel.
+en-022 The [[localwhisper|hyper whisper]] model takes almost all of the free video memory.
+en-023 That sounds good to me, let's go with it.
+en-024 The meeting notes are in the shared folder under this week's date.
+en-025 Use [[kubectl|cube control]] to describe the pod and paste the events here.
+en-026 The [[Grafana]] dashboard shows the latency jumping every night around midnight.
+en-027 Remind me to call the bank tomorrow morning.
+en-028 I don't think we need another meeting for this.
+en-029 Move the secrets into [[sops-nix|sops nicks]] and delete the old environment file.
+en-030 The [[PipeWire|pipe wire]] graph shows the microphone on the wrong sample rate.
+en-031 The build is slow because it compiles everything from scratch every time, so I'd like to set up a shared cache
+  and see how much time we actually save on a clean checkout.
+en-032 Let me know if you need anything else from me.
+en-033 Write the history table in [[SQLite|sequel lite]] and keep the schema small.
+en-034 [[Ghostty|ghosty]] needs control shift V for pasting, everything else takes control V.
+en-035 I'd rather fix the root cause than add another retry.
+en-036 Can we keep this short? I have another call right after.
+en-037 The [[Cloudflare]] tunnel stopped working after I rotated the token.
+en-038 Check whether [[Prometheus]] is still scraping the node exporter.
+en-039 Everything is working now, thanks for your patience.
+en-040 The new laptop arrives next week, so I'll set it up then.
+en-041 Add a [[WebSocket|websocket]] ping so the client notices a dead connection.
+en-042 [[faster-whisper|faster whisper]] pads every window to the full length, so short clips still pay for a whole
+  encoder pass.
+en-043 I'll take a look at it after lunch.
+en-044 Sorry, I missed your message, my phone was on silent.
+en-045 Open the [[ThinkPad]] lid and check whether [[Tailscale]] reconnects on its own.
+en-046 The [[Penpot|pen pot]] board for the overlay has a few new variants.
+en-047 Let's talk about it on Monday when everyone is back.
+en-048 The documentation is out of date, I'll update it this week.
+en-049 Run [[nextest|next test]] on the whole workspace before you push.
+en-050 [[Codex]] and [[Claude Code|Claud Code]] both left reviews on the pull request.
+en-051 I need to renew my passport before the trip.
+en-052 Please keep the old version around until the new one is stable.
+en-053 The [[systemd|system D]] unit fails because the socket directory doesn't exist yet.
+en-054 The [[Noctalia]] bar hides the clipboard history behind a menu.
+en-055 The weather looks nice this weekend, maybe we can go hiking.
+en-056 I'm not sure that's the right approach, can we discuss it first?
+en-057 Deploy the [[Traefik|traffic]] config with [[Helm]] and check the ingress.
+en-058 The [[Wayland]] clipboard loses the text as soon as the app that copied it closes.
+en-059 Book a table for the whole team on Friday evening.
+en-060 I'll send the invoice once the work is done.
+en-061 [[Terraform]] wants to recreate the whole load balancer, so please don't apply it yet.
+en-062 The [[CUDA|kooda]] libraries are on the wrapper, not in the system path.
+en-063 Thanks again for dinner last night, it was lovely.
+en-064 Could you forward me the email from the landlord?
+en-065 Pull the GPU build from the [[Flox|flocks]] cache instead of compiling it on the laptop.
+en-066 The [[Electron]] apps paste fine, but [[VS Code]] needs a short delay first.
+en-067 I'm working from home today because the plumber is coming.
+en-068 The train was cancelled, so I'm taking the bus instead.
+en-069 Store the device tokens hashed, and use [[htmx|H T M X]] for the web pages.
+en-070 [[Anthropic]] released a new [[Opus]] model, so let's try it on the planning task.
+en-071 Let's keep the scope small and ship the first version.
+en-072 I'll write the summary and share it with everyone tonight.
+
+en-long-01 Quick update on the dictation work. The server side is mostly done: the engine runs as a separate process,
+  and every recording stays on disk until its text has been delivered. {pause 2.5} I tested it on the desktop with
+  [[NixOS|Nix O S]] and [[niri]], and pasting works in [[Ghostty|ghosty]], [[Helium]] and [[VS Code]]. The only
+  problem is the [[Electron]] apps, which sometimes need a short delay before the paste goes through. {pause 3}
+  Next I want to try the laptop over [[Tailscale]]. If the connection is direct, the latency should be close to the
+  desktop. If it falls back to a relay, we'll see a few hundred milliseconds more, which is still fine for
+  dictation. {pause 2} I'll write everything up in the decisions document tomorrow, and then we can talk about the
+  dictionary on Monday.
+en-long-02 Okay, here's what I want you to do. Look at the clipboard code in the [[Wayland]] crate and find out why
+  the restore sometimes runs before the paste has finished. {pause 2.5} I suspect the timer starts when we send the
+  key event, not when the compositor has actually processed it. [[niri]] handles requests in order on one
+  connection, so a sync after the virtual keyboard events should be enough. {pause 3.5} Please don't change the
+  public types, and keep the new tests in the end to end crate. When you're done, run [[nextest|next test]] on the
+  whole workspace, and then open a pull request on [[GitHub|git hub]] with a short description. {pause 2} If
+  anything is unclear, ask me before you start, not halfway through.
+en-long-03 Notes from this morning's incident. Early in the morning the [[Grafana]] alerts started firing for the API
+  gateway. {pause 2} The pods were restarting in a loop, and [[kubectl|cube control]] showed them being killed for
+  running out of memory. {pause 3} It turned out that the new release of the [[Helm]] chart had dropped the memory
+  limit override, so the default limit was far too small. We rolled back with [[Argo CD|Argo C D]], and the service
+  recovered within a few minutes. {pause 2.5} Follow-ups: add a check to the pipeline that compares the rendered
+  manifests, move the alert thresholds into [[Prometheus]] rules that live next to the chart, and write a short
+  runbook, so whoever is on call next time doesn't have to dig through the history. {pause 2} I'll create the
+  tickets after lunch.
+en-long-04 Hi Martin, thanks for getting back to me so quickly. {pause 2} I had a look at the proposal over the
+  weekend, and I think it makes sense overall. My main concern is the timeline. Moving everything to the new cluster
+  in one go feels risky, especially with the holidays coming up. {pause 3} Could we split it into two phases
+  instead? First the internal tools, which nobody outside the team depends on, and then the customer facing
+  services, once we're confident that the monitoring works. {pause 2.5} I'm happy to join a call later this week if
+  that's easier. Wednesday and Thursday afternoons are mostly free for me. {pause 2} Best regards, and say hi to the
+  team.
+en-long-05 Note to self about the desktop setup. The [[localwhisper|hyper whisper]] service has to stay installed until
+  [[psst|p s s t]] has been running for a week without problems. {pause 2.5} After that, disable the service but
+  keep the package, so rolling back is a single rebuild. [[Home Manager]] owns the user service for the daemon, and
+  the server runs as a system service with its own state directory. {pause 3} Remember to change the gaming mode
+  script, so it unloads the model through the server instead of stopping the whole service. {pause 2} And check
+  that [[Noctalia]] still records the clipboard history after the switch, because the restore logic changes who owns
+  the selection. {pause 2} That's it for now.
+
+en-short-01 Okay.
+en-short-02 No.
+en-short-03 [[Hyprland|hyper land]].
+en-short-04 [[Tailscale]].
+en-short-05 Thanks.
+en-short-06 No.

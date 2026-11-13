@@ -1,0 +1,423 @@
+# Fixed dictionary snapshot for the eval set (plan 7.3).
+#
+# It's large on purpose: the bias terms (pinned first, then the rest alphabetically) overflow the 223-token budget
+# for style plus terms (plan 5.3), so evals exercise dropping terms from the end. Every [[Term]] in
+# evals/sentences/*.txt must be here (scripts/synth-evals.sh checks it). Changing this file means re-running the audio
+# eval (plan 7.3).
+#
+# The format is docs/config.md's. Defaults: sounds_like = [], languages = "any" ("en" or "cs" restricts a term),
+# fuzzy = true (English only), pin = false.
+#
+# sounds_like holds spellings Whisper actually produced for these terms during Phase 0. Common words that a term
+# sounds like (Traefik → "traffic", Flox → "flocks") are left out on purpose: as exact spellings they would rewrite
+# every ordinary use of the word.
+
+# --- pinned: always in the prompt --------------------------------------------------------------------------------
+
+[[terms]]
+text = "psst"
+sounds_like = ["pst", "P S S T", "PSSSD"]
+pin = true
+notes = "this project"
+
+[[terms]]
+text = "t3code"
+sounds_like = ["T3 code", "T3 kód", "t three code"]
+pin = true
+
+[[terms]]
+text = "Hyprland"
+sounds_like = ["hyperland", "hyper land"]
+pin = true
+
+[[terms]]
+text = "niri"
+sounds_like = ["Níry"]
+pin = true
+
+[[terms]]
+text = "NixOS"
+sounds_like = ["Nix OS", "Niksos"]
+pin = true
+
+[[terms]]
+text = "Claude Code"
+sounds_like = ["Cloud Code", "Clod Code"]
+pin = true
+
+[[terms]]
+text = "localwhisper"
+sounds_like = ["hyper whisper", "hyperwhisper"]
+pin = true
+
+[[terms]]
+text = "Ghostty"
+sounds_like = ["ghosty", "ghosti", "gosty"]
+pin = true
+
+[[terms]]
+text = "Tailscale"
+sounds_like = ["tail scale", "Taleskill"]
+pin = true
+
+[[terms]]
+text = "Helium"
+pin = true
+notes = "the browser; also an ordinary English word, so only casing is fixed"
+
+# --- the rest ----------------------------------------------------------------------------------------------------
+
+[[terms]]
+text = "agenix"
+sounds_like = ["age nix"]
+
+[[terms]]
+text = "Alza"
+languages = "cs"
+
+[[terms]]
+text = "Ansible"
+
+[[terms]]
+text = "Anthropic"
+
+[[terms]]
+text = "Argo CD"
+sounds_like = ["Argo C D", "ArgoCD"]
+
+[[terms]]
+text = "Axum"
+
+[[terms]]
+text = "Bitwarden"
+sounds_like = ["bit warden"]
+
+[[terms]]
+text = "Btrfs"
+sounds_like = ["butter FS", "better FS"]
+
+[[terms]]
+text = "Cachix"
+
+[[terms]]
+text = "Caddy"
+
+[[terms]]
+text = "cert-manager"
+sounds_like = ["cert manager"]
+
+[[terms]]
+text = "Chromium"
+
+[[terms]]
+text = "Cilium"
+
+[[terms]]
+text = "cliphist"
+sounds_like = ["clip hist"]
+
+[[terms]]
+text = "Cloudflare"
+sounds_like = ["cloud flare"]
+
+[[terms]]
+text = "Codex"
+
+[[terms]]
+text = "Colmena"
+
+[[terms]]
+text = "containerd"
+sounds_like = ["container d"]
+
+[[terms]]
+text = "ČSOB"
+languages = "cs"
+
+[[terms]]
+text = "CTranslate2"
+sounds_like = ["C translate 2", "C translate two"]
+
+[[terms]]
+text = "CUDA"
+sounds_like = ["Kuda"]
+
+[[terms]]
+text = "direnv"
+sounds_like = ["dir env"]
+
+[[terms]]
+text = "disko"
+
+[[terms]]
+text = "Docker"
+
+[[terms]]
+text = "Electron"
+
+[[terms]]
+text = "etcd"
+sounds_like = ["E T C D"]
+
+[[terms]]
+text = "Fable"
+languages = "en"
+
+[[terms]]
+text = "faster-whisper"
+sounds_like = ["faster whisper"]
+
+[[terms]]
+text = "Flox"
+
+[[terms]]
+text = "fzf"
+sounds_like = ["F Z F"]
+
+[[terms]]
+text = "GitHub"
+sounds_like = ["Git Hub"]
+
+[[terms]]
+text = "Grafana"
+
+[[terms]]
+text = "gRPC"
+sounds_like = ["G R P C"]
+
+[[terms]]
+text = "Helm"
+
+[[terms]]
+text = "Hetzner"
+
+[[terms]]
+text = "Home Assistant"
+
+[[terms]]
+text = "Home Manager"
+
+[[terms]]
+text = "htmx"
+sounds_like = ["H T M X"]
+
+[[terms]]
+text = "Immich"
+
+[[terms]]
+text = "Istio"
+
+[[terms]]
+text = "Jellyfin"
+sounds_like = ["jelly fin"]
+
+[[terms]]
+text = "jq"
+sounds_like = ["J Q"]
+
+[[terms]]
+text = "k3s"
+sounds_like = ["K three S"]
+
+[[terms]]
+text = "k9s"
+sounds_like = ["canines", "K nine S"]
+
+[[terms]]
+text = "Kafka"
+
+[[terms]]
+text = "kubectl"
+sounds_like = ["cube control", "cube CTRL", "kube control", "cube cuttle"]
+
+[[terms]]
+text = "Kubernetes"
+
+[[terms]]
+text = "Loki"
+
+[[terms]]
+text = "Longhorn"
+
+[[terms]]
+text = "MetalLB"
+sounds_like = ["metal LB", "metal L B"]
+
+[[terms]]
+text = "minijinja"
+sounds_like = ["mini jinja"]
+
+[[terms]]
+text = "Mobbin"
+
+[[terms]]
+text = "Neovim"
+sounds_like = ["neo vim"]
+
+[[terms]]
+text = "nextest"
+sounds_like = ["next test"]
+
+[[terms]]
+text = "nginx"
+sounds_like = ["engine x"]
+
+[[terms]]
+text = "nixpkgs"
+sounds_like = ["nix packages", "nix pkgs", "next pkgs"]
+
+[[terms]]
+text = "Noctalia"
+sounds_like = ["noctalier"]
+
+[[terms]]
+text = "NVIDIA"
+
+[[terms]]
+text = "OpenTelemetry"
+sounds_like = ["open telemetry"]
+
+[[terms]]
+text = "OpenTofu"
+sounds_like = ["open tofu"]
+
+[[terms]]
+text = "Opus"
+languages = "en"
+
+[[terms]]
+text = "Penpot"
+sounds_like = ["pen pot"]
+
+[[terms]]
+text = "PipeWire"
+sounds_like = ["pipe wire"]
+
+[[terms]]
+text = "Piper"
+
+[[terms]]
+text = "Podman"
+
+[[terms]]
+text = "PostgreSQL"
+sounds_like = ["Postgre SQL", "PostgresQL"]
+
+[[terms]]
+text = "Prometheus"
+
+[[terms]]
+text = "protobuf"
+sounds_like = ["proto buf"]
+
+[[terms]]
+text = "Proxmox"
+
+[[terms]]
+text = "Redis"
+
+[[terms]]
+text = "ripgrep"
+sounds_like = ["rip grep"]
+
+[[terms]]
+text = "Ryzen"
+
+[[terms]]
+text = "sccache"
+sounds_like = ["S C cache"]
+
+[[terms]]
+text = "Sentry"
+
+[[terms]]
+text = "serde"
+
+[[terms]]
+text = "Silero"
+
+[[terms]]
+text = "Slack"
+
+[[terms]]
+text = "smithay"
+
+[[terms]]
+text = "sops-nix"
+sounds_like = ["sops nix", "Sobsnix", "subsnix"]
+
+[[terms]]
+text = "SQLite"
+sounds_like = ["sequel light", "sequel lite", "SQL lite"]
+
+[[terms]]
+text = "Syncthing"
+sounds_like = ["sync thing"]
+
+[[terms]]
+text = "systemd"
+sounds_like = ["system D", "systemD"]
+
+[[terms]]
+text = "Talos"
+
+[[terms]]
+text = "Terraform"
+
+[[terms]]
+text = "ThinkPad"
+sounds_like = ["think pad"]
+
+[[terms]]
+text = "tmux"
+sounds_like = ["T mux"]
+
+[[terms]]
+text = "Tokio"
+
+[[terms]]
+text = "Traefik"
+notes = "pronounced like 'traffic', which is too common to be a spelling"
+
+[[terms]]
+text = "Velero"
+
+[[terms]]
+text = "VS Code"
+sounds_like = ["VSCode", "V S Code"]
+
+[[terms]]
+text = "Wayland"
+sounds_like = ["way land"]
+
+[[terms]]
+text = "Waybar"
+sounds_like = ["way bar"]
+
+[[terms]]
+text = "WebSocket"
+sounds_like = ["web socket"]
+
+[[terms]]
+text = "WireGuard"
+sounds_like = ["wire guard"]
+
+[[terms]]
+text = "wl-clipboard"
+sounds_like = ["WL clipboard"]
+
+[[terms]]
+text = "XWayland"
+sounds_like = ["X Wayland"]
+
+[[terms]]
+text = "ZFS"
+sounds_like = ["Z F S"]
+
+[[terms]]
+text = "Zigbee"
+sounds_like = ["zig bee"]
+
+[[terms]]
+text = "zsh"
+sounds_like = ["Z shell"]
