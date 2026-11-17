@@ -302,6 +302,10 @@ impl Menu {
 
     /// Logical coordinates. Whether the menu looks different now.
     pub fn hover(&mut self, x: f64, y: f64) -> bool {
+        // A brush of the pointer would turn Enter from the typed instruction into a style.
+        if self.page == Page::Command && !self.word.is_empty() {
+            return false;
+        }
         let Some(i) = self.line_at(x, y).filter(|&i| self.selectable().any(|s| s == i)) else { return false };
         let changed = self.selected != Some(i);
         self.selected = Some(i);
