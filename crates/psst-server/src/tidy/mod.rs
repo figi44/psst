@@ -353,9 +353,14 @@ pub async fn rewrite(state: &Arc<AppState>, selection: &str, how: How<'_>) -> Re
         started.elapsed().as_millis(),
         answer.first_token.map_or(0, |d| d.as_millis())
     );
+    Ok(in_place_of(selection, &answer.text))
+}
+
+/// `text` with `selection`'s surrounding whitespace, which the model never sees.
+fn in_place_of(selection: &str, text: &str) -> String {
     let leading = &selection[..selection.len() - selection.trim_start().len()];
     let trailing = &selection[selection.trim_end().len()..];
-    Ok(format!("{leading}{}{trailing}", answer.text))
+    format!("{leading}{text}{trailing}")
 }
 
 /// Runs `input` through a style as dictations would, and keeps the run for the page.
@@ -382,4 +387,16 @@ pub async fn run(state: &Arc<AppState>, input: &str, target: Option<&Target>, en
     runs.push_front(run.clone());
     runs.truncate(KEPT_RUNS);
     run
+}
+
+#[cfg(test)]
+mod tests {
+    use super::in_place_of;
+
+    #[test]
+    fn a_rewrite_keeps_the_whitespace_around_the_selection() {
+        assert_eq!(in_place_of("word ", "Word"), "Word ");
+        assert_eq!(in_place_of("\n  two lines\n", "Two lines."), "\n  Two lines.\n");
+        assert_eq!(in_place_of("plain", "Plain."), "Plain.");
+    }
 }

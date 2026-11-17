@@ -16,7 +16,7 @@ async fn a_rewrite_that_cannot_run_says_why() {
         (" \n", fix(), "select the text first"),
         (too_long.as_str(), fix(), "select at most"),
         ("hey can u", Rewrite::Instruction("  ".into()), "say what to do"),
-        ("hey can u", Rewrite::Instruction("x".repeat(1_001)), "keep the instruction under 1000 characters"),
+        ("hey can u", Rewrite::Instruction("x".repeat(1_001)), "keep the instruction to at most 1000 characters"),
         ("hey can u", Rewrite::Style("shouty".into()), "no style \"shouty\""),
         ("hey can u", fix(), "connect ChatGPT in the web UI"),
         ("hey can u", Rewrite::Style("polished".into()), "connect ChatGPT in the web UI"),

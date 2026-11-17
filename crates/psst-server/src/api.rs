@@ -661,7 +661,7 @@ async fn rewrite(
             return refuse("say what to do with the text".into());
         }
         Rewrite::Instruction(instruction) if instruction.chars().count() > MAX_INSTRUCTION_CHARS => {
-            return refuse(format!("keep the instruction under {MAX_INSTRUCTION_CHARS} characters"));
+            return refuse(format!("keep the instruction to at most {MAX_INSTRUCTION_CHARS} characters"));
         }
         Rewrite::Instruction(instruction) => How::Instruction(instruction),
         Rewrite::Style(id) => match crate::tidy::entry(&state, id) {
