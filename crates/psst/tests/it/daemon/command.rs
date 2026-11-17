@@ -11,15 +11,15 @@ const REWRITTEN: &str = "Could you send me the report?";
 
 /// The menu open, once it shows what the selection read gave.
 async fn open_menu(server: &FakeServer, selection: Option<&str>) -> (Daemon, Selected) {
-    open_menu_with(server, selection, |_| {}).await
+    open_menu_with(server, selection, |_, _| {}).await
 }
 
 async fn open_menu_with(
     server: &FakeServer,
     selection: Option<&str>,
-    tweak: impl FnOnce(&mut Deps),
+    tweak: impl FnOnce(&mut ClientConfig, &mut Deps),
 ) -> (Daemon, Selected) {
-    let d = daemon(server, |_, deps| tweak(deps)).await;
+    let d = daemon(server, tweak).await;
     *d.wayland.selection.lock().unwrap() = selection.map(str::to_owned);
     assert!(d.run(Request::Menu).await.ok);
     let deadline = tokio::time::Instant::now() + WAIT;
@@ -87,7 +87,7 @@ async fn a_rewrite_never_lands_in_another_window() {
     let server = FakeServer::start(FakeServerConfig::default());
     server.push_rewrite(Ok(REWRITTEN.into()));
     server.set_stalled(true);
-    let (d, _) = open_menu_with(&server, Some(SELECTED), |deps| {
+    let (d, _) = open_menu_with(&server, Some(SELECTED), |_, deps| {
         deps.niri_socket = Some(niri.clone());
         deps.timing.niri_lookup = Duration::from_secs(5);
     })
@@ -134,7 +134,9 @@ fn slow_niri(dir: &Path, app_id: &'static str, delay: Duration) -> PathBuf {
 }
 
 async fn with_niri(server: &FakeServer, niri: PathBuf) -> Daemon {
-    let (d, _) = open_menu_with(server, Some(SELECTED), |deps| {
+    let (d, _) = open_menu_with(server, Some(SELECTED), |cfg, deps| {
+        let copy_only = AppRule { paste: Some(PasteAction::CopyOnly), paste_delay_ms: 0 };
+        cfg.apps.insert("org.keepassxc.KeePassXC".into(), copy_only);
         deps.niri_socket = Some(niri);
         deps.timing.niri_lookup = Duration::from_secs(5);
     })
@@ -155,6 +157,23 @@ async fn a_rewrite_in_a_terminal_goes_to_the_clipboard() {
 
     assert_eq!(d.wayland.inserted(), vec![Inserted::Copy(REWRITTEN.into())], "not typed at the prompt");
     let note = "Pasting here can't replace a selection: the rewrite is in the clipboard";
+    assert!(d.wayland.showed(|s| matches!(s, OverlayState::Flash { message } if message == note)));
+    d.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rewrite_for_an_app_that_only_gets_copies_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = FakeServer::start(FakeServerConfig::default());
+    server.push_rewrite(Ok(REWRITTEN.into()));
+    let d = with_niri(&server, slow_niri(dir.path(), "org.keepassxc.KeePassXC", Duration::ZERO)).await;
+
+    choose(&d, Command::Instruction("make it polite".into()));
+    wait_until(|| !d.wayland.inserted().is_empty()).await;
+    d.idle().await;
+
+    assert_eq!(d.wayland.inserted(), vec![Inserted::Copy(REWRITTEN.into())]);
+    let note = "Pasting is off for this app: the rewrite is in the clipboard";
     assert!(d.wayland.showed(|s| matches!(s, OverlayState::Flash { message } if message == note)));
     d.stop().await;
 }

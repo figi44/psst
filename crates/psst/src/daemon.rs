@@ -2304,12 +2304,21 @@ impl Core {
         }
         let app_id = window.map(|w| w.app_id);
         let rule = self.cfg.paste_for(app_id.as_deref());
-        // A terminal's paste goes in at its prompt, the selection untouched.
-        if rule.action == PasteAction::CtrlShiftV && self.inserting_rewrite(generation).is_some() {
-            return self.redirect_rewrite(
-                generation,
-                "Pasting here can't replace a selection: the rewrite is in the clipboard",
-            );
+        if self.inserting_rewrite(generation).is_some() {
+            match rule.action {
+                PasteAction::CtrlV => {}
+                // A terminal's paste goes in at its prompt, the selection untouched.
+                PasteAction::CtrlShiftV => {
+                    return self.redirect_rewrite(
+                        generation,
+                        "Pasting here can't replace a selection: the rewrite is in the clipboard",
+                    );
+                }
+                PasteAction::CopyOnly => {
+                    return self
+                        .redirect_rewrite(generation, "Pasting is off for this app: the rewrite is in the clipboard");
+                }
+            }
         }
         debug!("pasting into {app_id:?} with {rule:?}");
         self.send_insert(generation, rule.action, rule.delay_ms);
