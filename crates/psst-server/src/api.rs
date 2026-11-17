@@ -641,6 +641,9 @@ async fn post_processing_view(_: Admin, State(state): State<AppRef>) -> Json<Pos
     Json(PostProcessingView { styles: crate::tidy::entries(&state).into_iter().map(|entry| entry.id).collect() })
 }
 
+/// Past what the menu's field takes: an instruction, not a second selection.
+const MAX_INSTRUCTION_CHARS: usize = 1_000;
+
 async fn rewrite(
     _: Admin,
     State(state): State<AppRef>,
@@ -656,6 +659,9 @@ async fn rewrite(
     let how = match &request.how {
         Rewrite::Instruction(instruction) if instruction.trim().is_empty() => {
             return refuse("say what to do with the text".into());
+        }
+        Rewrite::Instruction(instruction) if instruction.chars().count() > MAX_INSTRUCTION_CHARS => {
+            return refuse(format!("keep the instruction under {MAX_INSTRUCTION_CHARS} characters"));
         }
         Rewrite::Instruction(instruction) => How::Instruction(instruction),
         Rewrite::Style(id) => match crate::tidy::entry(&state, id) {
