@@ -11,7 +11,15 @@ const REWRITTEN: &str = "Could you send me the report?";
 
 /// The menu open, once it shows what the selection read gave.
 async fn open_menu(server: &FakeServer, selection: Option<&str>) -> (Daemon, Selected) {
-    let d = daemon(server, |_, _| {}).await;
+    open_menu_with(server, selection, |_| {}).await
+}
+
+async fn open_menu_with(
+    server: &FakeServer,
+    selection: Option<&str>,
+    tweak: impl FnOnce(&mut Deps),
+) -> (Daemon, Selected) {
+    let d = daemon(server, |_, deps| tweak(deps)).await;
     *d.wayland.selection.lock().unwrap() = selection.map(str::to_owned);
     assert!(d.run(Request::Menu).await.ok);
     let deadline = tokio::time::Instant::now() + WAIT;
@@ -67,6 +75,36 @@ async fn a_rewrite_never_replaces_text_selected_since() {
 
     assert_eq!(d.wayland.inserted(), vec![Inserted::Copy(REWRITTEN.into())]);
     let note = "The selection changed: the rewrite is in the clipboard";
+    assert!(d.wayland.showed(|s| matches!(s, OverlayState::Flash { message } if message == note)));
+    d.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rewrite_never_lands_in_another_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let window = Arc::new(Mutex::new(serde_json::json!({ "id": 1, "app_id": "org.gnome.TextEditor" })));
+    let niri = fake_niri(dir.path(), window.clone());
+    let server = FakeServer::start(FakeServerConfig::default());
+    server.push_rewrite(Ok(REWRITTEN.into()));
+    server.set_stalled(true);
+    let (d, _) = open_menu_with(&server, Some(SELECTED), |deps| {
+        deps.niri_socket = Some(niri.clone());
+        deps.timing.niri_lookup = Duration::from_secs(5);
+    })
+    .await;
+
+    choose(&d, Command::Instruction("make it polite".into()));
+    wait_until(|| {
+        d.wayland.showed(|s| matches!(s, OverlayState::Flash { message } if message.starts_with("Rewriting")))
+    })
+    .await;
+    *window.lock().unwrap() = serde_json::json!({ "id": 2, "app_id": "org.gnome.TextEditor" });
+    server.set_stalled(false);
+    wait_until(|| !d.wayland.inserted().is_empty()).await;
+    d.idle().await;
+
+    assert_eq!(d.wayland.inserted(), vec![Inserted::Copy(REWRITTEN.into())]);
+    let note = "The window changed: the rewrite is in the clipboard";
     assert!(d.wayland.showed(|s| matches!(s, OverlayState::Flash { message } if message == note)));
     d.stop().await;
 }

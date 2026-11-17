@@ -11,6 +11,8 @@ pub const TIMEOUT: Duration = Duration::from_millis(150);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Window {
+    /// niri's, unique while the window lives.
+    pub id: Option<u64>,
     pub app_id: String,
     pub title: Option<String>,
 }
@@ -42,7 +44,8 @@ async fn query(socket: &Path) -> std::io::Result<Option<Window>> {
     let reply: Value = serde_json::from_str(&line).map_err(std::io::Error::other)?;
     let Some(window) = reply.pointer("/Ok/FocusedWindow") else { return Ok(None) };
     let text = |key: &str| window.get(key).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned);
-    Ok(text("app_id").map(|app_id| Window { app_id, title: text("title") }))
+    let id = window.get("id").and_then(Value::as_u64);
+    Ok(text("app_id").map(|app_id| Window { id, app_id, title: text("title") }))
 }
 
 #[cfg(test)]
@@ -72,7 +75,7 @@ mod tests {
             "{\"Ok\":{\"FocusedWindow\":{\"id\":3,\"title\":\"~\",\"app_id\":\"com.mitchellh.ghostty\",\"pid\":1}}}\n",
         )
         .await;
-        let window = Window { app_id: "com.mitchellh.ghostty".into(), title: Some("~".into()) };
+        let window = Window { id: Some(3), app_id: "com.mitchellh.ghostty".into(), title: Some("~".into()) };
         assert_eq!(focused_window(&path, TIMEOUT).await, Some(window));
     }
 
