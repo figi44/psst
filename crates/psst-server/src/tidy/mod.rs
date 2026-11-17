@@ -354,8 +354,7 @@ pub async fn rewrite(state: &Arc<AppState>, selection: &str, how: How<'_>) -> Re
         answer.first_token.map_or(0, |d| d.as_millis())
     );
     let leading = &selection[..selection.len() - selection.trim_start().len()];
-    // Not a line's newline: pasted at a shell prompt, it would run the rewrite.
-    let trailing = selection[selection.trim_end().len()..].trim_end_matches(['\n', '\r']);
+    let trailing = &selection[selection.trim_end().len()..];
     Ok(format!("{leading}{}{trailing}", answer.text))
 }
 
