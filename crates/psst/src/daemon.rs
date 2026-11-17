@@ -1161,15 +1161,15 @@ impl Core {
         self.send_insert(generation, PasteAction::CopyOnly, 0);
     }
 
-    /// The menu opened while the rewrite was being checked: a paste now would land in it. It goes
-    /// again, checks and all, once the menu closes.
+    /// The menu opened while the rewrite was being checked. It waits for the menu to close and goes
+    /// again, checks and all, so the menu shows at once and the user may still change the selection
+    /// under it.
     fn requeue_for_menu(&mut self, generation: u64) -> bool {
         if !self.menu.open {
             return false;
         }
-        let Some(Inserting { what: Delivering::Redelivery(r), .. }) =
-            self.inserting.take_if(|i| i.generation == generation)
-        else {
+        let rewrite = |i: &mut Inserting| i.generation == generation && matches!(i.what, Delivering::Redelivery(_));
+        let Some(Inserting { what: Delivering::Redelivery(r), .. }) = self.inserting.take_if(rewrite) else {
             return false;
         };
         self.redeliver.push_front(r);
@@ -2293,12 +2293,10 @@ impl Core {
             && let Some(target) = r.target.take()
             && niri
         {
-            let note = match target.window {
-                None => Some("Couldn't check the window: the rewrite is in the clipboard"),
-                asked if asked != window.as_ref().and_then(|w| w.id) => {
-                    Some("The window changed: the rewrite is in the clipboard")
-                }
-                _ => None,
+            let note = match (target.window, window.as_ref().and_then(|w| w.id)) {
+                (Some(asked), Some(now)) if asked == now => None,
+                (Some(_), Some(_)) => Some("The window changed: the rewrite is in the clipboard"),
+                _ => Some("Couldn't check the window: the rewrite is in the clipboard"),
             };
             if let Some(note) = note {
                 return self.redirect_rewrite(generation, note);
@@ -2308,8 +2306,10 @@ impl Core {
         let rule = self.cfg.paste_for(app_id.as_deref());
         // A terminal's paste goes in at its prompt, the selection untouched.
         if rule.action == PasteAction::CtrlShiftV && self.inserting_rewrite(generation).is_some() {
-            return self
-                .redirect_rewrite(generation, "Terminals can't replace a selection: the rewrite is in the clipboard");
+            return self.redirect_rewrite(
+                generation,
+                "Pasting here can't replace a selection: the rewrite is in the clipboard",
+            );
         }
         debug!("pasting into {app_id:?} with {rule:?}");
         self.send_insert(generation, rule.action, rule.delay_ms);

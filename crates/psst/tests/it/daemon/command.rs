@@ -154,7 +154,7 @@ async fn a_rewrite_in_a_terminal_goes_to_the_clipboard() {
     d.idle().await;
 
     assert_eq!(d.wayland.inserted(), vec![Inserted::Copy(REWRITTEN.into())], "not typed at the prompt");
-    let note = "Terminals can't replace a selection: the rewrite is in the clipboard";
+    let note = "Pasting here can't replace a selection: the rewrite is in the clipboard";
     assert!(d.wayland.showed(|s| matches!(s, OverlayState::Flash { message } if message == note)));
     d.stop().await;
 }
@@ -164,21 +164,21 @@ async fn a_rewrite_waits_out_a_menu_opened_while_it_was_checked() {
     let dir = tempfile::tempdir().unwrap();
     let server = FakeServer::start(FakeServerConfig::default());
     server.push_rewrite(Ok(REWRITTEN.into()));
-    let d = with_niri(&server, slow_niri(dir.path(), "org.gnome.TextEditor", Duration::from_millis(500))).await;
+    let d = with_niri(&server, slow_niri(dir.path(), "org.gnome.TextEditor", Duration::from_millis(300))).await;
+    let reads =
+        || d.wayland.cmds.lock().unwrap().iter().filter(|c| matches!(c, WaylandCmd::ReadSelection { .. })).count();
 
     choose(&d, Command::Instruction("make it polite".into()));
     // Asked for, answered, and now waiting on the window lookup before it goes in.
-    wait_until(|| {
-        d.wayland.cmds.lock().unwrap().iter().filter(|c| matches!(c, WaylandCmd::ReadSelection { .. })).count() == 2
-    })
-    .await;
+    wait_until(|| reads() == 2).await;
     assert!(d.run(Request::Menu).await.ok);
-    tokio::time::sleep(Duration::from_millis(800)).await;
-    assert!(d.wayland.inserted().is_empty(), "nothing goes into the menu");
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(d.wayland.inserted().is_empty(), "nothing goes in while the menu is open");
 
     d.wayland.send(WaylandEvent::Menu(MenuOutcome::Closed));
     wait_until(|| !d.wayland.inserted().is_empty()).await;
-    assert_eq!(d.wayland.inserted(), vec![paste(REWRITTEN)], "checked again, then pasted");
+    assert_eq!(d.wayland.inserted(), vec![paste(REWRITTEN)]);
+    assert_eq!(reads(), 4, "the menu's read, then the selection checked again after it closed");
     d.stop().await;
 }
 
