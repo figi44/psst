@@ -37,6 +37,7 @@ use crate::{
     profiles, settings,
     state::AppState,
     tailscale,
+    tidy::How,
 };
 
 type AppRef = Arc<AppState>;
@@ -652,17 +653,20 @@ async fn rewrite(
     if request.selection.chars().count() > MAX_SELECTION_CHARS {
         return refuse(format!("select at most {MAX_SELECTION_CHARS} characters"));
     }
-    match &request.how {
+    let how = match &request.how {
         Rewrite::Instruction(instruction) if instruction.trim().is_empty() => {
             return refuse("say what to do with the text".into());
         }
-        Rewrite::Style(id) if crate::tidy::entry(&state, id).is_none() => return refuse(format!("no style {id:?}")),
-        _ => {}
-    }
+        Rewrite::Instruction(instruction) => How::Instruction(instruction),
+        Rewrite::Style(id) => match crate::tidy::entry(&state, id) {
+            Some(entry) => How::Style(entry.style),
+            None => return refuse(format!("no style {id:?}")),
+        },
+    };
     if crate::tidy::chatgpt::credentials(&state).is_none() {
         return refuse("connect ChatGPT in the web UI to use commands".into());
     }
-    match crate::tidy::rewrite(&state, &request.selection, &request.how).await {
+    match crate::tidy::rewrite(&state, &request.selection, how).await {
         Ok(text) => Ok(Json(Rewritten { text })),
         Err(message) => {
             tracing::warn!("a rewrite failed: {message}");

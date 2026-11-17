@@ -14,7 +14,7 @@ use std::{
 };
 
 use jiff::Timestamp;
-use psst_proto::{Final, api::Rewrite, ws::Target};
+use psst_proto::{Final, ws::Target};
 use serde::{Deserialize, Serialize};
 
 use crate::state::AppState;
@@ -33,6 +33,8 @@ pub struct Lab {
     runs: Mutex<VecDeque<Run>>,
     draft: Mutex<Draft>,
     socket: tokio::sync::Mutex<Option<chatgpt::Socket>>,
+    /// A long rewrite holds its socket for its whole answer, which would eat dictations' budgets.
+    rewrite_socket: tokio::sync::Mutex<Option<chatgpt::Socket>>,
 }
 
 impl Default for Lab {
@@ -45,6 +47,7 @@ impl Default for Lab {
             runs: Mutex::default(),
             draft: Mutex::default(),
             socket: tokio::sync::Mutex::default(),
+            rewrite_socket: tokio::sync::Mutex::default(),
         }
     }
 }
@@ -302,32 +305,48 @@ const COMMAND_PROMPT: &str = include_str!("../../tidy-prompts/command.txt");
 /// 30 s, so it hears why rather than a timeout.
 const REWRITE_BUDGET: Duration = Duration::from_secs(25);
 
+pub enum How<'a> {
+    Instruction(&'a str),
+    Style(Style),
+}
+
 /// `selection` rewritten as the user asked, keeping its surrounding whitespace: a double-clicked
 /// word often takes the space after it along. `Err` is the message for the user.
-pub async fn rewrite(state: &Arc<AppState>, selection: &str, how: &Rewrite) -> Result<String, String> {
+pub async fn rewrite(state: &Arc<AppState>, selection: &str, how: How<'_>) -> Result<String, String> {
     let body = selection.trim();
     let (style, instructions, text) = match how {
-        Rewrite::Instruction(instruction) => {
-            // The built-in default's model and settings: tuned for speed without reasoning.
-            let style = Style { prompt: COMMAND_PROMPT.trim().to_owned(), ..Style::built_in(prompts::default()) };
+        How::Instruction(instruction) => {
+            // The default style's model and settings, as the user saved them: it's what their
+            // plan is known to run.
+            let default =
+                entry(state, prompts::DEFAULT).map_or_else(|| Style::built_in(prompts::default()), |e| e.style);
+            let style = Style { prompt: COMMAND_PROMPT.trim().to_owned(), ..default };
             let instruction = instruction.trim();
             let text = format!("<selection>\n{body}\n</selection>\n\n<instruction>\n{instruction}\n</instruction>");
             (style.clone(), style.prompt, text)
         }
-        Rewrite::Style(id) => {
-            let Some(Entry { style, .. }) = entry(state, id) else { return Err(format!("no style {id:?}")) };
-            let instructions = instructions(state, &style, None);
+        How::Style(style) => {
+            let instructions = format!(
+                "{}\n\nThis text was typed, not dictated: never take words in it for spoken corrections or \
+                 spoken formatting commands.",
+                instructions(state, &style, None)
+            );
             (style, instructions, body.to_owned())
         }
     };
     let started = Instant::now();
-    let answer =
-        match tokio::time::timeout(REWRITE_BUDGET, chatgpt::respond(state, &ask(&style, &instructions, &text))).await {
-            Ok(Ok(answer)) if answer.text.is_empty() => return Err("ChatGPT answered with nothing".into()),
-            Ok(Ok(answer)) => answer,
-            Ok(Err(err)) => return Err(format!("ChatGPT couldn't do it: {err:#}")),
-            Err(_) => return Err(format!("ChatGPT didn't answer within {} s", REWRITE_BUDGET.as_secs())),
-        };
+    let asked = ask(&style, &instructions, &text);
+    let answer = match tokio::time::timeout(
+        REWRITE_BUDGET,
+        chatgpt::respond_on(state, &state.tidy.rewrite_socket, &asked),
+    )
+    .await
+    {
+        Ok(Ok(answer)) if answer.text.is_empty() => return Err("ChatGPT answered with nothing".into()),
+        Ok(Ok(answer)) => answer,
+        Ok(Err(err)) => return Err(format!("ChatGPT couldn't do it: {err:#}")),
+        Err(_) => return Err(format!("ChatGPT didn't answer within {} s", REWRITE_BUDGET.as_secs())),
+    };
     tracing::info!(
         "rewrote {} characters in {} ms (first token after {} ms)",
         selection.chars().count(),
@@ -335,7 +354,8 @@ pub async fn rewrite(state: &Arc<AppState>, selection: &str, how: &Rewrite) -> R
         answer.first_token.map_or(0, |d| d.as_millis())
     );
     let leading = &selection[..selection.len() - selection.trim_start().len()];
-    let trailing = &selection[selection.trim_end().len()..];
+    // Not a line's newline: pasted at a shell prompt, it would run the rewrite.
+    let trailing = selection[selection.trim_end().len()..].trim_end_matches(['\n', '\r']);
     Ok(format!("{leading}{}{trailing}", answer.text))
 }
 
