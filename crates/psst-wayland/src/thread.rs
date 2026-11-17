@@ -33,7 +33,7 @@ const JOB_TIMEOUT: Duration = Duration::from_secs(5);
 const NOTHING_SELECTED: &str = "select the text first";
 
 pub(crate) enum Msg {
-    Cmd(WaylandCmd),
+    Cmd(Box<WaylandCmd>),
     Shutdown,
 }
 
@@ -48,7 +48,7 @@ pub(crate) fn run(options: Options, rx: channel::Channel<Msg>, on_event: OnEvent
         }
     };
     let inserted = event_loop.handle().insert_source(rx, |event, _, st: &mut State| match event {
-        channel::Event::Msg(Msg::Cmd(cmd)) => st.on_cmd(cmd),
+        channel::Event::Msg(Msg::Cmd(cmd)) => st.on_cmd(*cmd),
         channel::Event::Msg(Msg::Shutdown) | channel::Event::Closed => st.signal.stop(),
     });
     if let Err(err) = inserted {

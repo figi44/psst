@@ -14,8 +14,8 @@ mod overlay;
 mod thread;
 
 pub use psst_overlay::{
-    HistoryEntry, Listing, MenuAction, MenuOutcome, MenuSpec, ModelChoice, OverlayState, Rgba, Style,
-    post_processing_label,
+    COMMAND_HINT, Command, HistoryEntry, Listing, MenuAction, MenuOutcome, MenuSpec, ModelChoice, OverlayState, Rgba,
+    Selected, Style, post_processing_label,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -166,7 +166,7 @@ impl WaylandThread {
     }
 
     pub fn send(&self, cmd: WaylandCmd) -> Result<(), Stopped> {
-        self.tx.send(thread::Msg::Cmd(cmd)).map_err(|_| Stopped)
+        self.tx.send(thread::Msg::Cmd(Box::new(cmd))).map_err(|_| Stopped)
     }
 }
 

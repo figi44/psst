@@ -11,7 +11,7 @@ use std::{
 
 use psst_config::{AppRule, ClientConfig, ConfigFile, MenuConfig, PasteAction, PostProcessingContext, ProfilesFile};
 use psst_engine_proto::fake::{LoggedRequest, Script, TranscribeStep};
-use psst_proto::{Endpoint, ws::Target};
+use psst_proto::{Endpoint, api::Rewrite, ws::Target};
 use psst_testkit::{
     RealEngine, Sandbox, TestClientConfig, TestDaemon, TestServer, TestServerConfig,
     fake_server::{FakeServer, FakeServerConfig, Outcome},
@@ -19,6 +19,7 @@ use psst_testkit::{
     wayland::{ClipboardOwner, HostKeyboard, keys, screenshot},
     write_wav,
 };
+use psst_wayland::COMMAND_HINT;
 use serde_json::Value;
 use support::{App, Proxy, Seen, Watcher, in_order, menu_bounds, now_us};
 
@@ -225,6 +226,7 @@ fn the_menu_switches_the_profile_and_adds_a_word_from_the_keyboard() {
     assert_eq!(desk.ok(&["toggle"]).trim(), "opened the menu", "a double tap");
     desk.app.wait("leave", WAIT);
     keyboard.tap(keys::KEY_DOWN);
+    keyboard.tap(keys::KEY_DOWN);
     keyboard.tap(keys::KEY_ENTER);
     // Header and both profiles: 3 rows of 36 px and 6 px around them.
     let deadline = Instant::now() + WAIT;
@@ -246,9 +248,16 @@ fn the_menu_switches_the_profile_and_adds_a_word_from_the_keyboard() {
 
     assert_eq!(desk.ok(&["menu"]).trim(), "opened the menu");
     desk.app.wait("leave", WAIT);
-    for key in
-        [keys::KEY_DOWN, keys::KEY_DOWN, keys::KEY_DOWN, keys::KEY_ENTER, keys::KEY_A, keys::KEY_2, keys::KEY_ENTER]
-    {
+    for key in [
+        keys::KEY_DOWN,
+        keys::KEY_DOWN,
+        keys::KEY_DOWN,
+        keys::KEY_DOWN,
+        keys::KEY_ENTER,
+        keys::KEY_A,
+        keys::KEY_2,
+        keys::KEY_ENTER,
+    ] {
         keyboard.tap(key);
     }
     let deadline = Instant::now() + WAIT;
@@ -287,6 +296,28 @@ fn post_processing_hears_which_window_the_dictation_goes_into() {
     assert_pasted(&desk.pasted(Duration::from_secs(5)), "Hi Anna. ");
     let target = Target { app: "psst-paste-target".into(), title: Some("psst paste target".into()) };
     assert_eq!(server.sessions()[0].starts[0].target, Some(target));
+}
+
+#[test]
+fn a_command_from_the_menu_rewrites_the_highlighted_text_in_place() {
+    const SELECTED: &str = "hey can u send me the report";
+    let server = FakeServer::start(FakeServerConfig::default());
+    server.push_rewrite(Ok("Could you send me the report?".into()));
+    let menu = MenuConfig { double_tap_ms: 500 };
+    let desk = Desktop::start_with(server.endpoint(), &test_audio(3_000), |cfg| cfg.menu = menu);
+    let _highlighted = ClipboardOwner::primary(&desk.sandbox, &[("text/plain;charset=utf-8", SELECTED.as_bytes())]);
+    let mut keyboard = HostKeyboard::new(&desk.sandbox);
+
+    desk.ok(&["toggle"]);
+    assert_eq!(desk.ok(&["toggle"]).trim(), "opened the menu", "a double tap");
+    desk.app.wait("leave", WAIT);
+    keyboard.tap(keys::KEY_ENTER);
+    keyboard.tap(keys::KEY_ENTER);
+
+    assert_pasted(&desk.pasted(Duration::from_secs(5)), "Could you send me the report?");
+    let request = &server.rewrite_requests()[0];
+    assert_eq!(request.selection, SELECTED);
+    assert_eq!(request.how, Rewrite::Instruction(COMMAND_HINT.into()), "the placeholder, left empty");
 }
 
 #[test]

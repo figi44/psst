@@ -14,13 +14,13 @@ use psst_client::{
 };
 use psst_config::{ClientConfig, PasteAction, PostProcessingContext, Sounds, layers};
 use psst_proto::{
-    ClientTimings, DeviceId, Endpoint, ErrorCode, FRAME_MS, SessionId, Token,
+    ClientTimings, DeviceId, Endpoint, ErrorCode, FRAME_MS, MAX_SELECTION_CHARS, SessionId, Token,
     api::{HistoryRow, PairRedeemed, routes},
     ws::{Feature, FinalMsg, Mode, ProgressState, Target},
 };
 use psst_wayland::{
-    Chord, HistoryEntry, Listing, MenuAction, MenuOutcome, MenuSpec, ModelChoice, OverlayState, WaylandCmd,
-    WaylandEvent, post_processing_label,
+    Chord, Command, HistoryEntry, Listing, MenuAction, MenuOutcome, MenuSpec, ModelChoice, OverlayState, Selected,
+    WaylandCmd, WaylandEvent, post_processing_label,
 };
 use serde_json::{Value, json};
 use tokio::{
@@ -80,6 +80,11 @@ impl Default for Timing {
 }
 
 const OPENING_WEB_UI: &str = "Opening the web UI\u{2026}";
+const REWRITING: &str = "Rewriting\u{2026}";
+/// Past the API call's own timeout: the answer clears it.
+const REWRITING_SHOWN: Duration = Duration::from_secs(35);
+/// As much of the selection as the menu shows.
+const PREVIEW_CHARS: usize = 80;
 
 /// Caps for slow links, so a dead server is still noticed quickly.
 const MAX_PONG: Duration = Duration::from_secs(2);
@@ -307,6 +312,7 @@ enum Input {
     },
     MenuFact(menu::Fact),
     MenuDone(menu::Done),
+    Rewritten(Result<String, String>),
     /// The server's settings for this device, or its limits, changed.
     Pushed {
         epoch: u64,
@@ -569,6 +575,14 @@ struct MenuState {
     post_processing: Listing,
     model: Option<ModelChoice>,
     history: Listing<HistoryRow>,
+    /// Read as the menu opens, for a command to rewrite: what the user sees is what changes.
+    selection: Selection,
+}
+
+enum Selection {
+    Reading(u64),
+    Text(String),
+    Missing(String),
 }
 
 /// client.toml and the server's settings over it.
@@ -687,6 +701,7 @@ impl Core {
                 post_processing: Listing::Loading,
                 model: None,
                 history: Listing::Loading,
+                selection: Selection::Missing(String::new()),
             },
             store,
             deps,
@@ -786,6 +801,7 @@ impl Core {
             }
             Input::Pushed { .. } => {}
             Input::MenuDone(done) => self.on_menu_done(done),
+            Input::Rewritten(result) => self.on_rewritten(result),
             Input::Resumed => {
                 self.resumed_at = Some(Instant::now());
                 if let Some(client) = self.client.take() {
@@ -952,6 +968,9 @@ impl Core {
             return Response::err(format!("cannot show the menu: {reason}"));
         }
         self.menu.open = true;
+        let generation = self.next_generation();
+        self.menu.selection = Selection::Reading(generation);
+        self.wayland(WaylandCmd::ReadSelection { generation });
         if matches!(self.menu.profiles, Listing::Failed(_)) {
             self.menu.profiles = Listing::Loading;
         }
@@ -1010,6 +1029,7 @@ impl Core {
         let progress = match &action {
             MenuAction::SwitchProfile(name) => return self.switch_profile(name.clone()),
             MenuAction::SwitchPostProcessing(style) => return self.switch_post_processing(style.clone()),
+            MenuAction::Command(command) => return self.rewrite(command.clone()),
             MenuAction::Paste(key) | MenuAction::Copy(key) | MenuAction::Discard(key) => {
                 let response = self.history_action(key, &action);
                 if !response.ok {
@@ -1043,6 +1063,38 @@ impl Core {
             }
             Err(message) => self.error_notice(&message),
         }
+    }
+
+    fn rewrite(&mut self, command: Command) {
+        let Selection::Text(selection) = &self.menu.selection else { return };
+        let (api, tx, selection) = (self.api(), self.tx.clone(), selection.clone());
+        self.notice(OverlayState::Flash { message: REWRITING.into() }, REWRITING_SHOWN);
+        tokio::spawn(async move {
+            let _ = tx.send(Input::Rewritten(menu::rewrite(api, selection, command).await));
+        });
+    }
+
+    fn on_rewritten(&mut self, result: Result<String, String>) {
+        self.notice.take_if(|(state, _)| matches!(state, OverlayState::Flash { message } if message == REWRITING));
+        match result {
+            Ok(text) => {
+                self.queue_redelivery(text, false, None);
+            }
+            Err(message) => self.error_notice(&message),
+        }
+    }
+
+    fn on_selected(&mut self, generation: u64, text: Result<String, String>) {
+        if !matches!(self.menu.selection, Selection::Reading(g) if g == generation) {
+            return;
+        }
+        self.menu.selection = match text {
+            Ok(text) if text.chars().count() > MAX_SELECTION_CHARS => {
+                Selection::Missing(format!("select at most {MAX_SELECTION_CHARS} characters"))
+            }
+            Ok(text) => Selection::Text(text),
+            Err(reason) => Selection::Missing(reason),
+        };
     }
 
     fn history_action(&mut self, key: &str, action: &MenuAction) -> Response {
@@ -1137,6 +1189,17 @@ impl Core {
             model: self.menu.model,
             saved: saved.iter().map(entry).collect(),
             history,
+            selection: match &self.menu.selection {
+                Selection::Reading(_) => Selected::Reading,
+                Selection::Text(text) => {
+                    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                    Selected::Text(match flat.char_indices().nth(PREVIEW_CHARS) {
+                        Some((cut, _)) => format!("{}\u{2026}", &flat[..cut]),
+                        None => flat,
+                    })
+                }
+                Selection::Missing(reason) => Selected::Missing(reason.clone()),
+            },
         }
     }
 
@@ -2122,7 +2185,7 @@ impl Core {
                 self.delivered(generation);
             }
             WaylandEvent::Failed { generation, reason } => self.insert_failed(generation, reason),
-            WaylandEvent::Selected { .. } => {}
+            WaylandEvent::Selected { generation, text } => self.on_selected(generation, text),
             WaylandEvent::Menu(MenuOutcome::Kept(action)) => self.menu_action(action),
             // `shown` stays: an update sent before this arrived may have opened it again, so the
             // next refresh closes it for certain.
