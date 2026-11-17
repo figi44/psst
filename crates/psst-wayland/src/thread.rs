@@ -26,6 +26,8 @@ use crate::overlay::{Globals as SurfaceGlobals, Overlay};
 use crate::{Chord, DataControl, Options, WaylandCmd, WaylandEvent, keymap};
 
 const READ_CAP: usize = 10 * 1024 * 1024;
+/// Past any selection a command takes (10,000 characters), so a huge one isn't read whole.
+const PRIMARY_CAP: usize = 64 * 1024;
 const READ_TIMEOUT: Duration = Duration::from_secs(2);
 /// For a reader that never reads.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -582,7 +584,8 @@ impl State {
                         }
                         Ok(n) => {
                             buf.extend_from_slice(&chunk[..n]);
-                            if buf.len() > READ_CAP {
+                            let cap = if matches!(reader, Reader::Primary(_)) { PRIMARY_CAP } else { READ_CAP };
+                            if buf.len() > cap {
                                 buf = Vec::new();
                                 st.finish_read(reader, Err(ReadError::TooLarge));
                                 return Ok(PostAction::Remove);
@@ -627,7 +630,7 @@ impl State {
                     Err(ReadError::Timeout) => {
                         Err(format!("the app holding the selection didn't send it within {} s", READ_TIMEOUT.as_secs()))
                     }
-                    Err(ReadError::TooLarge) => Err("the selection is too large".into()),
+                    Err(ReadError::TooLarge) => Err("select less text".into()),
                     Err(ReadError::Io(err)) => Err(format!("cannot read the selection: {err}")),
                 };
                 self.emit(WaylandEvent::Selected { generation, text });
