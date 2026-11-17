@@ -311,6 +311,7 @@ enum Input {
     MenuFact(menu::Fact),
     MenuDone(menu::Done),
     Rewritten {
+        generation: u64,
         result: Result<String, String>,
         /// Focused as it was asked for, with niri.
         window: Option<u64>,
@@ -566,6 +567,8 @@ struct RewriteTarget {
 
 /// A command's rewrite on its way. One at a time, so answers can't land out of order.
 struct Rewriting {
+    /// Its answer's: one from a cancelled rewrite may still be on its way.
+    generation: u64,
     selection: String,
     task: tokio::task::JoinHandle<()>,
 }
@@ -825,7 +828,7 @@ impl Core {
             }
             Input::Pushed { .. } => {}
             Input::MenuDone(done) => self.on_menu_done(done),
-            Input::Rewritten { result, window } => self.on_rewritten(result, window),
+            Input::Rewritten { generation, result, window } => self.on_rewritten(generation, result, window),
             Input::Resumed => {
                 self.resumed_at = Some(Instant::now());
                 if let Some(client) = self.client.take() {
@@ -1104,19 +1107,20 @@ impl Core {
         let Selection::Text(selection) = &self.menu.selection else { return };
         let (api, tx, selection) = (self.api(), self.tx.clone(), selection.clone());
         let (sent, niri, timeout) = (selection.clone(), self.deps.niri_socket.clone(), self.deps.timing.niri_lookup);
+        let generation = self.next_generation();
         let task = tokio::spawn(async move {
             let focused = async {
                 let socket = niri?;
                 niri::focused_window(&socket, timeout).await?.id
             };
             let (window, result) = tokio::join!(focused, menu::rewrite(api, sent, command));
-            let _ = tx.send(Input::Rewritten { result, window });
+            let _ = tx.send(Input::Rewritten { generation, result, window });
         });
-        self.rewriting = Some(Rewriting { selection, task });
+        self.rewriting = Some(Rewriting { generation, selection, task });
     }
 
-    fn on_rewritten(&mut self, result: Result<String, String>, window: Option<u64>) {
-        let Some(Rewriting { selection, .. }) = self.rewriting.take() else { return };
+    fn on_rewritten(&mut self, generation: u64, result: Result<String, String>, window: Option<u64>) {
+        let Some(Rewriting { selection, .. }) = self.rewriting.take_if(|r| r.generation == generation) else { return };
         match result {
             Ok(text) => {
                 let target = RewriteTarget { selection, window };
@@ -1157,9 +1161,27 @@ impl Core {
         self.send_insert(generation, PasteAction::CopyOnly, 0);
     }
 
+    /// The menu opened while the rewrite was being checked: a paste now would land in it. It goes
+    /// again, checks and all, once the menu closes.
+    fn requeue_for_menu(&mut self, generation: u64) -> bool {
+        if !self.menu.open {
+            return false;
+        }
+        let Some(Inserting { what: Delivering::Redelivery(r), .. }) =
+            self.inserting.take_if(|i| i.generation == generation)
+        else {
+            return false;
+        };
+        self.redeliver.push_front(r);
+        true
+    }
+
     fn on_selected(&mut self, generation: u64, text: Result<String, String>) {
         if let Some(r) = self.rewrite_target(generation) {
             let same = r.target.as_ref().is_some_and(|t| text.as_ref().is_ok_and(|now| *now == t.selection));
+            if self.requeue_for_menu(generation) {
+                return;
+            }
             if !same {
                 return self.redirect_rewrite(generation, "The selection changed: the rewrite is in the clipboard");
             }
@@ -1303,12 +1325,15 @@ impl Core {
     fn cancel(&mut self) -> Response {
         if self.recording.is_none() {
             let queued = self.redeliver.iter().position(|r| r.rewrite);
-            let cancelled = match self.rewriting.take() {
-                Some(rewriting) => {
-                    rewriting.task.abort();
-                    true
-                }
-                None => queued.and_then(|i| self.redeliver.remove(i)).is_some(),
+            let checking = |i: &mut Inserting| matches!(&i.what, Delivering::Redelivery(r) if r.target.is_some());
+            let cancelled = if let Some(rewriting) = self.rewriting.take() {
+                rewriting.task.abort();
+                true
+            } else if let Some(i) = queued {
+                self.redeliver.remove(i).is_some()
+            } else {
+                // Its checks' answers find nothing to go on with.
+                self.inserting.take_if(checking).is_some()
             };
             if cancelled {
                 info!("cancelled the rewrite");
@@ -2260,16 +2285,32 @@ impl Core {
     }
 
     fn on_focus(&mut self, generation: u64, window: Option<niri::Window>) {
+        if self.rewrite_target(generation).is_some() && self.requeue_for_menu(generation) {
+            return;
+        }
         let niri = self.deps.niri_socket.is_some();
         if let Some(r) = self.rewrite_target(generation)
             && let Some(target) = r.target.take()
             && niri
-            && (target.window.is_none() || target.window != window.as_ref().and_then(|w| w.id))
         {
-            return self.redirect_rewrite(generation, "The window changed: the rewrite is in the clipboard");
+            let note = match target.window {
+                None => Some("Couldn't check the window: the rewrite is in the clipboard"),
+                asked if asked != window.as_ref().and_then(|w| w.id) => {
+                    Some("The window changed: the rewrite is in the clipboard")
+                }
+                _ => None,
+            };
+            if let Some(note) = note {
+                return self.redirect_rewrite(generation, note);
+            }
         }
         let app_id = window.map(|w| w.app_id);
         let rule = self.cfg.paste_for(app_id.as_deref());
+        // A terminal's paste goes in at its prompt, the selection untouched.
+        if rule.action == PasteAction::CtrlShiftV && self.inserting_rewrite(generation).is_some() {
+            return self
+                .redirect_rewrite(generation, "Terminals can't replace a selection: the rewrite is in the clipboard");
+        }
         debug!("pasting into {app_id:?} with {rule:?}");
         self.send_insert(generation, rule.action, rule.delay_ms);
     }

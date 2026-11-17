@@ -2,7 +2,7 @@ use psst_proto::{
     MAX_SELECTION_CHARS,
     api::{ApiError, ApiErrorCode, Rewrite, RewriteRequest},
 };
-use psst_wayland::{Command, MenuAction, MenuOutcome, Selected};
+use psst_wayland::{Command, MenuAction, MenuOutcome, Selected, WaylandCmd};
 
 use super::*;
 
@@ -106,6 +106,98 @@ async fn a_rewrite_never_lands_in_another_window() {
     assert_eq!(d.wayland.inserted(), vec![Inserted::Copy(REWRITTEN.into())]);
     let note = "The window changed: the rewrite is in the clipboard";
     assert!(d.wayland.showed(|s| matches!(s, OverlayState::Flash { message } if message == note)));
+    d.stop().await;
+}
+
+/// Answers each `FocusedWindow` with the same window, `delay` late: time for the test to act
+/// while a rewrite's checks wait on it.
+fn slow_niri(dir: &Path, app_id: &'static str, delay: Duration) -> PathBuf {
+    use tokio::{
+        io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+        net::UnixListener,
+    };
+    let niri = dir.join("niri.sock");
+    let listener = UnixListener::bind(&niri).unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                let (read, mut write) = stream.into_split();
+                BufReader::new(read).read_line(&mut String::new()).await.unwrap();
+                tokio::time::sleep(delay).await;
+                let reply = serde_json::json!({ "Ok": { "FocusedWindow": { "id": 1, "app_id": app_id } } });
+                let _ = write.write_all(format!("{reply}\n").as_bytes()).await;
+            });
+        }
+    });
+    niri
+}
+
+async fn with_niri(server: &FakeServer, niri: PathBuf) -> Daemon {
+    let (d, _) = open_menu_with(server, Some(SELECTED), |deps| {
+        deps.niri_socket = Some(niri);
+        deps.timing.niri_lookup = Duration::from_secs(5);
+    })
+    .await;
+    d
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rewrite_in_a_terminal_goes_to_the_clipboard() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = FakeServer::start(FakeServerConfig::default());
+    server.push_rewrite(Ok(REWRITTEN.into()));
+    let d = with_niri(&server, slow_niri(dir.path(), "com.mitchellh.ghostty", Duration::ZERO)).await;
+
+    choose(&d, Command::Instruction("make it polite".into()));
+    wait_until(|| !d.wayland.inserted().is_empty()).await;
+    d.idle().await;
+
+    assert_eq!(d.wayland.inserted(), vec![Inserted::Copy(REWRITTEN.into())], "not typed at the prompt");
+    let note = "Terminals can't replace a selection: the rewrite is in the clipboard";
+    assert!(d.wayland.showed(|s| matches!(s, OverlayState::Flash { message } if message == note)));
+    d.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rewrite_waits_out_a_menu_opened_while_it_was_checked() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = FakeServer::start(FakeServerConfig::default());
+    server.push_rewrite(Ok(REWRITTEN.into()));
+    let d = with_niri(&server, slow_niri(dir.path(), "org.gnome.TextEditor", Duration::from_millis(500))).await;
+
+    choose(&d, Command::Instruction("make it polite".into()));
+    // Asked for, answered, and now waiting on the window lookup before it goes in.
+    wait_until(|| {
+        d.wayland.cmds.lock().unwrap().iter().filter(|c| matches!(c, WaylandCmd::ReadSelection { .. })).count() == 2
+    })
+    .await;
+    assert!(d.run(Request::Menu).await.ok);
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert!(d.wayland.inserted().is_empty(), "nothing goes into the menu");
+
+    d.wayland.send(WaylandEvent::Menu(MenuOutcome::Closed));
+    wait_until(|| !d.wayland.inserted().is_empty()).await;
+    assert_eq!(d.wayland.inserted(), vec![paste(REWRITTEN)], "checked again, then pasted");
+    d.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancel_stops_a_rewrite_while_it_is_checked() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = FakeServer::start(FakeServerConfig::default());
+    server.push_rewrite(Ok(REWRITTEN.into()));
+    let d = with_niri(&server, slow_niri(dir.path(), "org.gnome.TextEditor", Duration::from_millis(500))).await;
+
+    choose(&d, Command::Instruction("make it polite".into()));
+    wait_until(|| {
+        d.wayland.cmds.lock().unwrap().iter().filter(|c| matches!(c, WaylandCmd::ReadSelection { .. })).count() == 2
+    })
+    .await;
+    assert_eq!(d.run(Request::Cancel).await.message, "cancelled the rewrite");
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    d.idle().await;
+    assert!(d.wayland.inserted().is_empty());
     d.stop().await;
 }
 
