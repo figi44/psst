@@ -2122,6 +2122,7 @@ impl Core {
                 self.delivered(generation);
             }
             WaylandEvent::Failed { generation, reason } => self.insert_failed(generation, reason),
+            WaylandEvent::Selected { .. } => {}
             WaylandEvent::Menu(MenuOutcome::Kept(action)) => self.menu_action(action),
             // `shown` stays: an update sent before this arrived may have opened it again, so the
             // next refresh closes it for certain.
@@ -2205,8 +2206,8 @@ impl Core {
     fn wayland(&mut self, cmd: WaylandCmd) {
         if let Err(reason) = self.connect_wayland() {
             debug!("no Wayland: {reason}");
-            if let WaylandCmd::Paste { generation, .. } | WaylandCmd::Copy { generation, .. } = cmd {
-                let _ = self.wayland_tx.send(WaylandEvent::Failed { generation, reason });
+            if let Some(answer) = crate::ui::unanswered(&cmd) {
+                let _ = self.wayland_tx.send(answer(reason));
             }
             return;
         }

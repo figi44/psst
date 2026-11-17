@@ -30,6 +30,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(2);
 /// For a reader that never reads.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const JOB_TIMEOUT: Duration = Duration::from_secs(5);
+const NOTHING_SELECTED: &str = "select the text first";
 
 pub(crate) enum Msg {
     Cmd(WaylandCmd),
@@ -85,6 +86,12 @@ struct Io {
     timer: RegistrationToken,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Reader {
+    Clipboard(ReadId),
+    Primary(Gen),
+}
+
 struct ConnFd(wayland_client::backend::Backend);
 
 impl AsFd for ConnFd {
@@ -105,6 +112,8 @@ pub(crate) struct Wl {
     vk: Option<ZwpVirtualKeyboardV1>,
     offers: HashMap<OfferKey, DcOffer>,
     current_offer: Option<OfferKey>,
+    /// psst never sets the primary selection, so it's always someone else's.
+    primary: Option<DcOffer>,
     next_offer: OfferKey,
     latest: Option<(DcSource, OwnKind)>,
 }
@@ -117,7 +126,7 @@ pub(crate) struct State {
     machine: Machine,
     pub(crate) wl: Option<Wl>,
     jobs: HashMap<Gen, Job>,
-    reads: HashMap<ReadId, Io>,
+    reads: HashMap<Reader, Io>,
     writes: HashMap<u64, Io>,
     next_write: u64,
     pub(crate) overlay: Overlay,
@@ -248,6 +257,7 @@ impl State {
             vk,
             offers: HashMap::new(),
             current_offer: None,
+            primary: None,
             next_offer: 1,
             latest: None,
         });
@@ -330,9 +340,18 @@ impl State {
         let Some(wl) = self.wl.take() else { return };
         log::warn!("psst-wayland: lost the Wayland connection: {reason}");
         self.lh.remove(wl.fd_source);
-        for (_, io) in self.reads.drain().chain(self.writes.drain()) {
+        for (_, io) in self.writes.drain() {
             self.lh.remove(io.source);
             self.lh.remove(io.timer);
+        }
+        let reads: Vec<_> = self.reads.drain().collect();
+        for (reader, io) in reads {
+            self.lh.remove(io.source);
+            self.lh.remove(io.timer);
+            if let Reader::Primary(generation) = reader {
+                let text = Err("the Wayland connection was lost".into());
+                self.emit(WaylandEvent::Selected { generation, text });
+            }
         }
         self.machine.handle(Input::Reset);
         self.overlay.forget_surface();
@@ -372,7 +391,24 @@ impl State {
                     self.feed(Input::CopyRequested { generation, text });
                 }
             },
+            WaylandCmd::ReadSelection { generation } => self.read_primary(generation),
         }
+    }
+
+    fn read_primary(&mut self, generation: Gen) {
+        if let Err(reason) = self.clipboard_ready(false) {
+            self.emit(WaylandEvent::Selected { generation, text: Err(reason) });
+            return;
+        }
+        let primary = self.wl.as_ref().and_then(|wl| wl.primary.clone());
+        let Some((offer, mime)) = primary.and_then(|offer| {
+            let mime = clipboard::choose_text_mime(&offer.mimes())?;
+            Some((offer, mime))
+        }) else {
+            self.emit(WaylandEvent::Selected { generation, text: Err(NOTHING_SELECTED.into()) });
+            return;
+        };
+        self.read_offer(Reader::Primary(generation), &offer, mime.to_owned());
     }
 
     fn clipboard_ready(&mut self, paste: bool) -> Result<(), String> {
@@ -423,7 +459,7 @@ impl State {
         match action {
             Action::Read { id, offer, mime } => self.start_read(id, offer, mime),
             Action::CancelRead { id } => {
-                if let Some(io) = self.reads.remove(&id) {
+                if let Some(io) = self.reads.remove(&Reader::Clipboard(id)) {
                     self.lh.remove(io.source);
                     self.lh.remove(io.timer);
                 }
@@ -517,11 +553,15 @@ impl State {
             self.feed(Input::ReadDone { id, result: Err(ReadError::Io("the offer is gone".into())) });
             return;
         };
+        self.read_offer(Reader::Clipboard(id), &offer, mime);
+    }
+
+    fn read_offer(&mut self, reader: Reader, offer: &DcOffer, mime: String) {
         // Only our end is non-blocking: the source writes to its end as it likes.
         let (read, write) = match pipe_with(PipeFlags::CLOEXEC) {
             Ok(pipe) => pipe,
             Err(err) => {
-                self.feed(Input::ReadDone { id, result: Err(ReadError::Io(err.to_string())) });
+                self.read_done(reader, Err(ReadError::Io(err.to_string())));
                 return;
             }
         };
@@ -537,21 +577,21 @@ impl State {
                 loop {
                     match rustix::io::read(&**fd, &mut chunk) {
                         Ok(0) => {
-                            st.finish_read(id, Ok(std::mem::take(&mut buf)));
+                            st.finish_read(reader, Ok(std::mem::take(&mut buf)));
                             return Ok(PostAction::Remove);
                         }
                         Ok(n) => {
                             buf.extend_from_slice(&chunk[..n]);
                             if buf.len() > READ_CAP {
                                 buf = Vec::new();
-                                st.finish_read(id, Err(ReadError::TooLarge));
+                                st.finish_read(reader, Err(ReadError::TooLarge));
                                 return Ok(PostAction::Remove);
                             }
                         }
                         Err(Errno::AGAIN) => return Ok(PostAction::Continue),
                         Err(Errno::INTR) => continue,
                         Err(err) => {
-                            st.finish_read(id, Err(ReadError::Io(err.to_string())));
+                            st.finish_read(reader, Err(ReadError::Io(err.to_string())));
                             return Ok(PostAction::Remove);
                         }
                     }
@@ -559,18 +599,39 @@ impl State {
             })
             .expect("calloop accepts pipes");
         let timer = self.after(READ_TIMEOUT, move |st| {
-            if let Some(io) = st.reads.remove(&id) {
+            if let Some(io) = st.reads.remove(&reader) {
                 st.lh.remove(io.source);
-                st.feed(Input::ReadDone { id, result: Err(ReadError::Timeout) });
+                st.read_done(reader, Err(ReadError::Timeout));
             }
         });
-        self.reads.insert(id, Io { source, timer });
+        self.reads.insert(reader, Io { source, timer });
     }
 
-    fn finish_read(&mut self, id: ReadId, result: Result<Vec<u8>, ReadError>) {
-        if let Some(io) = self.reads.remove(&id) {
+    fn finish_read(&mut self, reader: Reader, result: Result<Vec<u8>, ReadError>) {
+        if let Some(io) = self.reads.remove(&reader) {
             self.lh.remove(io.timer);
-            self.feed(Input::ReadDone { id, result });
+            self.read_done(reader, result);
+        }
+    }
+
+    fn read_done(&mut self, reader: Reader, result: Result<Vec<u8>, ReadError>) {
+        match reader {
+            Reader::Clipboard(id) => self.feed(Input::ReadDone { id, result }),
+            Reader::Primary(generation) => {
+                let text = match result {
+                    Ok(data) => match String::from_utf8(data) {
+                        Ok(text) if !text.trim().is_empty() => Ok(text),
+                        Ok(_) => Err(NOTHING_SELECTED.into()),
+                        Err(_) => Err("the selection isn't UTF-8 text".into()),
+                    },
+                    Err(ReadError::Timeout) => {
+                        Err(format!("the app holding the selection didn't send it within {} s", READ_TIMEOUT.as_secs()))
+                    }
+                    Err(ReadError::TooLarge) => Err("the selection is too large".into()),
+                    Err(ReadError::Io(err)) => Err(format!("cannot read the selection: {err}")),
+                };
+                self.emit(WaylandEvent::Selected { generation, text });
+            }
         }
     }
 
@@ -651,6 +712,13 @@ impl DcHandler for State {
             (None, None) => Owner::Empty,
         };
         self.feed(Input::SelectionChanged(owner));
+    }
+
+    fn dc_primary_selection(&mut self, offer: Option<DcOffer>) {
+        let Some(wl) = self.wl.as_mut() else { return };
+        if let Some(old) = std::mem::replace(&mut wl.primary, offer) {
+            old.destroy();
+        }
     }
 
     fn dc_send(&mut self, source: &DcSource, mime: String, fd: OwnedFd) {

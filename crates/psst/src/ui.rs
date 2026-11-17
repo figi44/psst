@@ -114,17 +114,11 @@ struct DesktopSink {
 
 impl WaylandSink for DesktopSink {
     fn send(&mut self, cmd: WaylandCmd) {
-        let generation = match &cmd {
-            WaylandCmd::Paste { generation, .. } | WaylandCmd::Copy { generation, .. } => Some(*generation),
-            WaylandCmd::Overlay(_)
-            | WaylandCmd::Menu(_)
-            | WaylandCmd::SnapshotClipboard { .. }
-            | WaylandCmd::Configure(_) => None,
-        };
+        let unanswered = unanswered(&cmd);
         if let Err(stopped) = self.running.thread.send(cmd) {
             self.running.stopped.store(true, Ordering::Release);
-            if let Some(generation) = generation {
-                let _ = self.events.send(WaylandEvent::Failed { generation, reason: stopped.to_string() });
+            if let Some(answer) = unanswered {
+                let _ = self.events.send(answer(stopped.to_string()));
             }
             if !std::mem::replace(&mut self.dead, true) {
                 tracing::warn!("{stopped}; starting it again");
@@ -132,6 +126,24 @@ impl WaylandSink for DesktopSink {
             }
         }
     }
+}
+
+/// What a command the Wayland thread never got answers, for those the daemon waits on.
+pub fn unanswered(cmd: &WaylandCmd) -> Option<impl FnOnce(String) -> WaylandEvent + use<>> {
+    let (generation, read) = match cmd {
+        WaylandCmd::Paste { generation, .. } | WaylandCmd::Copy { generation, .. } => (*generation, false),
+        WaylandCmd::ReadSelection { generation } => (*generation, true),
+        WaylandCmd::Overlay(_)
+        | WaylandCmd::Menu(_)
+        | WaylandCmd::SnapshotClipboard { .. }
+        | WaylandCmd::Configure(_) => {
+            return None;
+        }
+    };
+    Some(move |reason: String| match read {
+        true => WaylandEvent::Selected { generation, text: Err(reason) },
+        false => WaylandEvent::Failed { generation, reason },
+    })
 }
 
 pub struct RecordingWayland {
@@ -182,6 +194,9 @@ impl WaylandSink for RecordingSink {
             WaylandCmd::Menu(_) | WaylandCmd::SnapshotClipboard { .. } | WaylandCmd::Configure(_) => None,
             WaylandCmd::Paste { generation, .. } => Some(WaylandEvent::Pasted { generation }),
             WaylandCmd::Copy { generation, .. } => Some(WaylandEvent::Copied { generation }),
+            WaylandCmd::ReadSelection { generation } => {
+                Some(WaylandEvent::Selected { generation, text: Err("insert.record has no selection".into()) })
+            }
         };
         if let Some(event) = reply {
             let _ = self.events.send(event);
@@ -200,6 +215,7 @@ pub fn record(cmd: &WaylandCmd) -> Value {
             "delay_ms": delay_ms,
         }),
         WaylandCmd::Copy { generation, text } => json!({"cmd": "copy", "generation": generation, "text": text}),
+        WaylandCmd::ReadSelection { generation } => json!({"cmd": "read_selection", "generation": generation}),
         WaylandCmd::Configure(overlay) => json!({"cmd": "configure", "overlay": overlay_config_json(overlay)}),
     }
 }
