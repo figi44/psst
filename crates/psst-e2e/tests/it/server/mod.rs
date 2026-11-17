@@ -12,6 +12,7 @@ mod pages;
 mod phone_pairing;
 mod profiles;
 mod reload;
+mod rewrite;
 mod sessions;
 mod settings;
 mod settings_pages;

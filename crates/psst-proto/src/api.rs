@@ -34,6 +34,9 @@ pub mod routes {
     pub const DICTIONARY_TEST: &str = "/api/dictionary/test";
     pub const PROFILES: &str = "/api/profiles";
     pub const POST_PROCESSING: &str = "/api/post-processing";
+    /// `POST` takes a [`RewriteRequest`](super::RewriteRequest) and answers
+    /// [`Rewritten`](super::Rewritten).
+    pub const REWRITE: &str = "/api/rewrite";
     pub const PROFILES_EXPORT: &str = "/api/profiles/export";
     /// Singular, so that every name (`export` too) has a path.
     pub const PROFILE: &str = "/api/profile/{name}";
@@ -377,6 +380,30 @@ pub struct DictionaryTest {
     /// The `default` profile's when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+}
+
+/// Text the user selected, to be rewritten on the ChatGPT plan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RewriteRequest {
+    /// At most [`crate::MAX_SELECTION_CHARS`].
+    pub selection: String,
+    #[serde(flatten)]
+    pub how: Rewrite,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Rewrite {
+    /// What to do with it, in the user's words.
+    Instruction(String),
+    /// A post-processing style, as [`PostProcessingView`] lists them.
+    Style(String),
+}
+
+/// Keeps the selection's surrounding whitespace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Rewritten {
+    pub text: String,
 }
 
 /// The post-processing styles a dictation can ask for, besides `none`: built-in ones first.

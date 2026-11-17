@@ -23,6 +23,9 @@ pub const FRAME_SAMPLES: usize = 320;
 
 pub const FRAME_BYTES: usize = FRAME_SAMPLES * 2;
 
+/// The longest text [`api::routes::REWRITE`] takes.
+pub const MAX_SELECTION_CHARS: usize = 10_000;
+
 /// Chosen by the client.
 pub type SessionId = uuid::Uuid;
 

@@ -14,7 +14,7 @@ use std::{
 };
 
 use jiff::Timestamp;
-use psst_proto::{Final, ws::Target};
+use psst_proto::{Final, api::Rewrite, ws::Target};
 use serde::{Deserialize, Serialize};
 
 use crate::state::AppState;
@@ -295,6 +295,48 @@ pub async fn dictation(state: &Arc<AppState>, style_id: &str, target: Option<&Ta
         }
         Err(_) => tracing::warn!("post-processing a dictation took over {DICTATION_BUDGET:?}, so it stays as it was"),
     }
+}
+
+const COMMAND_PROMPT: &str = include_str!("../../tidy-prompts/command.txt");
+/// A rewrite is as long as the selection, which can be thousands of words. Under the client's
+/// 30 s, so it hears why rather than a timeout.
+const REWRITE_BUDGET: Duration = Duration::from_secs(25);
+
+/// `selection` rewritten as the user asked, keeping its surrounding whitespace: a double-clicked
+/// word often takes the space after it along. `Err` is the message for the user.
+pub async fn rewrite(state: &Arc<AppState>, selection: &str, how: &Rewrite) -> Result<String, String> {
+    let body = selection.trim();
+    let (style, instructions, text) = match how {
+        Rewrite::Instruction(instruction) => {
+            // The built-in default's model and settings: tuned for speed without reasoning.
+            let style = Style { prompt: COMMAND_PROMPT.trim().to_owned(), ..Style::built_in(prompts::default()) };
+            let instruction = instruction.trim();
+            let text = format!("<selection>\n{body}\n</selection>\n\n<instruction>\n{instruction}\n</instruction>");
+            (style.clone(), style.prompt, text)
+        }
+        Rewrite::Style(id) => {
+            let Some(Entry { style, .. }) = entry(state, id) else { return Err(format!("no style {id:?}")) };
+            let instructions = instructions(state, &style, None);
+            (style, instructions, body.to_owned())
+        }
+    };
+    let started = Instant::now();
+    let answer =
+        match tokio::time::timeout(REWRITE_BUDGET, chatgpt::respond(state, &ask(&style, &instructions, &text))).await {
+            Ok(Ok(answer)) if answer.text.is_empty() => return Err("ChatGPT answered with nothing".into()),
+            Ok(Ok(answer)) => answer,
+            Ok(Err(err)) => return Err(format!("ChatGPT couldn't do it: {err:#}")),
+            Err(_) => return Err(format!("ChatGPT didn't answer within {} s", REWRITE_BUDGET.as_secs())),
+        };
+    tracing::info!(
+        "rewrote {} characters in {} ms (first token after {} ms)",
+        selection.chars().count(),
+        started.elapsed().as_millis(),
+        answer.first_token.map_or(0, |d| d.as_millis())
+    );
+    let leading = &selection[..selection.len() - selection.trim_start().len()];
+    let trailing = &selection[selection.trim_end().len()..];
+    Ok(format!("{leading}{}{trailing}", answer.text))
 }
 
 /// Runs `input` through a style as dictations would, and keeps the run for the page.
