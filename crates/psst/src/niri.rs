@@ -17,10 +17,6 @@ pub struct Window {
     pub title: Option<String>,
 }
 
-pub async fn focused_app_id(socket: &Path, timeout: Duration) -> Option<String> {
-    focused_window(socket, timeout).await.map(|window| window.app_id)
-}
-
 pub async fn focused_window(socket: &Path, timeout: Duration) -> Option<Window> {
     match tokio::time::timeout(timeout, query(socket)).await {
         Ok(Ok(window)) => window,
@@ -83,13 +79,13 @@ mod tests {
     async fn a_window_without_a_title_still_has_its_app() {
         let (_dir, path) =
             fake_niri("{\"Ok\":{\"FocusedWindow\":{\"id\":3,\"title\":null,\"app_id\":\"Slack\"}}}\n").await;
-        assert_eq!(focused_app_id(&path, TIMEOUT).await.as_deref(), Some("Slack"));
+        assert_eq!(focused_window(&path, TIMEOUT).await.map(|w| w.app_id).as_deref(), Some("Slack"));
     }
 
     #[tokio::test]
     async fn no_focused_window_or_no_niri_is_none() {
         let (_dir, path) = fake_niri("{\"Ok\":{\"FocusedWindow\":null}}\n").await;
-        assert_eq!(focused_app_id(&path, TIMEOUT).await, None);
-        assert_eq!(focused_app_id(Path::new("/nonexistent/niri.sock"), TIMEOUT).await, None);
+        assert_eq!(focused_window(&path, TIMEOUT).await, None);
+        assert_eq!(focused_window(Path::new("/nonexistent/niri.sock"), TIMEOUT).await, None);
     }
 }
