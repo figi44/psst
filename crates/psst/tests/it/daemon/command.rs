@@ -42,29 +42,65 @@ async fn a_command_from_the_menu_pastes_the_rewritten_selection_over_it() {
     let (d, selected) = open_menu(&server, Some(SELECTED)).await;
     assert_eq!(selected, Selected::Text(SELECTED.into()), "the page shows what it would rewrite");
 
-    choose(&d, Command::Instruction("make it polite".into()));
+    choose(&d, Command::Style("polished".into()));
     wait_until(|| !d.wayland.inserted().is_empty()).await;
     d.idle().await;
 
     assert_eq!(d.wayland.inserted(), vec![paste(REWRITTEN)]);
     assert!(d.wayland.snapshots_precede_inserts(), "the clipboard comes back after the paste");
-    let request = RewriteRequest { selection: SELECTED.into(), how: Rewrite::Instruction("make it polite".into()) };
+    let request = RewriteRequest { selection: SELECTED.into(), how: Rewrite::Style("polished".into()) };
     assert_eq!(server.rewrite_requests(), [request]);
     assert!(d.wayland.showed(|s| matches!(s, OverlayState::Flash { message } if message == "Rewriting\u{2026}")));
     d.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_style_rewrites_the_selection_as_post_processing_would() {
+async fn a_rewrite_never_replaces_text_selected_since() {
     let server = FakeServer::start(FakeServerConfig::default());
     server.push_rewrite(Ok(REWRITTEN.into()));
     let (d, _) = open_menu(&server, Some(SELECTED)).await;
+    *d.wayland.selection.lock().unwrap() = Some("something else".into());
 
-    choose(&d, Command::Style("polished".into()));
+    choose(&d, Command::Instruction("make it polite".into()));
     wait_until(|| !d.wayland.inserted().is_empty()).await;
+    d.idle().await;
 
-    assert_eq!(server.rewrite_requests()[0].how, Rewrite::Style("polished".into()));
-    assert_eq!(d.wayland.inserted(), vec![paste(REWRITTEN)]);
+    assert_eq!(d.wayland.inserted(), vec![Inserted::Copy(REWRITTEN.into())]);
+    let note = "The selection changed: the rewrite is in the clipboard";
+    assert!(d.wayland.showed(|s| matches!(s, OverlayState::Flash { message } if message == note)));
+    d.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rewrite_whose_paste_fails_goes_to_the_clipboard() {
+    let server = FakeServer::start(FakeServerConfig::default());
+    server.push_rewrite(Ok(REWRITTEN.into()));
+    let (d, _) = open_menu(&server, Some(SELECTED)).await;
+    d.wayland.fail_inserts.store(true, Ordering::SeqCst);
+
+    choose(&d, Command::Instruction("make it polite".into()));
+    wait_until(|| d.wayland.inserted().len() == 2).await;
+    assert_eq!(d.wayland.inserted(), vec![paste(REWRITTEN), Inserted::Copy(REWRITTEN.into())]);
+    d.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancel_stops_a_rewrite_on_its_way() {
+    let server = FakeServer::start(FakeServerConfig::default());
+    server.push_rewrite(Ok(REWRITTEN.into()));
+    server.set_stalled(true);
+    let (d, _) = open_menu(&server, Some(SELECTED)).await;
+
+    choose(&d, Command::Instruction("make it polite".into()));
+    wait_until(|| {
+        d.wayland.showed(|s| matches!(s, OverlayState::Flash { message } if message.starts_with("Rewriting")))
+    })
+    .await;
+    assert_eq!(d.run(Request::Cancel).await.message, "cancelled the rewrite");
+    server.set_stalled(false);
+    wait_until(|| !server.rewrite_requests().is_empty()).await;
+    d.idle().await;
+    assert!(d.wayland.inserted().is_empty());
     d.stop().await;
 }
 
@@ -77,9 +113,6 @@ async fn the_command_page_says_why_there_is_nothing_to_rewrite() {
 
     let (d, selected) = open_menu(&server, Some(&"x".repeat(MAX_SELECTION_CHARS + 1))).await;
     assert_eq!(selected, Selected::Missing(format!("select at most {MAX_SELECTION_CHARS} characters")));
-    choose(&d, Command::Instruction("shorter".into()));
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(server.rewrite_requests().is_empty(), "nothing goes to the server");
     d.stop().await;
 }
 

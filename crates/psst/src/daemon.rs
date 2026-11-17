@@ -81,8 +81,6 @@ impl Default for Timing {
 
 const OPENING_WEB_UI: &str = "Opening the web UI\u{2026}";
 const REWRITING: &str = "Rewriting\u{2026}";
-/// Past the API call's own timeout: the answer clears it.
-const REWRITING_SHOWN: Duration = Duration::from_secs(35);
 /// As much of the selection as the menu shows.
 const PREVIEW_CHARS: usize = 80;
 
@@ -546,6 +544,19 @@ struct Redelivery {
     text: String,
     copy: bool,
     delete: Option<SessionId>,
+    /// A command's rewrite: a failed paste leaves it on the clipboard instead.
+    rewrite: bool,
+    /// Said once it's in, instead of the usual tick.
+    note: Option<&'static str>,
+}
+
+/// A command's rewrite on its way. One at a time, so answers can't land out of order.
+struct Rewriting {
+    /// As the menu showed it: the rewrite replaces this text, and nothing else.
+    selection: String,
+    task: tokio::task::JoinHandle<()>,
+    /// The answer, while the selection is read again to check it's still that text.
+    checking: Option<(u64, String)>,
 }
 
 enum Delivering {
@@ -653,6 +664,7 @@ struct Core {
     recording: Option<Dictation>,
     pipeline: VecDeque<Dictation>,
     redeliver: VecDeque<Redelivery>,
+    rewriting: Option<Rewriting>,
     inserting: Option<Inserting>,
     catch_up: Option<CatchUp>,
     /// Saved recordings that failed on this connection: sent again on the next, or when the menu
@@ -725,6 +737,7 @@ impl Core {
             recording: None,
             pipeline: VecDeque::new(),
             redeliver: VecDeque::new(),
+            rewriting: None,
             inserting: None,
             catch_up: None,
             tried: HashSet::new(),
@@ -1066,25 +1079,59 @@ impl Core {
     }
 
     fn rewrite(&mut self, command: Command) {
+        if self.rewriting.is_some() {
+            return self.error_notice("still rewriting the last selection");
+        }
         let Selection::Text(selection) = &self.menu.selection else { return };
         let (api, tx, selection) = (self.api(), self.tx.clone(), selection.clone());
-        self.notice(OverlayState::Flash { message: REWRITING.into() }, REWRITING_SHOWN);
-        tokio::spawn(async move {
-            let _ = tx.send(Input::Rewritten(menu::rewrite(api, selection, command).await));
+        let sent = selection.clone();
+        let task = tokio::spawn(async move {
+            let _ = tx.send(Input::Rewritten(menu::rewrite(api, sent, command).await));
         });
+        self.rewriting = Some(Rewriting { selection, task, checking: None });
     }
 
     fn on_rewritten(&mut self, result: Result<String, String>) {
-        self.notice.take_if(|(state, _)| matches!(state, OverlayState::Flash { message } if message == REWRITING));
+        if self.rewriting.is_none() {
+            return;
+        }
         match result {
             Ok(text) => {
-                self.queue_redelivery(text, false, None);
+                let generation = self.next_generation();
+                if let Some(rewriting) = &mut self.rewriting {
+                    rewriting.checking = Some((generation, text));
+                }
+                self.wayland(WaylandCmd::ReadSelection { generation });
             }
-            Err(message) => self.error_notice(&message),
+            Err(message) => {
+                self.rewriting = None;
+                self.error_notice(&message);
+            }
         }
     }
 
+    /// The answer can take seconds, in which the user may have selected something else: pasted
+    /// then, it would replace that.
+    fn rewritten(&mut self, rewriting: Rewriting, now: Result<String, String>) {
+        let Some((_, text)) = rewriting.checking else { return };
+        if now.is_ok_and(|now| now == rewriting.selection) {
+            self.queue_rewrite(text, false, None);
+        } else {
+            self.queue_rewrite(text, true, Some("The selection changed: the rewrite is in the clipboard"));
+        }
+    }
+
+    fn queue_rewrite(&mut self, text: String, copy: bool, note: Option<&'static str>) {
+        let generation = self.next_generation();
+        self.wayland(WaylandCmd::SnapshotClipboard { generation });
+        self.redeliver.push_back(Redelivery { generation, text, copy, delete: None, rewrite: true, note });
+    }
+
     fn on_selected(&mut self, generation: u64, text: Result<String, String>) {
+        let checked = |r: &mut Rewriting| matches!(&r.checking, Some((g, _)) if *g == generation);
+        if let Some(rewriting) = self.rewriting.take_if(checked) {
+            return self.rewritten(rewriting, text);
+        }
         if !matches!(self.menu.selection, Selection::Reading(g) if g == generation) {
             return;
         }
@@ -1221,6 +1268,13 @@ impl Core {
     }
 
     fn cancel(&mut self) -> Response {
+        if self.recording.is_none()
+            && let Some(rewriting) = self.rewriting.take()
+        {
+            rewriting.task.abort();
+            info!("cancelled the rewrite");
+            return Response::ok("cancelled the rewrite");
+        }
         let Some(d) = self.recording.take().or_else(|| self.pipeline.pop_back()) else {
             return Response::err("nothing to cancel");
         };
@@ -1330,7 +1384,7 @@ impl Core {
     fn queue_redelivery(&mut self, text: String, copy: bool, delete: Option<SessionId>) -> Response {
         let generation = self.next_generation();
         self.wayland(WaylandCmd::SnapshotClipboard { generation });
-        self.redeliver.push_back(Redelivery { generation, text, copy, delete });
+        self.redeliver.push_back(Redelivery { generation, text, copy, delete, rewrite: false, note: None });
         Response::ok(if copy { "copying" } else { "pasting" })
     }
 
@@ -2214,15 +2268,15 @@ impl Core {
 
     fn delivered(&mut self, generation: u64) {
         let Some(inserting) = self.inserting.take_if(|i| i.generation == generation) else { return };
-        let delete = match &inserting.what {
+        let (delete, note) = match &inserting.what {
             Delivering::Dictation(d) => {
                 self.report(d, Some(Instant::now()));
                 if self.stop_chime.take_if(|(id, _)| *id == d.id).is_some() {
                     self.sound(Sound::Stop);
                 }
-                Some(d.id)
+                (Some(d.id), None)
             }
-            Delivering::Redelivery(r) => r.delete,
+            Delivering::Redelivery(r) => (r.delete, r.note),
         };
         if let Some(id) = delete
             && let Err(err) = self.store.delete(id)
@@ -2235,12 +2289,18 @@ impl Core {
             store::sync_files(&files, &dirs.1);
             store::sync_dir(&dirs.0);
         });
-        self.notice(OverlayState::Done, self.t.done_shown);
+        match note {
+            Some(note) => self.notice(OverlayState::Flash { message: note.into() }, self.t.notice_shown),
+            None => self.notice(OverlayState::Done, self.t.done_shown),
+        }
     }
 
     fn insert_failed(&mut self, generation: u64, reason: String) {
         let Some(inserting) = self.inserting.take_if(|i| i.generation == generation) else { return };
         warn!("inserting failed: {reason}");
+        if let Delivering::Redelivery(Redelivery { rewrite: true, copy: false, text, .. }) = inserting.what {
+            return self.queue_rewrite(text, true, Some("Couldn't paste: the rewrite is in the clipboard"));
+        }
         let hint = match &inserting.what {
             Delivering::Dictation(d) => format!("psst paste-last --session {}", d.id),
             Delivering::Redelivery(_) => "psst paste-last".into(),
@@ -2334,6 +2394,9 @@ impl Core {
         }
         if notice.is_some() {
             return notice;
+        }
+        if self.rewriting.is_some() {
+            return Some(OverlayState::Flash { message: REWRITING.into() });
         }
         if self.inserting.is_some() {
             return Some(OverlayState::Processing);

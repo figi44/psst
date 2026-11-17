@@ -756,6 +756,9 @@ async fn history<S: AsyncRead + AsyncWrite + Unpin>(inner: &Inner, mut stream: S
 
 async fn rewrite<S: AsyncRead + AsyncWrite + Unpin>(inner: &Inner, mut stream: S) {
     let Some((_, body)) = read_request(&mut stream).await else { return };
+    while inner.state().stalled {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     let (status, json) = {
         let mut state = inner.state();
         if let Ok(request) = serde_json::from_slice::<RewriteRequest>(&body) {
