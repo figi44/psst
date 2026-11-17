@@ -17,7 +17,7 @@ https://github.com/user-attachments/assets/a1673e5a-6b4c-4ca0-87cf-086785a7d08e
 - **Android**: a voice keyboard, plus a floating bubble that dictates into any keyboard.
 - **Easy pairing**: machines on your tailnet pair automatically, and a phone pairs by scanning a QR code.
 - **Custom dictionary** for names and jargon. Fix a misheard word straight from your history.
-- **Commands**: highlight some text, double-tap the hotkey and pick Command. Type what to do with it ("make it friendlier", "translate to German"), or pick Light, Polished or your own style, and the result replaces the text. Runs on your ChatGPT plan.
+- **Commands**: highlight some text, double-tap the hotkey and pick Command, the last item (Up from the first). Type what to do with it ("make it friendlier", "translate to German"), or pick Light, Polished or your own style, and the result replaces the text. Runs on your ChatGPT plan.
 - **Optional post-processing** on your ChatGPT plan, in Light, Polished or your own style, adapted to the app you're dictating into.
 - **Web UI** for settings, dictionary, history and paired devices.
 

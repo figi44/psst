@@ -210,6 +210,7 @@ pub mod keys {
     pub const KEY_ESC: u32 = 1;
     pub const KEY_2: u32 = 3;
     pub const KEY_ENTER: u32 = 28;
+    pub const KEY_UP: u32 = 103;
     pub const KEY_A: u32 = 30;
     pub const KEY_DOWN: u32 = 108;
     pub const KEY_LEFTMETA: u32 = 125;
@@ -223,6 +224,7 @@ xkb_keycodes "psst-host" {
     <AE02> = 11;
     <RTRN> = 36;
     <AC01> = 38;
+    <UP> = 111;
     <DOWN> = 116;
     <LWIN> = 133;
 };
@@ -233,6 +235,7 @@ xkb_symbols "psst-host" {
     key <AE02> { [ 2, at ] };
     key <RTRN> { [ Return ] };
     key <AC01> { [ a, A ] };
+    key <UP> { [ Up ] };
     key <DOWN> { [ Down ] };
     key <LWIN> { [ Super_L ] };
     modifier_map Mod4 { <LWIN> };

@@ -355,8 +355,9 @@ impl Menu {
                     ..Item::new("Post-processing", Act::PostProcessings)
                 };
                 let add_word = Item { mark: Mark::Chevron, ..Item::new("Add to dictionary", Act::AddWord) };
+                // Last, so the others keep their digits, and Up from the first reaches it.
                 let command = Item { mark: Mark::Chevron, ..Item::new("Command", Act::Command) };
-                [command, history, profile, post_processing, add_word, model, Item::new("Open web UI", Act::WebUi)]
+                [history, profile, post_processing, add_word, model, Item::new("Open web UI", Act::WebUi), command]
                     .into_iter()
                     .map(Line::Item)
                     .collect()
@@ -717,17 +718,19 @@ mod tests {
     fn arrows_skip_the_model_until_its_state_is_known_and_wrap() {
         let mut menu = Menu::new(spec());
         assert_eq!(menu.selected(), Some(0));
-        for _ in 0..5 {
+        for _ in 0..4 {
             menu.key(Key::Down);
         }
-        assert_eq!(menu.selected(), Some(6), "the model item waits for the server");
+        assert_eq!(menu.selected(), Some(5), "the model item waits for the server");
+        menu.key(Key::Down);
         menu.key(Key::Down);
         assert_eq!(menu.selected(), Some(0));
         menu.key(Key::Up);
-        assert_eq!(menu.selected(), Some(6));
+        menu.key(Key::Up);
+        assert_eq!(menu.selected(), Some(5));
 
         menu.update(MenuSpec { model: Some(ModelChoice::Unload), ..spec() });
-        assert_eq!(menu.selected(), Some(6), "an update keeps the selected item");
+        assert_eq!(menu.selected(), Some(5), "an update keeps the selected item");
         menu.key(Key::Up);
         assert_eq!(menu.key(Key::Enter), chose(MenuAction::UnloadModel));
     }
@@ -735,8 +738,8 @@ mod tests {
     #[test]
     fn digits_choose_items_by_position() {
         let mut menu = Menu::new(MenuSpec { model: Some(ModelChoice::Load), ..spec() });
-        assert_eq!(text(&mut menu, "6"), chose(MenuAction::LoadModel));
-        assert_eq!(text(&mut menu, "7"), chose(MenuAction::OpenWebUi));
+        assert_eq!(text(&mut menu, "5"), chose(MenuAction::LoadModel));
+        assert_eq!(text(&mut menu, "6"), chose(MenuAction::OpenWebUi));
         assert_eq!(text(&mut menu, "9"), None);
         assert_eq!(text(&mut menu, "0"), None);
     }
@@ -744,7 +747,7 @@ mod tests {
     #[test]
     fn the_profile_page_starts_on_the_current_profile_even_when_the_list_arrives_late() {
         let mut menu = Menu::new(spec());
-        assert_eq!(text(&mut menu, "3"), None);
+        assert_eq!(text(&mut menu, "2"), None);
         assert_eq!(menu.lines()[1], Line::Note("Loading\u{2026}".into()));
         assert_eq!(menu.selected(), None);
         assert_eq!(menu.key(Key::Enter), None);
@@ -758,22 +761,22 @@ mod tests {
     #[test]
     fn escape_goes_back_a_page_then_closes() {
         let mut menu = Menu::new(MenuSpec { profiles: ready(&["en"]), ..spec() });
-        text(&mut menu, "5");
+        text(&mut menu, "4");
         assert_eq!(labels(&menu), ["< Add to dictionary", "[The word as it should be written]"]);
         assert_eq!(menu.key(Key::Escape), None);
-        assert_eq!(menu.selected(), Some(4), "back on the item that opened the page");
+        assert_eq!(menu.selected(), Some(3), "back on the item that opened the page");
         menu.key(Key::Up);
         menu.key(Key::Up);
         menu.key(Key::Right);
         assert_eq!(menu.key(Key::Left), None);
-        assert_eq!(menu.selected(), Some(2));
+        assert_eq!(menu.selected(), Some(1));
         assert_eq!(menu.key(Key::Escape), Some(MenuOutcome::Closed));
     }
 
     #[test]
     fn the_word_field_edits_like_a_text_field() {
         let mut menu = Menu::new(spec());
-        text(&mut menu, "5");
+        text(&mut menu, "4");
         assert_eq!(menu.key(Key::Enter), None, "nothing to add yet");
         for key in ["K", "u", "b", "e", "r", "n", "ě", "t"] {
             text(&mut menu, key);
@@ -801,13 +804,13 @@ mod tests {
         let mut menu = Menu::new(MenuSpec { profiles: ready(&["cs", "en"]), ..spec() });
         let row = |i: usize| (PAD + ROW * (i as f32 + 0.5)) as f64;
         assert!(!menu.hover(100.0, row(0)), "already selected");
-        assert!(!menu.hover(100.0, row(5)), "the model item can't be selected yet");
-        assert!(menu.hover(100.0, row(6)));
-        assert!(!menu.hover(2.0, row(2)), "the margin isn't a row");
-        assert_eq!(menu.click(100.0, row(2)), None);
+        assert!(!menu.hover(100.0, row(4)), "the model item can't be selected yet");
+        assert!(menu.hover(100.0, row(5)));
+        assert!(!menu.hover(2.0, row(1)), "the margin isn't a row");
+        assert_eq!(menu.click(100.0, row(1)), None);
         assert_eq!(menu.size(), (MENU_WIDTH, (2.0 * PAD + 3.0 * ROW) as u32));
         assert_eq!(menu.click(100.0, row(0)), None, "the header");
-        assert_eq!(menu.click(100.0, row(6)), chose(MenuAction::OpenWebUi));
+        assert_eq!(menu.click(100.0, row(5)), chose(MenuAction::OpenWebUi));
     }
 
     #[test]
@@ -815,11 +818,11 @@ mod tests {
         let saved = vec![entry("a", Some("Hi Jan, I looked at it.")), entry("b", None)];
         let past = vec![entry("c", Some("Sounds good.")), entry("d", None)];
         let mut menu = Menu::new(MenuSpec { saved, ..spec() });
-        assert_eq!(menu.lines()[1], {
+        assert_eq!(menu.lines()[0], {
             let item = Item { detail: Some("1 new".into()), mark: Mark::Chevron, ..Item::new("History", Act::History) };
             Line::Item(item)
         });
-        text(&mut menu, "2");
+        text(&mut menu, "1");
         assert_eq!(
             labels(&menu),
             [
@@ -844,7 +847,7 @@ mod tests {
         assert_eq!(menu.key(Key::Delete), None, "the server's history isn't this machine's to discard");
         assert_eq!(text(&mut menu, "3"), chose(MenuAction::Paste("c".into())));
         menu.key(Key::Escape);
-        assert_eq!(menu.selected(), Some(1));
+        assert_eq!(menu.selected(), Some(0));
         assert_eq!(menu.size().0, MENU_WIDTH);
     }
 
@@ -852,7 +855,7 @@ mod tests {
     fn a_transcribed_dictation_is_discarded_at_once_and_a_waiting_one_on_a_second_delete() {
         let saved = vec![entry("a", Some("Kept.")), entry("b", None), entry("c", None)];
         let mut menu = Menu::new(MenuSpec { saved, history: Listing::Ready(vec![]), ..spec() });
-        text(&mut menu, "2");
+        text(&mut menu, "1");
         assert_eq!(menu.key(Key::Delete), Some(MenuOutcome::Kept(MenuAction::Discard("a".into()))));
 
         menu.key(Key::Down);
@@ -880,16 +883,16 @@ mod tests {
     fn the_history_shows_ten_dictations_at_most() {
         let saved: Vec<_> = (0..12).map(|i| entry(&format!("s{i}"), None)).collect();
         let mut menu = Menu::new(MenuSpec { saved, history: Listing::Ready(vec![entry("p", Some("Old."))]), ..spec() });
-        text(&mut menu, "2");
+        text(&mut menu, "1");
         let labels = labels(&menu);
         assert_eq!(labels.len(), 1 + HISTORY_ROWS + 2);
         assert_eq!(labels[HISTORY_ROWS + 1], "(2 more saved: see psst status)");
     }
-
     fn command(selection: Selected) -> Menu {
         let styles = ready(&["light", "polished", "Formal"]);
         let mut menu = Menu::new(MenuSpec { selection, post_processing_styles: styles, ..spec() });
-        assert_eq!(menu.key(Key::Enter), None, "Command comes first");
+        menu.key(Key::Up);
+        assert_eq!(menu.key(Key::Enter), None, "Up from the first item reaches Command");
         menu
     }
 
@@ -942,7 +945,7 @@ mod tests {
         let row = |i: usize| (PAD + ROW * (i as f32 + 0.5)) as f64;
         assert_eq!(menu.click(100.0, row(4)), chose(MenuAction::Command(Command::Style("polished".into()))));
         assert_eq!(menu.key(Key::Escape), None);
-        assert_eq!(menu.selected(), Some(0), "back on Command");
+        assert_eq!(menu.selected(), Some(6), "back on Command");
     }
 
     #[test]

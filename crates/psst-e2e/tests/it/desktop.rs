@@ -226,7 +226,6 @@ fn the_menu_switches_the_profile_and_adds_a_word_from_the_keyboard() {
     assert_eq!(desk.ok(&["toggle"]).trim(), "opened the menu", "a double tap");
     desk.app.wait("leave", WAIT);
     keyboard.tap(keys::KEY_DOWN);
-    keyboard.tap(keys::KEY_DOWN);
     keyboard.tap(keys::KEY_ENTER);
     // Header and both profiles: 3 rows of 36 px and 6 px around them.
     let deadline = Instant::now() + WAIT;
@@ -248,16 +247,9 @@ fn the_menu_switches_the_profile_and_adds_a_word_from_the_keyboard() {
 
     assert_eq!(desk.ok(&["menu"]).trim(), "opened the menu");
     desk.app.wait("leave", WAIT);
-    for key in [
-        keys::KEY_DOWN,
-        keys::KEY_DOWN,
-        keys::KEY_DOWN,
-        keys::KEY_DOWN,
-        keys::KEY_ENTER,
-        keys::KEY_A,
-        keys::KEY_2,
-        keys::KEY_ENTER,
-    ] {
+    for key in
+        [keys::KEY_DOWN, keys::KEY_DOWN, keys::KEY_DOWN, keys::KEY_ENTER, keys::KEY_A, keys::KEY_2, keys::KEY_ENTER]
+    {
         keyboard.tap(key);
     }
     let deadline = Instant::now() + WAIT;
@@ -311,7 +303,14 @@ fn a_command_from_the_menu_rewrites_the_highlighted_text_in_place() {
     desk.ok(&["toggle"]);
     assert_eq!(desk.ok(&["toggle"]).trim(), "opened the menu", "a double tap");
     desk.app.wait("leave", WAIT);
+    keyboard.tap(keys::KEY_UP);
     keyboard.tap(keys::KEY_ENTER);
+    // The command page is wider than the main one; an Enter before it shows would be lost.
+    let deadline = Instant::now() + WAIT;
+    while menu_bounds(&screenshot(&desk.sandbox)).is_none_or(|(x0, _, x1, _)| x1 - x0 + 1 < 390) {
+        assert!(Instant::now() < deadline, "the command page never showed\n{}", desk.daemon.log());
+        thread::sleep(Duration::from_millis(20));
+    }
     keyboard.tap(keys::KEY_ENTER);
 
     assert_pasted(&desk.pasted(Duration::from_secs(5)), "Could you send me the report?");
