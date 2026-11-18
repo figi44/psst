@@ -97,6 +97,10 @@ impl ClipboardOwner {
         Self::start(sandbox, items, Duration::ZERO, true)
     }
 
+    pub fn slow_primary(sandbox: &Sandbox, items: &[(&str, &[u8])], delay: Duration) -> Self {
+        Self::start(sandbox, items, delay, true)
+    }
+
     fn start(sandbox: &Sandbox, items: &[(&str, &[u8])], delay: Duration, primary: bool) -> Self {
         let socket = sandbox.wayland_socket().to_path_buf();
         let served: BTreeMap<String, Arc<Vec<u8>>> =

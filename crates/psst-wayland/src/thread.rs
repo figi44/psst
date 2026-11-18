@@ -33,6 +33,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(2);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const JOB_TIMEOUT: Duration = Duration::from_secs(5);
 const NOTHING_SELECTED: &str = "select the text first";
+const SELECTION_CHANGED: &str = "the selection changed while psst read it";
 
 pub(crate) enum Msg {
     Cmd(Box<WaylandCmd>),
@@ -721,6 +722,18 @@ impl DcHandler for State {
         let Some(wl) = self.wl.as_mut() else { return };
         if let Some(old) = std::mem::replace(&mut wl.primary, offer) {
             old.destroy();
+        }
+        // A read of the old one would still finish, with text no longer selected.
+        let stale: Vec<Reader> = self.reads.keys().filter(|r| matches!(r, Reader::Primary(_))).copied().collect();
+        for reader in stale {
+            if let Some(io) = self.reads.remove(&reader) {
+                self.lh.remove(io.source);
+                self.lh.remove(io.timer);
+            }
+            if let Reader::Primary(generation) = reader {
+                let text = Err(SELECTION_CHANGED.into());
+                self.emit(WaylandEvent::Selected { generation, text });
+            }
         }
     }
 

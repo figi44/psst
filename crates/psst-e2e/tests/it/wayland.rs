@@ -520,3 +520,15 @@ fn losing_the_compositor_fails_the_paste_and_reconnects_to_a_new_one() {
     paster.dictate(3, "after", Chord::CtrlV);
     assert_text(&app.pasted(), "after");
 }
+
+#[test]
+fn a_selection_read_while_the_selection_changes_says_so() {
+    let sandbox = nested_niri();
+    let paster = Paster::new(&sandbox, RESTORE);
+    let _old = ClipboardOwner::slow_primary(&sandbox, &[(TEXT_MIMES[0], b"old")], Duration::from_millis(1000));
+    paster.send(WaylandCmd::ReadSelection { generation: 1 });
+    thread::sleep(Duration::from_millis(300));
+    let _new = ClipboardOwner::primary(&sandbox, &[(TEXT_MIMES[0], b"new")]);
+    let changed = Err("the selection changed while psst read it".into());
+    paster.expect(&WaylandEvent::Selected { generation: 1, text: changed }, Duration::from_secs(3));
+}
