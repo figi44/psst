@@ -115,4 +115,37 @@ mod tests {
         assert_eq!(focused_window(&path, TIMEOUT).await, None);
         assert_eq!(focused_window(Path::new("/nonexistent/niri.sock"), TIMEOUT).await, None);
     }
+
+    /// Answers every request alike, for as long as the test runs.
+    async fn steady_niri(reply: &'static str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("niri.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let (read, mut write) = stream.into_split();
+                BufReader::new(read).read_line(&mut String::new()).await.unwrap();
+                let _ = write.write_all(reply.as_bytes()).await;
+            }
+        });
+        (dir, path)
+    }
+
+    #[tokio::test]
+    async fn waiting_out_a_layer_gives_up_at_the_deadline() {
+        let (_dir, path) = steady_niri("{\"Ok\":{\"FocusedWindow\":null}}\n").await;
+        let started = std::time::Instant::now();
+        assert_eq!(focused_window_after_layers(&path, Duration::from_millis(200)).await, None);
+        let waited = started.elapsed();
+        assert!((Duration::from_millis(200)..Duration::from_millis(600)).contains(&waited), "{waited:?}");
+    }
+
+    #[tokio::test]
+    async fn a_refusal_from_niri_ends_the_wait_at_once() {
+        let (_dir, path) = steady_niri("{\"Err\":\"no such request\"}\n").await;
+        let started = std::time::Instant::now();
+        assert_eq!(focused_window_after_layers(&path, Duration::from_secs(5)).await, None);
+        assert!(started.elapsed() < Duration::from_secs(1), "{:?}", started.elapsed());
+    }
 }

@@ -1097,6 +1097,10 @@ impl Core {
         }
     }
 
+    fn rewrite_lookup(&self) -> Duration {
+        self.deps.timing.niri_lookup.max(REWRITE_NIRI_LOOKUP)
+    }
+
     /// Asked for, on its way back, or waiting to go in.
     fn rewrite_pending(&self) -> bool {
         let rewrite = |r: &Redelivery| r.rewrite;
@@ -1111,8 +1115,7 @@ impl Core {
         }
         let Selection::Text(selection) = &self.menu.selection else { return };
         let (api, tx, selection) = (self.api(), self.tx.clone(), selection.clone());
-        let (sent, niri, timeout) =
-            (selection.clone(), self.deps.niri_socket.clone(), self.deps.timing.niri_lookup.max(REWRITE_NIRI_LOOKUP));
+        let (sent, niri, timeout) = (selection.clone(), self.deps.niri_socket.clone(), self.rewrite_lookup());
         let generation = self.next_generation();
         let task = tokio::spawn(async move {
             let focused = async {
@@ -2282,10 +2285,10 @@ impl Core {
         match self.deps.niri_socket.clone() {
             Some(socket) => {
                 let tx = self.tx.clone();
-                let timeout = self.deps.timing.niri_lookup;
+                let timeout = if rewrite { self.rewrite_lookup() } else { self.deps.timing.niri_lookup };
                 tokio::spawn(async move {
                     let window = match rewrite {
-                        true => niri::focused_window_after_layers(&socket, timeout.max(REWRITE_NIRI_LOOKUP)).await,
+                        true => niri::focused_window_after_layers(&socket, timeout).await,
                         false => niri::focused_window(&socket, timeout).await,
                     };
                     let _ = tx.send(Input::Focus { generation, window });
