@@ -18,31 +18,38 @@ pub struct Window {
 }
 
 pub async fn focused_window(socket: &Path, timeout: Duration) -> Option<Window> {
-    ask(socket, timeout).await.flatten()
-}
-
-/// While a layer surface has the keyboard, psst's own menu included, niri reports no focused
-/// window: this asks again for a moment, as the menu goes, before taking "none" for an answer.
-pub async fn focused_window_after_layers(socket: &Path, timeout: Duration) -> Option<Window> {
-    for _ in 0..10 {
-        match ask(socket, timeout).await {
-            Some(None) => tokio::time::sleep(Duration::from_millis(50)).await,
-            answer => return answer.flatten(),
-        }
-    }
-    None
-}
-
-/// `None` when niri didn't answer.
-async fn ask(socket: &Path, timeout: Duration) -> Option<Option<Window>> {
     match tokio::time::timeout(timeout, query(socket)).await {
-        Ok(Ok(window)) => Some(window),
+        Ok(Ok(window)) => window,
         Ok(Err(err)) => {
             debug!("niri: {err}");
             None
         }
         Err(_) => {
             debug!("niri didn't answer within {timeout:?}");
+            None
+        }
+    }
+}
+
+/// While a layer surface has the keyboard, psst's own menu included, niri reports no focused
+/// window: this asks again, as the menu goes, until `timeout` runs out.
+pub async fn focused_window_after_layers(socket: &Path, timeout: Duration) -> Option<Window> {
+    let settled = async {
+        loop {
+            match query(socket).await {
+                Ok(None) => tokio::time::sleep(Duration::from_millis(50)).await,
+                Ok(window) => return window,
+                Err(err) => {
+                    debug!("niri: {err}");
+                    return None;
+                }
+            }
+        }
+    };
+    match tokio::time::timeout(timeout, settled).await {
+        Ok(window) => window,
+        Err(_) => {
+            debug!("niri showed no focused window within {timeout:?}");
             None
         }
     }
@@ -55,6 +62,9 @@ async fn query(socket: &Path) -> std::io::Result<Option<Window>> {
     let mut line = String::new();
     BufReader::new(stream).read_line(&mut line).await?;
     let reply: Value = serde_json::from_str(&line).map_err(std::io::Error::other)?;
+    if let Some(err) = reply.get("Err") {
+        return Err(std::io::Error::other(format!("niri refused: {err}")));
+    }
     let Some(window) = reply.pointer("/Ok/FocusedWindow") else { return Ok(None) };
     let text = |key: &str| window.get(key).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned);
     let id = window.get("id").and_then(Value::as_u64);
