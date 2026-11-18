@@ -10,7 +10,7 @@ use std::{
 use futures_util::{SinkExt, StreamExt};
 use psst_proto::{
     Endpoint, ErrorCode, FRAME_SAMPLES, Final, HistoryId, PROTOCOL_VERSION, ServerTimings, SessionId,
-    api::{ApiError, ApiErrorCode, HistoryRow, PairRedeem, PairRedeemed},
+    api::{ApiError, ApiErrorCode, HistoryRow, PairRedeem, PairRedeemed, RewriteRequest, Rewritten},
     ws::{
         CancelledMsg, ClientMsg, Codec, ErrorMsg, Feature, FinalMsg, HelloMsg, ProgressMsg, ProgressState,
         ProtocolDetail, ReadyModelState, ReadyMsg, ReportMsg, ServerLimits, ServerMsg, SettingsMsg, StartMsg,
@@ -101,6 +101,8 @@ struct State {
     next_history: HistoryId,
     history: Vec<HistoryRow>,
     history_requests: Vec<String>,
+    rewrites: VecDeque<Result<String, ApiError>>,
+    rewrite_requests: Vec<RewriteRequest>,
     hellos: Vec<HelloMsg>,
     settings: Option<serde_json::Value>,
     settings_rev: u64,
@@ -257,6 +259,16 @@ impl FakeServer {
         self.inner.state().history = rows;
     }
 
+    /// The next `POST /api/rewrite`'s answer. With none queued, it answers as a server from before
+    /// rewrites does.
+    pub fn push_rewrite(&self, answer: Result<String, ApiError>) {
+        self.inner.state().rewrites.push_back(answer);
+    }
+
+    pub fn rewrite_requests(&self) -> Vec<RewriteRequest> {
+        self.inner.state().rewrite_requests.clone()
+    }
+
     /// The path and query of every `GET /api/history`.
     pub fn history_requests(&self) -> Vec<String> {
         self.inner.state().history_requests.clone()
@@ -375,6 +387,7 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(inner: Arc<Inner>, mut st
     }
     const PAIR: &[u8] = b"POST /api/pair/";
     const HISTORY: &[u8] = b"GET /api/history";
+    const REWRITE: &[u8] = b"POST /api/rewrit";
     let mut head = [0u8; HISTORY.len()];
     let mut buffered = Vec::new();
     while buffered.len() < head.len() {
@@ -390,6 +403,9 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(inner: Arc<Inner>, mut st
     }
     if stream.prefix.starts_with(HISTORY) {
         return history(&inner, stream, tcp).await;
+    }
+    if stream.prefix.starts_with(REWRITE) {
+        return rewrite(&inner, stream).await;
     }
     let mut auth = None;
     #[allow(clippy::result_large_err)] // the error type is tungstenite's
@@ -733,6 +749,28 @@ async fn history<S: AsyncRead + AsyncWrite + Unpin>(inner: &Inner, mut stream: S
         } else {
             let error = ApiError { code: ApiErrorCode::Unauthorized, message: "unknown device token".into() };
             ("401 Unauthorized", serde_json::to_string(&error))
+        }
+    };
+    respond(stream, status, &json.expect("serialise")).await;
+}
+
+async fn rewrite<S: AsyncRead + AsyncWrite + Unpin>(inner: &Inner, mut stream: S) {
+    let Some((_, body)) = read_request(&mut stream).await else { return };
+    while inner.state().stalled {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let (status, json) = {
+        let mut state = inner.state();
+        if let Ok(request) = serde_json::from_slice::<RewriteRequest>(&body) {
+            state.rewrite_requests.push(request);
+        }
+        match state.rewrites.pop_front() {
+            Some(Ok(text)) => ("200 OK", serde_json::to_string(&Rewritten { text })),
+            Some(Err(error)) => ("400 Bad Request", serde_json::to_string(&error)),
+            None => (
+                "404 Not Found",
+                serde_json::to_string(&ApiError { code: ApiErrorCode::NotFound, message: "no such route".into() }),
+            ),
         }
     };
     respond(stream, status, &json.expect("serialise")).await;

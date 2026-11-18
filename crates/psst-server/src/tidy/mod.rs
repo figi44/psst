@@ -33,6 +33,8 @@ pub struct Lab {
     runs: Mutex<VecDeque<Run>>,
     draft: Mutex<Draft>,
     socket: tokio::sync::Mutex<Option<chatgpt::Socket>>,
+    /// A long rewrite holds its socket for its whole answer, which would eat dictations' budgets.
+    rewrite_socket: tokio::sync::Mutex<Option<chatgpt::Socket>>,
 }
 
 impl Default for Lab {
@@ -45,6 +47,7 @@ impl Default for Lab {
             runs: Mutex::default(),
             draft: Mutex::default(),
             socket: tokio::sync::Mutex::default(),
+            rewrite_socket: tokio::sync::Mutex::default(),
         }
     }
 }
@@ -297,6 +300,69 @@ pub async fn dictation(state: &Arc<AppState>, style_id: &str, target: Option<&Ta
     }
 }
 
+const COMMAND_PROMPT: &str = include_str!("../../tidy-prompts/command.txt");
+/// A rewrite is as long as the selection, which can be thousands of words. Under the client's
+/// 30 s, so it hears why rather than a timeout.
+const REWRITE_BUDGET: Duration = Duration::from_secs(25);
+
+pub enum How<'a> {
+    Instruction(&'a str),
+    Style(Style),
+}
+
+/// `selection` rewritten as the user asked, keeping its surrounding whitespace: a double-clicked
+/// word often takes the space after it along. `Err` is the message for the user.
+pub async fn rewrite(state: &Arc<AppState>, selection: &str, how: How<'_>) -> Result<String, String> {
+    let body = selection.trim();
+    let (style, instructions, text) = match how {
+        How::Instruction(instruction) => {
+            // The default style's model and settings, as the user saved them: it's what their
+            // plan is known to run.
+            let default =
+                entry(state, prompts::DEFAULT).map_or_else(|| Style::built_in(prompts::default()), |e| e.style);
+            let style = Style { prompt: COMMAND_PROMPT.trim().to_owned(), ..default };
+            let instruction = instruction.trim();
+            let text = format!("<selection>\n{body}\n</selection>\n\n<instruction>\n{instruction}\n</instruction>");
+            (style.clone(), style.prompt, text)
+        }
+        How::Style(style) => {
+            let instructions = format!(
+                "{}\n\nThis text was typed, not dictated: never take words in it for spoken corrections or \
+                 spoken formatting commands.",
+                instructions(state, &style, None)
+            );
+            (style, instructions, body.to_owned())
+        }
+    };
+    let started = Instant::now();
+    let asked = ask(&style, &instructions, &text);
+    let answer = match tokio::time::timeout(
+        REWRITE_BUDGET,
+        chatgpt::respond_on(state, &state.tidy.rewrite_socket, &asked),
+    )
+    .await
+    {
+        Ok(Ok(answer)) if answer.text.is_empty() => return Err("ChatGPT answered with nothing".into()),
+        Ok(Ok(answer)) => answer,
+        Ok(Err(err)) => return Err(format!("ChatGPT couldn't do it: {err:#}")),
+        Err(_) => return Err(format!("ChatGPT didn't answer within {} s", REWRITE_BUDGET.as_secs())),
+    };
+    tracing::info!(
+        "rewrote {} characters in {} ms (first token after {} ms)",
+        selection.chars().count(),
+        started.elapsed().as_millis(),
+        answer.first_token.map_or(0, |d| d.as_millis())
+    );
+    Ok(in_place_of(selection, &answer.text))
+}
+
+/// `text` with `selection`'s surrounding whitespace, which the model never sees.
+fn in_place_of(selection: &str, text: &str) -> String {
+    let leading = &selection[..selection.len() - selection.trim_start().len()];
+    let trailing = &selection[selection.trim_end().len()..];
+    format!("{leading}{text}{trailing}")
+}
+
 /// Runs `input` through a style as dictations would, and keeps the run for the page.
 pub async fn run(state: &Arc<AppState>, input: &str, target: Option<&Target>, entry: &Entry) -> Run {
     let Entry { style, edited, .. } = entry.clone();
@@ -321,4 +387,16 @@ pub async fn run(state: &Arc<AppState>, input: &str, target: Option<&Target>, en
     runs.push_front(run.clone());
     runs.truncate(KEPT_RUNS);
     run
+}
+
+#[cfg(test)]
+mod tests {
+    use super::in_place_of;
+
+    #[test]
+    fn a_rewrite_keeps_the_whitespace_around_the_selection() {
+        assert_eq!(in_place_of("word ", "Word"), "Word ");
+        assert_eq!(in_place_of("\n  two lines\n", "Two lines."), "\n  Two lines.\n");
+        assert_eq!(in_place_of("plain", "Plain."), "Plain.");
+    }
 }

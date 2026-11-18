@@ -14,8 +14,8 @@ mod overlay;
 mod thread;
 
 pub use psst_overlay::{
-    HistoryEntry, Listing, MenuAction, MenuOutcome, MenuSpec, ModelChoice, OverlayState, Rgba, Style,
-    post_processing_label,
+    COMMAND_HINT, Command, HistoryEntry, Listing, MenuAction, MenuOutcome, MenuSpec, ModelChoice, OverlayState, Rgba,
+    Selected, Style, post_processing_label,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -46,6 +46,11 @@ pub enum WaylandCmd {
         generation: u64,
         text: String,
     },
+    /// Reads the primary selection: the text selected last, in whichever app. Answered with
+    /// [`WaylandEvent::Selected`].
+    ReadSelection {
+        generation: u64,
+    },
     /// The overlay's size, place and colours from now on. One showing is made again with them.
     Configure(OverlayConfig),
 }
@@ -63,6 +68,11 @@ pub enum WaylandEvent {
     Failed {
         generation: u64,
         reason: String,
+    },
+    /// The error says what to do: select some text, say.
+    Selected {
+        generation: u64,
+        text: Result<String, String>,
     },
     /// Something was chosen in the menu, or it was dismissed. Only a [`MenuOutcome::Kept`] leaves
     /// it open.
@@ -156,7 +166,7 @@ impl WaylandThread {
     }
 
     pub fn send(&self, cmd: WaylandCmd) -> Result<(), Stopped> {
-        self.tx.send(thread::Msg::Cmd(cmd)).map_err(|_| Stopped)
+        self.tx.send(thread::Msg::Cmd(Box::new(cmd))).map_err(|_| Stopped)
     }
 }
 

@@ -282,16 +282,17 @@ impl Frame<'_> {
                 Line::Note(text) => {
                     self.text_at(text, (text_x, cy), x1 - 12.0 - text_x, MENU_TEXT, muted, Align::Left);
                 }
-                Line::Field => {
+                Line::Field(hint) => {
                     if let Some(p) = rounded_rect(x0, top + 2.0, x1 - x0, ROW - 4.0, 9.0) {
                         self.fill(&p, fg.faded(0.07));
                     }
                     let (word, caret) = menu.word();
                     let room = x1 - 12.0 - text_x;
                     if word.is_empty() {
-                        let hint = "The word as it should be written";
                         self.text_at(hint, (text_x + 4.0, cy), room - 4.0, MENU_TEXT, fg.faded(0.4), Align::Left);
                     }
+                    // A style chosen with the arrows takes the caret away.
+                    let caret = menu.selected().is_none().then_some(caret);
                     self.field(word, caret, (text_x, cy), room, fg);
                 }
             }
@@ -452,15 +453,17 @@ impl Frame<'_> {
     }
 
     /// One line that scrolls to keep the caret in view instead of ellipsising.
-    fn field(&mut self, text: &str, caret: usize, (x, cy): (f32, f32), max_w: f32, color: Rgba) {
+    fn field(&mut self, text: &str, caret: Option<usize>, (x, cy): (f32, f32), max_w: f32, color: Rgba) {
         let (glyphs, line_w) = self.shape(text, MENU_TEXT, None).unwrap_or_default();
-        let caret_px = glyphs.iter().find(|g| g.start >= caret).map_or(line_w, |g| g.x);
+        let caret_px = glyphs.iter().find(|g| caret.is_some_and(|c| g.start >= c)).map_or(line_w, |g| g.x);
         let (left, room) = (x * self.sx, max_w * self.sx);
         let shift = (caret_px - room).max(0.0);
         let clip = (left.floor() as i32, (left + room).ceil() as i32);
         self.draw_glyphs(&glyphs, (left - shift, self.baseline(cy, MENU_TEXT)), clip, color);
-        let caret_x = (left - shift + caret_px) / self.sx;
-        self.polyline(&[(caret_x, cy - 9.0), (caret_x, cy + 9.0)], color, 1.5);
+        if caret.is_some() {
+            let caret_x = (left - shift + caret_px) / self.sx;
+            self.polyline(&[(caret_x, cy - 9.0), (caret_x, cy + 9.0)], color, 1.5);
+        }
     }
 
     /// Centres the capitals on `cy`: Inter's cap height is 0.727 em.

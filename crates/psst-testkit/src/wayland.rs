@@ -89,6 +89,19 @@ impl ClipboardOwner {
     }
 
     pub fn slow(sandbox: &Sandbox, items: &[(&str, &[u8])], delay: Duration) -> Self {
+        Self::start(sandbox, items, delay, false)
+    }
+
+    /// Owns the primary selection instead: the text selected last, as an app sets it.
+    pub fn primary(sandbox: &Sandbox, items: &[(&str, &[u8])]) -> Self {
+        Self::start(sandbox, items, Duration::ZERO, true)
+    }
+
+    pub fn slow_primary(sandbox: &Sandbox, items: &[(&str, &[u8])], delay: Duration) -> Self {
+        Self::start(sandbox, items, delay, true)
+    }
+
+    fn start(sandbox: &Sandbox, items: &[(&str, &[u8])], delay: Duration, primary: bool) -> Self {
         let socket = sandbox.wayland_socket().to_path_buf();
         let served: BTreeMap<String, Arc<Vec<u8>>> =
             items.iter().map(|(m, d)| (m.to_string(), Arc::new(d.to_vec()))).collect();
@@ -108,7 +121,11 @@ impl ClipboardOwner {
             for m in mimes {
                 source.offer(m);
             }
-            device.set_selection(Some(&source));
+            if primary {
+                device.set_primary_selection(Some(&source));
+            } else {
+                device.set_selection(Some(&source));
+            }
             queue.roundtrip(&mut st).expect("roundtrip");
             let _ = ready_tx.send(());
             while !stop2.load(Ordering::Acquire) {
@@ -197,6 +214,7 @@ pub mod keys {
     pub const KEY_ESC: u32 = 1;
     pub const KEY_2: u32 = 3;
     pub const KEY_ENTER: u32 = 28;
+    pub const KEY_UP: u32 = 103;
     pub const KEY_A: u32 = 30;
     pub const KEY_DOWN: u32 = 108;
     pub const KEY_LEFTMETA: u32 = 125;
@@ -210,6 +228,7 @@ xkb_keycodes "psst-host" {
     <AE02> = 11;
     <RTRN> = 36;
     <AC01> = 38;
+    <UP> = 111;
     <DOWN> = 116;
     <LWIN> = 133;
 };
@@ -220,6 +239,7 @@ xkb_symbols "psst-host" {
     key <AE02> { [ 2, at ] };
     key <RTRN> { [ Return ] };
     key <AC01> { [ a, A ] };
+    key <UP> { [ Up ] };
     key <DOWN> { [ Down ] };
     key <LWIN> { [ Super_L ] };
     modifier_map Mod4 { <LWIN> };

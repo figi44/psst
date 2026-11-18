@@ -45,6 +45,7 @@ impl SourceData {
 
 pub trait DcHandler: Sized {
     fn dc_selection(&mut self, conn: &Connection, offer: Option<DcOffer>);
+    fn dc_primary_selection(&mut self, offer: Option<DcOffer>);
     /// Write the data to `fd` and close it.
     fn dc_send(&mut self, source: &DcSource, mime: String, fd: OwnedFd);
     /// The source is already marked dead.
@@ -205,7 +206,7 @@ macro_rules! impl_dc {
             ) {
                 match event {
                     $devmod::Event::Selection { id } => state.dc_selection(conn, id.map(DcOffer::$variant)),
-                    $devmod::Event::PrimarySelection { id: Some(o) } => o.destroy(),
+                    $devmod::Event::PrimarySelection { id } => state.dc_primary_selection(id.map(DcOffer::$variant)),
                     $devmod::Event::Finished => state.dc_finished(),
                     _ => {}
                 }

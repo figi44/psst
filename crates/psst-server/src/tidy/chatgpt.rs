@@ -526,6 +526,15 @@ enum Exchange {
 }
 
 pub async fn respond(state: &Arc<AppState>, ask: &Ask<'_>) -> Result<Answer> {
+    respond_on(state, &state.tidy.socket, ask).await
+}
+
+/// On a socket of its own, for a request that may hold it long enough to starve the others.
+pub async fn respond_on(
+    state: &Arc<AppState>,
+    socket: &tokio::sync::Mutex<Option<Socket>>,
+    ask: &Ask<'_>,
+) -> Result<Answer> {
     let mut event = json!({
         "type": "response.create",
         "model": ask.model,
@@ -548,7 +557,7 @@ pub async fn respond(state: &Arc<AppState>, ask: &Ask<'_>) -> Result<Answer> {
     let (mut refreshed, mut reopened) = (false, false);
     loop {
         let token = access_token(state, refreshed).await?;
-        let mut slot = state.tidy.socket.lock().await;
+        let mut slot = socket.lock().await;
         let mut connect = None;
         // Out of the cache while in use: a caller that gives up mid-answer drops it, unread answer
         // and all, so the next request can't take that answer for its own.

@@ -11,7 +11,7 @@ use std::{
 
 use psst_config::{AppRule, ClientConfig, ConfigFile, MenuConfig, PasteAction, PostProcessingContext, ProfilesFile};
 use psst_engine_proto::fake::{LoggedRequest, Script, TranscribeStep};
-use psst_proto::{Endpoint, ws::Target};
+use psst_proto::{Endpoint, api::Rewrite, ws::Target};
 use psst_testkit::{
     RealEngine, Sandbox, TestClientConfig, TestDaemon, TestServer, TestServerConfig,
     fake_server::{FakeServer, FakeServerConfig, Outcome},
@@ -19,6 +19,7 @@ use psst_testkit::{
     wayland::{ClipboardOwner, HostKeyboard, keys, screenshot},
     write_wav,
 };
+use psst_wayland::COMMAND_HINT;
 use serde_json::Value;
 use support::{App, Proxy, Seen, Watcher, in_order, menu_bounds, now_us};
 
@@ -287,6 +288,35 @@ fn post_processing_hears_which_window_the_dictation_goes_into() {
     assert_pasted(&desk.pasted(Duration::from_secs(5)), "Hi Anna. ");
     let target = Target { app: "psst-paste-target".into(), title: Some("psst paste target".into()) };
     assert_eq!(server.sessions()[0].starts[0].target, Some(target));
+}
+
+#[test]
+fn a_command_from_the_menu_rewrites_the_highlighted_text_in_place() {
+    const SELECTED: &str = "hey can u send me the report";
+    let server = FakeServer::start(FakeServerConfig::default());
+    server.push_rewrite(Ok("Could you send me the report?".into()));
+    let menu = MenuConfig { double_tap_ms: 500 };
+    let desk = Desktop::start_with(server.endpoint(), &test_audio(3_000), |cfg| cfg.menu = menu);
+    let _highlighted = ClipboardOwner::primary(&desk.sandbox, &[("text/plain;charset=utf-8", SELECTED.as_bytes())]);
+    let mut keyboard = HostKeyboard::new(&desk.sandbox);
+
+    desk.ok(&["toggle"]);
+    assert_eq!(desk.ok(&["toggle"]).trim(), "opened the menu", "a double tap");
+    desk.app.wait("leave", WAIT);
+    keyboard.tap(keys::KEY_UP);
+    keyboard.tap(keys::KEY_ENTER);
+    // The command page is wider than the main one; an Enter before it shows would be lost.
+    let deadline = Instant::now() + WAIT;
+    while menu_bounds(&screenshot(&desk.sandbox)).is_none_or(|(x0, _, x1, _)| x1 - x0 + 1 < 390) {
+        assert!(Instant::now() < deadline, "the command page never showed\n{}", desk.daemon.log());
+        thread::sleep(Duration::from_millis(20));
+    }
+    keyboard.tap(keys::KEY_ENTER);
+
+    assert_pasted(&desk.pasted(Duration::from_secs(5)), "Could you send me the report?");
+    let request = &server.rewrite_requests()[0];
+    assert_eq!(request.selection, SELECTED);
+    assert_eq!(request.how, Rewrite::Instruction(COMMAND_HINT.into()), "the placeholder, left empty");
 }
 
 #[test]

@@ -7,11 +7,11 @@ use psst_client::api::{ApiCallError, ApiClient, Method};
 use psst_proto::{
     DeviceId,
     api::{
-        ApiErrorCode, HistoryRow, LoginLink, ModelState, ModelStatus, PostProcessingView, ProfilesView, Term,
-        TermChange, encode_segment, routes,
+        ApiErrorCode, HistoryRow, LoginLink, ModelState, ModelStatus, PostProcessingView, ProfilesView, Rewrite,
+        RewriteRequest, Rewritten, Term, TermChange, encode_segment, routes,
     },
 };
-use psst_wayland::{MenuAction, ModelChoice};
+use psst_wayland::{Command, MenuAction, ModelChoice};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
@@ -121,7 +121,25 @@ pub async fn act(api: ApiClient, action: MenuAction) -> Done {
         | MenuAction::SwitchPostProcessing(_)
         | MenuAction::Paste(_)
         | MenuAction::Copy(_)
-        | MenuAction::Discard(_) => unreachable!("done by the daemon"),
+        | MenuAction::Discard(_)
+        | MenuAction::Command(_) => unreachable!("done by the daemon"),
+    }
+}
+
+/// The selected text rewritten, to paste over it. The server's own timeout comes first, so its
+/// reason does too.
+pub async fn rewrite(api: ApiClient, selection: String, command: Command) -> Result<String, String> {
+    let how = match command {
+        Command::Instruction(instruction) => Rewrite::Instruction(instruction),
+        Command::Style(style) => Rewrite::Style(style),
+    };
+    let request = RewriteRequest { selection, how };
+    match api.call::<Rewritten>(Method::Post, routes::REWRITE, Some(&request)).await {
+        Ok(rewritten) => Ok(rewritten.text),
+        Err(ApiCallError::Api { error, .. }) if error.code == ApiErrorCode::NotFound => {
+            Err("update the server for commands".into())
+        }
+        Err(err) => Err(describe(err)),
     }
 }
 

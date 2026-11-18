@@ -14,13 +14,13 @@ use psst_client::{
 };
 use psst_config::{ClientConfig, PasteAction, PostProcessingContext, Sounds, layers};
 use psst_proto::{
-    ClientTimings, DeviceId, Endpoint, ErrorCode, FRAME_MS, SessionId, Token,
+    ClientTimings, DeviceId, Endpoint, ErrorCode, FRAME_MS, MAX_SELECTION_CHARS, SessionId, Token,
     api::{HistoryRow, PairRedeemed, routes},
     ws::{Feature, FinalMsg, Mode, ProgressState, Target},
 };
 use psst_wayland::{
-    Chord, HistoryEntry, Listing, MenuAction, MenuOutcome, MenuSpec, ModelChoice, OverlayState, WaylandCmd,
-    WaylandEvent, post_processing_label,
+    Chord, Command, HistoryEntry, Listing, MenuAction, MenuOutcome, MenuSpec, ModelChoice, OverlayState, Selected,
+    WaylandCmd, WaylandEvent, post_processing_label,
 };
 use serde_json::{Value, json};
 use tokio::{
@@ -80,6 +80,12 @@ impl Default for Timing {
 }
 
 const OPENING_WEB_UI: &str = "Opening the web UI\u{2026}";
+const REWRITING: &str = "Rewriting\u{2026}";
+/// A rewrite's window lookups aren't on a paste's critical path, so a busy niri gets longer than
+/// `Timing::niri_lookup` to answer before the rewrite goes to the clipboard.
+const REWRITE_NIRI_LOOKUP: Duration = Duration::from_secs(1);
+/// As much of the selection as the menu shows.
+const PREVIEW_CHARS: usize = 80;
 
 /// Caps for slow links, so a dead server is still noticed quickly.
 const MAX_PONG: Duration = Duration::from_secs(2);
@@ -299,7 +305,7 @@ enum Input {
     },
     Focus {
         generation: u64,
-        app_id: Option<String>,
+        window: Option<niri::Window>,
     },
     Target {
         id: SessionId,
@@ -307,6 +313,12 @@ enum Input {
     },
     MenuFact(menu::Fact),
     MenuDone(menu::Done),
+    Rewritten {
+        generation: u64,
+        result: Result<String, String>,
+        /// Focused as it was asked for, with niri.
+        window: Option<u64>,
+    },
     /// The server's settings for this device, or its limits, changed.
     Pushed {
         epoch: u64,
@@ -540,6 +552,30 @@ struct Redelivery {
     text: String,
     copy: bool,
     delete: Option<SessionId>,
+    /// A command's rewrite: a failed paste leaves it on the clipboard instead.
+    rewrite: bool,
+    /// What a rewrite must still find as it goes in; taken once checked.
+    target: Option<RewriteTarget>,
+    /// Said once it's in, instead of the usual tick.
+    note: Option<&'static str>,
+}
+
+/// Where a rewrite was asked for. It can take seconds, in which the user may select other text or
+/// go to another window: pasted then, it would replace or land in something else.
+struct RewriteTarget {
+    selection: String,
+    /// Known only with niri.
+    window: Option<u64>,
+    /// The paste's delay, once the window and its paste rule passed: the selection is read last.
+    paste_delay_ms: Option<u32>,
+}
+
+/// A command's rewrite on its way. One at a time, so answers can't land out of order.
+struct Rewriting {
+    /// Its answer's: one from a cancelled rewrite may still be on its way.
+    generation: u64,
+    selection: String,
+    task: tokio::task::JoinHandle<()>,
 }
 
 enum Delivering {
@@ -569,6 +605,14 @@ struct MenuState {
     post_processing: Listing,
     model: Option<ModelChoice>,
     history: Listing<HistoryRow>,
+    /// Read as the menu opens, for a command to rewrite: what the user sees is what changes.
+    selection: Selection,
+}
+
+enum Selection {
+    Reading(u64),
+    Text(String),
+    Missing(String),
 }
 
 /// client.toml and the server's settings over it.
@@ -639,6 +683,7 @@ struct Core {
     recording: Option<Dictation>,
     pipeline: VecDeque<Dictation>,
     redeliver: VecDeque<Redelivery>,
+    rewriting: Option<Rewriting>,
     inserting: Option<Inserting>,
     catch_up: Option<CatchUp>,
     /// Saved recordings that failed on this connection: sent again on the next, or when the menu
@@ -687,6 +732,7 @@ impl Core {
                 post_processing: Listing::Loading,
                 model: None,
                 history: Listing::Loading,
+                selection: Selection::Missing(String::new()),
             },
             store,
             deps,
@@ -710,6 +756,7 @@ impl Core {
             recording: None,
             pipeline: VecDeque::new(),
             redeliver: VecDeque::new(),
+            rewriting: None,
             inserting: None,
             catch_up: None,
             tried: HashSet::new(),
@@ -772,7 +819,7 @@ impl Core {
             Input::Conn { attempt, result, fresh } => self.on_conn(attempt, result, fresh),
             Input::TokenRefused(token) => self.refused_token = Some(token),
             Input::ConnClosed { epoch, reason } => self.on_conn_closed(epoch, reason),
-            Input::Focus { generation, app_id } => self.on_focus(generation, app_id),
+            Input::Focus { generation, window } => self.on_focus(generation, window),
             Input::Target { id, window } => self.on_target(id, window),
             Input::MenuFact(fact) => self.on_menu_fact(fact),
             Input::Pushed { epoch, settings, max_recording_s } if epoch == self.epoch => {
@@ -786,6 +833,7 @@ impl Core {
             }
             Input::Pushed { .. } => {}
             Input::MenuDone(done) => self.on_menu_done(done),
+            Input::Rewritten { generation, result, window } => self.on_rewritten(generation, result, window),
             Input::Resumed => {
                 self.resumed_at = Some(Instant::now());
                 if let Some(client) = self.client.take() {
@@ -952,6 +1000,9 @@ impl Core {
             return Response::err(format!("cannot show the menu: {reason}"));
         }
         self.menu.open = true;
+        let generation = self.next_generation();
+        self.menu.selection = Selection::Reading(generation);
+        self.wayland(WaylandCmd::ReadSelection { generation });
         if matches!(self.menu.profiles, Listing::Failed(_)) {
             self.menu.profiles = Listing::Loading;
         }
@@ -1010,6 +1061,7 @@ impl Core {
         let progress = match &action {
             MenuAction::SwitchProfile(name) => return self.switch_profile(name.clone()),
             MenuAction::SwitchPostProcessing(style) => return self.switch_post_processing(style.clone()),
+            MenuAction::Command(command) => return self.rewrite(command.clone()),
             MenuAction::Paste(key) | MenuAction::Copy(key) | MenuAction::Discard(key) => {
                 let response = self.history_action(key, &action);
                 if !response.ok {
@@ -1043,6 +1095,121 @@ impl Core {
             }
             Err(message) => self.error_notice(&message),
         }
+    }
+
+    fn rewrite_lookup(&self) -> Duration {
+        self.deps.timing.niri_lookup.max(REWRITE_NIRI_LOOKUP)
+    }
+
+    /// Asked for, on its way back, or waiting to go in.
+    fn rewrite_pending(&self) -> bool {
+        let rewrite = |r: &Redelivery| r.rewrite;
+        self.rewriting.is_some()
+            || self.redeliver.iter().any(rewrite)
+            || matches!(&self.inserting, Some(Inserting { what: Delivering::Redelivery(r), .. }) if rewrite(r))
+    }
+
+    fn rewrite(&mut self, command: Command) {
+        if self.rewrite_pending() {
+            return self.error_notice("still rewriting the last selection");
+        }
+        let Selection::Text(selection) = &self.menu.selection else { return };
+        let (api, tx, selection) = (self.api(), self.tx.clone(), selection.clone());
+        let (sent, niri, timeout) = (selection.clone(), self.deps.niri_socket.clone(), self.rewrite_lookup());
+        let generation = self.next_generation();
+        let task = tokio::spawn(async move {
+            let focused = async {
+                let socket = niri?;
+                niri::focused_window_after_layers(&socket, timeout).await?.id
+            };
+            let (window, result) = tokio::join!(focused, menu::rewrite(api, sent, command));
+            let _ = tx.send(Input::Rewritten { generation, result, window });
+        });
+        self.rewriting = Some(Rewriting { generation, selection, task });
+    }
+
+    fn on_rewritten(&mut self, generation: u64, result: Result<String, String>, window: Option<u64>) {
+        let Some(Rewriting { selection, .. }) = self.rewriting.take_if(|r| r.generation == generation) else { return };
+        match result {
+            Ok(text) => {
+                let target = RewriteTarget { selection, window, paste_delay_ms: None };
+                self.queue_rewrite(text, false, Some(target), None);
+            }
+            Err(message) => self.error_notice(&message),
+        }
+    }
+
+    fn queue_rewrite(&mut self, text: String, copy: bool, target: Option<RewriteTarget>, note: Option<&'static str>) {
+        let generation = self.next_generation();
+        self.wayland(WaylandCmd::SnapshotClipboard { generation });
+        self.redeliver.push_back(Redelivery { generation, text, copy, delete: None, rewrite: true, target, note });
+    }
+
+    /// The rewrite going in now.
+    fn inserting_rewrite(&mut self, generation: u64) -> Option<&mut Redelivery> {
+        match &mut self.inserting {
+            Some(Inserting { generation: g, what: Delivering::Redelivery(r) }) if *g == generation && r.rewrite => {
+                Some(r)
+            }
+            _ => None,
+        }
+    }
+
+    /// The rewrite going in now, while it has something left to check.
+    fn rewrite_target(&mut self, generation: u64) -> Option<&mut Redelivery> {
+        self.inserting_rewrite(generation).filter(|r| r.target.is_some())
+    }
+
+    /// Clipboard instead: the place it was asked for has gone.
+    fn redirect_rewrite(&mut self, generation: u64, note: &'static str) {
+        if let Some(r) = self.inserting_rewrite(generation) {
+            r.target = None;
+            r.copy = true;
+            r.note = Some(note);
+        }
+        self.send_insert(generation, PasteAction::CopyOnly, 0);
+    }
+
+    /// The menu opened while the rewrite was being checked. It waits for the menu to close and goes
+    /// again, checks and all, so the menu shows at once and the user may still change the selection
+    /// under it.
+    fn requeue_for_menu(&mut self, generation: u64) -> bool {
+        if !self.menu.open {
+            return false;
+        }
+        let rewrite = |i: &mut Inserting| i.generation == generation && matches!(i.what, Delivering::Redelivery(_));
+        let Some(Inserting { what: Delivering::Redelivery(r), .. }) = self.inserting.take_if(rewrite) else {
+            return false;
+        };
+        self.redeliver.push_front(r);
+        true
+    }
+
+    fn on_selected(&mut self, generation: u64, text: Result<String, String>) {
+        if let Some(r) = self.rewrite_target(generation) {
+            let same = r.target.as_ref().is_some_and(|t| text.as_ref().is_ok_and(|now| *now == t.selection));
+            if self.requeue_for_menu(generation) {
+                return;
+            }
+            if !same {
+                return self.redirect_rewrite(generation, "The selection changed: the rewrite is in the clipboard");
+            }
+            let checked = self.rewrite_target(generation).and_then(|r| r.target.take()).and_then(|t| t.paste_delay_ms);
+            return match checked {
+                Some(delay_ms) => self.send_insert(generation, PasteAction::CtrlV, delay_ms),
+                None => self.redirect_rewrite(generation, "Couldn't check the window: the rewrite is in the clipboard"),
+            };
+        }
+        if !matches!(self.menu.selection, Selection::Reading(g) if g == generation) {
+            return;
+        }
+        self.menu.selection = match text {
+            Ok(text) if text.chars().count() > MAX_SELECTION_CHARS => {
+                Selection::Missing(format!("select at most {MAX_SELECTION_CHARS} characters"))
+            }
+            Ok(text) => Selection::Text(text),
+            Err(reason) => Selection::Missing(reason),
+        };
     }
 
     fn history_action(&mut self, key: &str, action: &MenuAction) -> Response {
@@ -1137,6 +1304,17 @@ impl Core {
             model: self.menu.model,
             saved: saved.iter().map(entry).collect(),
             history,
+            selection: match &self.menu.selection {
+                Selection::Reading(_) => Selected::Reading,
+                Selection::Text(text) => {
+                    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                    Selected::Text(match flat.char_indices().nth(PREVIEW_CHARS) {
+                        Some((cut, _)) => format!("{}\u{2026}", &flat[..cut]),
+                        None => flat,
+                    })
+                }
+                Selection::Missing(reason) => Selected::Missing(reason.clone()),
+            },
         }
     }
 
@@ -1158,6 +1336,23 @@ impl Core {
     }
 
     fn cancel(&mut self) -> Response {
+        if self.recording.is_none() {
+            let queued = self.redeliver.iter().position(|r| r.rewrite);
+            let checking = |i: &mut Inserting| matches!(&i.what, Delivering::Redelivery(r) if r.target.is_some());
+            let cancelled = if let Some(rewriting) = self.rewriting.take() {
+                rewriting.task.abort();
+                true
+            } else if let Some(i) = queued {
+                self.redeliver.remove(i).is_some()
+            } else {
+                // Its checks' answers find nothing to go on with.
+                self.inserting.take_if(checking).is_some()
+            };
+            if cancelled {
+                info!("cancelled the rewrite");
+                return Response::ok("cancelled the rewrite");
+            }
+        }
         let Some(d) = self.recording.take().or_else(|| self.pipeline.pop_back()) else {
             return Response::err("nothing to cancel");
         };
@@ -1267,7 +1462,15 @@ impl Core {
     fn queue_redelivery(&mut self, text: String, copy: bool, delete: Option<SessionId>) -> Response {
         let generation = self.next_generation();
         self.wayland(WaylandCmd::SnapshotClipboard { generation });
-        self.redeliver.push_back(Redelivery { generation, text, copy, delete });
+        self.redeliver.push_back(Redelivery {
+            generation,
+            text,
+            copy,
+            delete,
+            rewrite: false,
+            target: None,
+            note: None,
+        });
         Response::ok(if copy { "copying" } else { "pasting" })
     }
 
@@ -2072,23 +2275,75 @@ impl Core {
             self.send_insert(generation, PasteAction::CopyOnly, 0);
             return;
         }
+        let rewrite = self.rewrite_target(generation).is_some();
+        self.look_for_focus(generation, rewrite);
+    }
+
+    /// A rewrite waits out a layer surface, such as the menu it was chosen in: it would otherwise
+    /// see no window at all and go to the clipboard.
+    fn look_for_focus(&mut self, generation: u64, rewrite: bool) {
         match self.deps.niri_socket.clone() {
             Some(socket) => {
                 let tx = self.tx.clone();
-                let timeout = self.deps.timing.niri_lookup;
+                let timeout = if rewrite { self.rewrite_lookup() } else { self.deps.timing.niri_lookup };
                 tokio::spawn(async move {
-                    let app_id = niri::focused_app_id(&socket, timeout).await;
-                    let _ = tx.send(Input::Focus { generation, app_id });
+                    let window = match rewrite {
+                        true => niri::focused_window_after_layers(&socket, timeout).await,
+                        false => niri::focused_window(&socket, timeout).await,
+                    };
+                    let _ = tx.send(Input::Focus { generation, window });
                 });
             }
             None => self.on_focus(generation, None),
         }
     }
 
-    fn on_focus(&mut self, generation: u64, app_id: Option<String>) {
+    fn on_focus(&mut self, generation: u64, window: Option<niri::Window>) {
+        if self.rewrite_target(generation).is_some() {
+            return self.rewrite_focus(generation, window);
+        }
+        let app_id = window.map(|w| w.app_id);
         let rule = self.cfg.paste_for(app_id.as_deref());
         debug!("pasting into {app_id:?} with {rule:?}");
         self.send_insert(generation, rule.action, rule.delay_ms);
+    }
+
+    /// A rewrite's window and paste rule, checked before its selection is read, last, so that the
+    /// window lookup's wait can't hide a selection changed meanwhile.
+    fn rewrite_focus(&mut self, generation: u64, window: Option<niri::Window>) {
+        if self.requeue_for_menu(generation) {
+            return;
+        }
+        let asked = self.rewrite_target(generation).and_then(|r| r.target.as_ref()).and_then(|t| t.window);
+        if self.deps.niri_socket.is_some() {
+            let note = match (asked, window.as_ref().and_then(|w| w.id)) {
+                (Some(asked), Some(now)) if asked == now => None,
+                (Some(_), Some(_)) => Some("The window changed: the rewrite is in the clipboard"),
+                _ => Some("Couldn't check the window: the rewrite is in the clipboard"),
+            };
+            if let Some(note) = note {
+                return self.redirect_rewrite(generation, note);
+            }
+        }
+        let rule = self.cfg.paste_for(window.map(|w| w.app_id).as_deref());
+        match rule.action {
+            PasteAction::CtrlV => {}
+            // A terminal's paste goes in at its prompt, the selection untouched.
+            PasteAction::CtrlShiftV => {
+                return self.redirect_rewrite(
+                    generation,
+                    "Pasting here can't replace a selection: the rewrite is in the clipboard",
+                );
+            }
+            PasteAction::CopyOnly => {
+                return self
+                    .redirect_rewrite(generation, "Pasting is off for this app: the rewrite is in the clipboard");
+            }
+        }
+        if let Some(target) = self.rewrite_target(generation).and_then(|r| r.target.as_mut()) {
+            target.paste_delay_ms = Some(rule.delay_ms);
+        }
+        self.wayland(WaylandCmd::ReadSelection { generation });
     }
 
     fn send_insert(&mut self, generation: u64, action: PasteAction, delay_ms: u32) {
@@ -2122,6 +2377,7 @@ impl Core {
                 self.delivered(generation);
             }
             WaylandEvent::Failed { generation, reason } => self.insert_failed(generation, reason),
+            WaylandEvent::Selected { generation, text } => self.on_selected(generation, text),
             WaylandEvent::Menu(MenuOutcome::Kept(action)) => self.menu_action(action),
             // `shown` stays: an update sent before this arrived may have opened it again, so the
             // next refresh closes it for certain.
@@ -2150,15 +2406,15 @@ impl Core {
 
     fn delivered(&mut self, generation: u64) {
         let Some(inserting) = self.inserting.take_if(|i| i.generation == generation) else { return };
-        let delete = match &inserting.what {
+        let (delete, note) = match &inserting.what {
             Delivering::Dictation(d) => {
                 self.report(d, Some(Instant::now()));
                 if self.stop_chime.take_if(|(id, _)| *id == d.id).is_some() {
                     self.sound(Sound::Stop);
                 }
-                Some(d.id)
+                (Some(d.id), None)
             }
-            Delivering::Redelivery(r) => r.delete,
+            Delivering::Redelivery(r) => (r.delete, r.note),
         };
         if let Some(id) = delete
             && let Err(err) = self.store.delete(id)
@@ -2171,12 +2427,24 @@ impl Core {
             store::sync_files(&files, &dirs.1);
             store::sync_dir(&dirs.0);
         });
-        self.notice(OverlayState::Done, self.t.done_shown);
+        match note {
+            Some(note) => self.notice(OverlayState::Flash { message: note.into() }, self.t.notice_shown),
+            None => self.notice(OverlayState::Done, self.t.done_shown),
+        }
     }
 
     fn insert_failed(&mut self, generation: u64, reason: String) {
         let Some(inserting) = self.inserting.take_if(|i| i.generation == generation) else { return };
         warn!("inserting failed: {reason}");
+        match inserting.what {
+            Delivering::Redelivery(Redelivery { rewrite: true, copy: false, text, .. }) => {
+                return self.queue_rewrite(text, true, None, Some("Couldn't paste: the rewrite is in the clipboard"));
+            }
+            Delivering::Redelivery(Redelivery { rewrite: true, .. }) => {
+                return self.error_notice(&format!("couldn't paste or copy the rewrite: {reason}"));
+            }
+            _ => {}
+        }
         let hint = match &inserting.what {
             Delivering::Dictation(d) => format!("psst paste-last --session {}", d.id),
             Delivering::Redelivery(_) => "psst paste-last".into(),
@@ -2205,8 +2473,8 @@ impl Core {
     fn wayland(&mut self, cmd: WaylandCmd) {
         if let Err(reason) = self.connect_wayland() {
             debug!("no Wayland: {reason}");
-            if let WaylandCmd::Paste { generation, .. } | WaylandCmd::Copy { generation, .. } = cmd {
-                let _ = self.wayland_tx.send(WaylandEvent::Failed { generation, reason });
+            if let Some(answer) = crate::ui::unanswered(&cmd) {
+                let _ = self.wayland_tx.send(answer(reason));
             }
             return;
         }
@@ -2274,7 +2542,9 @@ impl Core {
         if self.inserting.is_some() {
             return Some(OverlayState::Processing);
         }
-        let d = self.pipeline.front()?;
+        let Some(d) = self.pipeline.front() else {
+            return self.rewriting.as_ref().map(|_| OverlayState::Flash { message: REWRITING.into() });
+        };
         let from_progress = |progress: Option<ProgressState>| match progress {
             Some(ProgressState::Queued) => OverlayState::WaitingForServer,
             Some(ProgressState::Loading) => OverlayState::LoadingModel,

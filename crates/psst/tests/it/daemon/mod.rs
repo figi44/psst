@@ -1,3 +1,4 @@
+mod command;
 mod follow;
 mod incompatible;
 mod menu;
@@ -38,6 +39,8 @@ struct FakeWayland {
     events: Arc<Mutex<Option<WaylandEvents>>>,
     fail_inserts: Arc<AtomicBool>,
     shown_after_ms: Arc<AtomicU64>,
+    /// The primary selection; `None` is nothing selected.
+    selection: Arc<Mutex<Option<String>>>,
 }
 
 struct FakeSink {
@@ -75,6 +78,13 @@ impl WaylandSink for FakeSink {
             }
             WaylandCmd::Paste { generation, .. } => Some(WaylandEvent::Pasted { generation }),
             WaylandCmd::Copy { generation, .. } => Some(WaylandEvent::Copied { generation }),
+            WaylandCmd::ReadSelection { generation } => {
+                let selection = self.wayland.selection.lock().unwrap().clone();
+                Some(WaylandEvent::Selected {
+                    generation,
+                    text: selection.ok_or_else(|| "select the text first".into()),
+                })
+            }
             WaylandCmd::Menu(_) | WaylandCmd::SnapshotClipboard { .. } | WaylandCmd::Configure(_) => None,
         };
         let delay = Duration::from_millis(self.wayland.shown_after_ms.load(Ordering::SeqCst));
@@ -147,7 +157,10 @@ impl FakeWayland {
                         return false;
                     }
                 }
-                WaylandCmd::Overlay(_) | WaylandCmd::Menu(_) | WaylandCmd::Configure(_) => {}
+                WaylandCmd::Overlay(_)
+                | WaylandCmd::Menu(_)
+                | WaylandCmd::Configure(_)
+                | WaylandCmd::ReadSelection { .. } => {}
             }
         }
         true

@@ -4,7 +4,7 @@ use std::{
 };
 
 use psst_overlay::{
-    HistoryEntry, Key, Listing, Menu, MenuSpec, ModelChoice, OverlayState, Pixmap, Renderer, Style, Wave,
+    HistoryEntry, Key, Listing, Menu, MenuSpec, ModelChoice, OverlayState, Pixmap, Renderer, Selected, Style, Wave,
 };
 use tiny_skia::{Color, PixmapPaint, Transform};
 
@@ -58,12 +58,22 @@ fn menu(model: Option<ModelChoice>, profiles: Listing, keys: &[Key]) -> Menu {
         model,
         saved: vec![],
         history: Listing::Loading,
+        selection: Selected::Reading,
     };
     keyed(spec, keys)
 }
 
+fn command(selection: Selected, keys: &[Key]) -> Menu {
+    let mut menu = menu(Some(ModelChoice::Unload), Listing::Loading, &[]);
+    menu.update(MenuSpec { selection, ..menu.spec().clone() });
+    keyed_from(menu, &[&[Key::Up, Key::Enter], keys].concat())
+}
+
 fn keyed(spec: MenuSpec, keys: &[Key]) -> Menu {
-    let mut menu = Menu::new(spec);
+    keyed_from(Menu::new(spec), keys)
+}
+
+fn keyed_from(mut menu: Menu, keys: &[Key]) -> Menu {
     for key in keys {
         menu.key(key.clone());
     }
@@ -90,6 +100,7 @@ fn history(keys: &[Key]) -> Menu {
         model: Some(ModelChoice::Unload),
         saved,
         history: Listing::Ready(past),
+        selection: Selected::Reading,
     };
     keyed(spec, keys)
 }
@@ -97,6 +108,7 @@ fn history(keys: &[Key]) -> Menu {
 fn menu_cases() -> Vec<(&'static str, Menu)> {
     let ready = Listing::Ready(["cs", "en", "work"].map(String::from).to_vec());
     let typed = |text: &str| [Key::Text("4".into()), Key::Text(text.into())];
+    let selected = || Selected::Text("hey can u send me the report by friday? thx".into());
     vec![
         ("menu", menu(Some(ModelChoice::Unload), ready.clone(), &[])),
         ("menu-checking-model", menu(None, Listing::Loading, &[Key::Down])),
@@ -113,6 +125,10 @@ fn menu_cases() -> Vec<(&'static str, Menu)> {
         ("menu-with-saved", history(&[])),
         ("menu-history", history(&[Key::Enter])),
         ("menu-history-discarding", history(&[Key::Enter, Key::Down, Key::Delete])),
+        ("menu-command", command(selected(), &[])),
+        ("menu-command-typed", command(selected(), &[Key::Text("make it friendlier".into())])),
+        ("menu-command-style", command(selected(), &[Key::Down, Key::Down])),
+        ("menu-command-no-selection", command(Selected::Missing("select the text first".into()), &[])),
     ]
 }
 

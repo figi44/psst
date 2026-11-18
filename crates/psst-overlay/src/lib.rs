@@ -7,8 +7,8 @@ mod menu;
 mod render;
 
 pub use menu::{
-    HISTORY_WIDTH, HistoryEntry, Key, Listing, MENU_WIDTH, Menu, MenuAction, MenuOutcome, MenuSpec, ModelChoice,
-    post_processing_label,
+    COMMAND_HINT, Command, HISTORY_WIDTH, HistoryEntry, Key, Listing, MENU_WIDTH, Menu, MenuAction, MenuOutcome,
+    MenuSpec, ModelChoice, Selected, post_processing_label,
 };
 pub use render::Renderer;
 pub use tiny_skia::Pixmap;

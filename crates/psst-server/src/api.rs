@@ -15,13 +15,14 @@ use axum::{
 use psst_dict::term_id;
 use psst_pipeline::PipelineOptions;
 use psst_proto::{
-    ClientTimings, DeviceId, Endpoint, EngineResult, EngineTrace, Final, Segment, ServerTimings, Token,
+    ClientTimings, DeviceId, Endpoint, EngineResult, EngineTrace, Final, MAX_SELECTION_CHARS, Segment, ServerTimings,
+    Token,
     api::{
         ApiError, ApiErrorCode, AppEntry, AppRuleView, Device, DeviceSettingsView, DictionaryExport, DictionaryTest,
         DictionaryView, Health, HistoryQuery, HistoryRow, LoginLink, ModelStatus, NeverRule, NeverRuleId, NewNeverRule,
         PairRedeem, PairRedeemed, Pairing, PairingRequest, Percentiles, PostProcessingView, Profile, ProfileChange,
-        ProfilesExport, ProfilesView, Setting, SettingChange, SettingsExport, SettingsView, Stats, Term, TermChange,
-        routes,
+        ProfilesExport, ProfilesView, Rewrite, RewriteRequest, Rewritten, Setting, SettingChange, SettingsExport,
+        SettingsView, Stats, Term, TermChange, routes,
     },
 };
 use serde::de::DeserializeOwned;
@@ -36,6 +37,7 @@ use crate::{
     profiles, settings,
     state::AppState,
     tailscale,
+    tidy::How,
 };
 
 type AppRef = Arc<AppState>;
@@ -67,6 +69,7 @@ pub fn router(state: AppRef) -> Router {
         .route(routes::DICTIONARY_TEST, post(test_dictionary))
         .route(routes::PROFILES, get(profiles_view))
         .route(routes::POST_PROCESSING, get(post_processing_view))
+        .route(routes::REWRITE, post(rewrite))
         .route(routes::PROFILES_EXPORT, get(export_profiles))
         .route(routes::PROFILE, put(put_profile))
         .route(routes::PROFILE_RESET, post(reset_profile))
@@ -636,6 +639,46 @@ async fn test_dictionary(
 
 async fn post_processing_view(_: Admin, State(state): State<AppRef>) -> Json<PostProcessingView> {
     Json(PostProcessingView { styles: crate::tidy::entries(&state).into_iter().map(|entry| entry.id).collect() })
+}
+
+/// Past what the menu's field takes: an instruction, not a second selection.
+const MAX_INSTRUCTION_CHARS: usize = 1_000;
+
+async fn rewrite(
+    _: Admin,
+    State(state): State<AppRef>,
+    Body(request): Body<RewriteRequest>,
+) -> Result<Json<Rewritten>, ApiErr> {
+    let refuse = |message: String| Err(ApiErr::new(ApiErrorCode::BadRequest, message));
+    if request.selection.trim().is_empty() {
+        return refuse("select the text first".into());
+    }
+    if request.selection.chars().count() > MAX_SELECTION_CHARS {
+        return refuse(format!("select at most {MAX_SELECTION_CHARS} characters"));
+    }
+    let how = match &request.how {
+        Rewrite::Instruction(instruction) if instruction.trim().is_empty() => {
+            return refuse("say what to do with the text".into());
+        }
+        Rewrite::Instruction(instruction) if instruction.chars().count() > MAX_INSTRUCTION_CHARS => {
+            return refuse(format!("keep the instruction to at most {MAX_INSTRUCTION_CHARS} characters"));
+        }
+        Rewrite::Instruction(instruction) => How::Instruction(instruction),
+        Rewrite::Style(id) => match crate::tidy::entry(&state, id) {
+            Some(entry) => How::Style(entry.style),
+            None => return refuse(format!("no style {id:?}")),
+        },
+    };
+    if crate::tidy::chatgpt::credentials(&state).is_none() {
+        return refuse("connect ChatGPT in the web UI to use commands".into());
+    }
+    match crate::tidy::rewrite(&state, &request.selection, how).await {
+        Ok(text) => Ok(Json(Rewritten { text })),
+        Err(message) => {
+            tracing::warn!("a rewrite failed: {message}");
+            Err(ApiErr::new(ApiErrorCode::Internal, message))
+        }
+    }
 }
 
 async fn profiles_view(_: Admin, State(state): State<AppRef>) -> Json<ProfilesView> {
