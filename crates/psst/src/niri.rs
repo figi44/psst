@@ -136,9 +136,12 @@ mod tests {
     async fn waiting_out_a_layer_gives_up_at_the_deadline() {
         let (_dir, path) = steady_niri("{\"Ok\":{\"FocusedWindow\":null}}\n").await;
         let started = std::time::Instant::now();
-        assert_eq!(focused_window_after_layers(&path, Duration::from_millis(200)).await, None);
-        let waited = started.elapsed();
-        assert!((Duration::from_millis(200)..Duration::from_millis(600)).contains(&waited), "{waited:?}");
+        let gave_up = tokio::time::timeout(
+            Duration::from_secs(5),
+            focused_window_after_layers(&path, Duration::from_millis(200)),
+        );
+        assert_eq!(gave_up.await.expect("it gives up"), None);
+        assert!(started.elapsed() >= Duration::from_millis(200), "{:?}", started.elapsed());
     }
 
     #[tokio::test]

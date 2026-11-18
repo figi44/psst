@@ -1195,10 +1195,10 @@ impl Core {
                 return self.redirect_rewrite(generation, "The selection changed: the rewrite is in the clipboard");
             }
             let checked = self.rewrite_target(generation).and_then(|r| r.target.take()).and_then(|t| t.paste_delay_ms);
-            if let Some(delay_ms) = checked {
-                self.send_insert(generation, PasteAction::CtrlV, delay_ms);
-            }
-            return;
+            return match checked {
+                Some(delay_ms) => self.send_insert(generation, PasteAction::CtrlV, delay_ms),
+                None => self.redirect_rewrite(generation, "Couldn't check the window: the rewrite is in the clipboard"),
+            };
         }
         if !matches!(self.menu.selection, Selection::Reading(g) if g == generation) {
             return;

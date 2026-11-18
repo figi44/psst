@@ -118,12 +118,18 @@ fn slow_niri(dir: &Path, app_id: &'static str, delay: Duration) -> PathBuf {
 /// As [`slow_niri`], but with no window focused for the answers numbered in `none` (from 0), as
 /// while a layer surface such as the menu has the keyboard.
 fn niri_after(dir: &Path, app_id: &'static str, delay: Duration, none: &'static [u64]) -> PathBuf {
-    counted_niri(dir, app_id, delay, none).0
+    counted_niri(dir, app_id, delay, none, None).0
 }
 
 /// As [`niri_after`], with how many lookups it has been asked for so far: one counted is still
 /// waiting out `delay`.
-fn counted_niri(dir: &Path, app_id: &'static str, delay: Duration, none: &'static [u64]) -> (PathBuf, Arc<AtomicU64>) {
+fn counted_niri(
+    dir: &Path,
+    app_id: &'static str,
+    delay: Duration,
+    none: &'static [u64],
+    hold_from: Option<(u64, Arc<AtomicBool>)>,
+) -> (PathBuf, Arc<AtomicU64>) {
     use tokio::{
         io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
         net::UnixListener,
@@ -135,12 +141,17 @@ fn counted_niri(dir: &Path, app_id: &'static str, delay: Duration, none: &'stati
     tokio::spawn(async move {
         loop {
             let (stream, _) = listener.accept().await.unwrap();
-            let asked = asked.clone();
+            let (asked, hold_from) = (asked.clone(), hold_from.clone());
             tokio::spawn(async move {
                 let (read, mut write) = stream.into_split();
                 BufReader::new(read).read_line(&mut String::new()).await.unwrap();
                 let number = asked.fetch_add(1, Ordering::SeqCst);
                 tokio::time::sleep(delay).await;
+                if let Some((_, released)) = hold_from.filter(|(from, _)| number >= *from) {
+                    while !released.load(Ordering::SeqCst) {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                }
                 let window = match none.contains(&number) {
                     true => serde_json::Value::Null,
                     false => serde_json::json!({ "id": 1, "app_id": app_id }),
@@ -151,6 +162,14 @@ fn counted_niri(dir: &Path, app_id: &'static str, delay: Duration, none: &'stati
         }
     });
     (niri, counted)
+}
+
+/// Answers the first lookup, as a rewrite is asked for; holds every later one until the test
+/// releases them, so it can act while the paste-time lookup is on its way.
+fn held_niri(dir: &Path) -> (PathBuf, Arc<AtomicU64>, Arc<AtomicBool>) {
+    let released = Arc::new(AtomicBool::new(false));
+    let (niri, asked) = counted_niri(dir, "org.gnome.TextEditor", Duration::ZERO, &[], Some((1, released.clone())));
+    (niri, asked, released)
 }
 
 async fn with_niri(server: &FakeServer, niri: PathBuf) -> Daemon {
@@ -251,7 +270,7 @@ async fn a_rewrite_waits_out_a_menu_opened_while_it_was_checked() {
     let dir = tempfile::tempdir().unwrap();
     let server = FakeServer::start(FakeServerConfig::default());
     server.push_rewrite(Ok(REWRITTEN.into()));
-    let (niri, asked) = counted_niri(dir.path(), "org.gnome.TextEditor", Duration::from_millis(300), &[]);
+    let (niri, asked, released) = held_niri(dir.path());
     let d = with_niri(&server, niri).await;
     let reads =
         || d.wayland.cmds.lock().unwrap().iter().filter(|c| matches!(c, WaylandCmd::ReadSelection { .. })).count();
@@ -260,7 +279,8 @@ async fn a_rewrite_waits_out_a_menu_opened_while_it_was_checked() {
     // Asked for, answered, and now waiting on the window lookup before it goes in.
     wait_until(|| asked.load(Ordering::SeqCst) == 2).await;
     assert!(d.run(Request::Menu).await.ok);
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    released.store(true, Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(d.wayland.inserted().is_empty(), "nothing goes in while the menu is open");
 
     d.wayland.send(WaylandEvent::Menu(MenuOutcome::Closed));
@@ -276,13 +296,14 @@ async fn the_selection_is_checked_last_after_a_slow_window_lookup() {
     let dir = tempfile::tempdir().unwrap();
     let server = FakeServer::start(FakeServerConfig::default());
     server.push_rewrite(Ok(REWRITTEN.into()));
-    let (niri, asked) = counted_niri(dir.path(), "org.gnome.TextEditor", Duration::from_millis(300), &[]);
+    let (niri, asked, released) = held_niri(dir.path());
     let d = with_niri(&server, niri).await;
 
     choose(&d, Command::Instruction("make it polite".into()));
     wait_until(|| asked.load(Ordering::SeqCst) == 2).await;
     // Selected anew in the same window while its lookup was on its way.
     *d.wayland.selection.lock().unwrap() = Some("something else".into());
+    released.store(true, Ordering::SeqCst);
     wait_until(|| !d.wayland.inserted().is_empty()).await;
     d.idle().await;
 
@@ -297,13 +318,14 @@ async fn cancel_stops_a_rewrite_while_it_is_checked() {
     let dir = tempfile::tempdir().unwrap();
     let server = FakeServer::start(FakeServerConfig::default());
     server.push_rewrite(Ok(REWRITTEN.into()));
-    let (niri, asked) = counted_niri(dir.path(), "org.gnome.TextEditor", Duration::from_millis(500), &[]);
+    let (niri, asked, released) = held_niri(dir.path());
     let d = with_niri(&server, niri).await;
 
     choose(&d, Command::Instruction("make it polite".into()));
     wait_until(|| asked.load(Ordering::SeqCst) == 2).await;
     assert_eq!(d.run(Request::Cancel).await.message, "cancelled the rewrite");
-    tokio::time::sleep(Duration::from_millis(800)).await;
+    released.store(true, Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(300)).await;
     d.idle().await;
     assert!(d.wayland.inserted().is_empty());
     d.stop().await;
