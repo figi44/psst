@@ -81,6 +81,9 @@ impl Default for Timing {
 
 const OPENING_WEB_UI: &str = "Opening the web UI\u{2026}";
 const REWRITING: &str = "Rewriting\u{2026}";
+/// A rewrite's window lookups aren't on a paste's critical path, so a busy niri gets longer than
+/// `Timing::niri_lookup` to answer before the rewrite goes to the clipboard.
+const REWRITE_NIRI_LOOKUP: Duration = Duration::from_secs(1);
 /// As much of the selection as the menu shows.
 const PREVIEW_CHARS: usize = 80;
 
@@ -1106,12 +1109,13 @@ impl Core {
         }
         let Selection::Text(selection) = &self.menu.selection else { return };
         let (api, tx, selection) = (self.api(), self.tx.clone(), selection.clone());
-        let (sent, niri, timeout) = (selection.clone(), self.deps.niri_socket.clone(), self.deps.timing.niri_lookup);
+        let (sent, niri, timeout) =
+            (selection.clone(), self.deps.niri_socket.clone(), self.deps.timing.niri_lookup.max(REWRITE_NIRI_LOOKUP));
         let generation = self.next_generation();
         let task = tokio::spawn(async move {
             let focused = async {
                 let socket = niri?;
-                niri::focused_window(&socket, timeout).await?.id
+                niri::focused_window_after_layers(&socket, timeout).await?.id
             };
             let (window, result) = tokio::join!(focused, menu::rewrite(api, sent, command));
             let _ = tx.send(Input::Rewritten { generation, result, window });
@@ -1185,7 +1189,7 @@ impl Core {
             if !same {
                 return self.redirect_rewrite(generation, "The selection changed: the rewrite is in the clipboard");
             }
-            return self.look_for_focus(generation);
+            return self.look_for_focus(generation, true);
         }
         if !matches!(self.menu.selection, Selection::Reading(g) if g == generation) {
             return;
@@ -2267,16 +2271,21 @@ impl Core {
             self.wayland(WaylandCmd::ReadSelection { generation });
             return;
         }
-        self.look_for_focus(generation);
+        self.look_for_focus(generation, false);
     }
 
-    fn look_for_focus(&mut self, generation: u64) {
+    /// A rewrite waits out a layer surface, such as the menu it was chosen in: it would otherwise
+    /// see no window at all and go to the clipboard.
+    fn look_for_focus(&mut self, generation: u64, rewrite: bool) {
         match self.deps.niri_socket.clone() {
             Some(socket) => {
                 let tx = self.tx.clone();
                 let timeout = self.deps.timing.niri_lookup;
                 tokio::spawn(async move {
-                    let window = niri::focused_window(&socket, timeout).await;
+                    let window = match rewrite {
+                        true => niri::focused_window_after_layers(&socket, timeout.max(REWRITE_NIRI_LOOKUP)).await,
+                        false => niri::focused_window(&socket, timeout).await,
+                    };
                     let _ = tx.send(Input::Focus { generation, window });
                 });
             }

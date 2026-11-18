@@ -112,20 +112,32 @@ async fn a_rewrite_never_lands_in_another_window() {
 /// Answers each `FocusedWindow` with the same window, `delay` late: time for the test to act
 /// while a rewrite's checks wait on it.
 fn slow_niri(dir: &Path, app_id: &'static str, delay: Duration) -> PathBuf {
+    niri_after(dir, app_id, delay, 0)
+}
+
+/// As [`slow_niri`], but with no window focused for the first `none` answers, as while a layer
+/// surface such as the menu has the keyboard.
+fn niri_after(dir: &Path, app_id: &'static str, delay: Duration, none: usize) -> PathBuf {
     use tokio::{
         io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
         net::UnixListener,
     };
     let niri = dir.join("niri.sock");
     let listener = UnixListener::bind(&niri).unwrap();
+    let answered = Arc::new(AtomicU64::new(0));
     tokio::spawn(async move {
         loop {
             let (stream, _) = listener.accept().await.unwrap();
+            let answered = answered.clone();
             tokio::spawn(async move {
                 let (read, mut write) = stream.into_split();
                 BufReader::new(read).read_line(&mut String::new()).await.unwrap();
                 tokio::time::sleep(delay).await;
-                let reply = serde_json::json!({ "Ok": { "FocusedWindow": { "id": 1, "app_id": app_id } } });
+                let window = match answered.fetch_add(1, Ordering::SeqCst) < none as u64 {
+                    true => serde_json::Value::Null,
+                    false => serde_json::json!({ "id": 1, "app_id": app_id }),
+                };
+                let reply = serde_json::json!({ "Ok": { "FocusedWindow": window } });
                 let _ = write.write_all(format!("{reply}\n").as_bytes()).await;
             });
         }
@@ -158,6 +170,38 @@ async fn a_rewrite_in_a_terminal_goes_to_the_clipboard() {
     assert_eq!(d.wayland.inserted(), vec![Inserted::Copy(REWRITTEN.into())], "not typed at the prompt");
     let note = "Pasting here can't replace a selection: the rewrite is in the clipboard";
     assert!(d.wayland.showed(|s| matches!(s, OverlayState::Flash { message } if message == note)));
+    d.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rewrite_waits_for_the_menu_to_give_its_window_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = FakeServer::start(FakeServerConfig::default());
+    server.push_rewrite(Ok(REWRITTEN.into()));
+    let d = with_niri(&server, niri_after(dir.path(), "org.gnome.TextEditor", Duration::ZERO, 2)).await;
+
+    choose(&d, Command::Instruction("make it polite".into()));
+    wait_until(|| !d.wayland.inserted().is_empty()).await;
+    d.idle().await;
+
+    assert_eq!(d.wayland.inserted(), vec![paste(REWRITTEN)], "not to the clipboard for want of a window");
+    d.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rewrite_waits_longer_than_a_dictation_for_a_busy_niri() {
+    let dir = tempfile::tempdir().unwrap();
+    let niri = slow_niri(dir.path(), "org.gnome.TextEditor", Duration::from_millis(300));
+    let server = FakeServer::start(FakeServerConfig::default());
+    server.push_rewrite(Ok(REWRITTEN.into()));
+    // The default lookup, 150 ms: too short for this niri.
+    let (d, _) = open_menu_with(&server, Some(SELECTED), |_, deps| deps.niri_socket = Some(niri)).await;
+
+    choose(&d, Command::Instruction("make it polite".into()));
+    wait_until(|| !d.wayland.inserted().is_empty()).await;
+    d.idle().await;
+
+    assert_eq!(d.wayland.inserted(), vec![paste(REWRITTEN)]);
     d.stop().await;
 }
 

@@ -18,8 +18,25 @@ pub struct Window {
 }
 
 pub async fn focused_window(socket: &Path, timeout: Duration) -> Option<Window> {
+    ask(socket, timeout).await.flatten()
+}
+
+/// While a layer surface has the keyboard, psst's own menu included, niri reports no focused
+/// window: this asks again for a moment, as the menu goes, before taking "none" for an answer.
+pub async fn focused_window_after_layers(socket: &Path, timeout: Duration) -> Option<Window> {
+    for _ in 0..10 {
+        match ask(socket, timeout).await {
+            Some(None) => tokio::time::sleep(Duration::from_millis(50)).await,
+            answer => return answer.flatten(),
+        }
+    }
+    None
+}
+
+/// `None` when niri didn't answer.
+async fn ask(socket: &Path, timeout: Duration) -> Option<Option<Window>> {
     match tokio::time::timeout(timeout, query(socket)).await {
-        Ok(Ok(window)) => window,
+        Ok(Ok(window)) => Some(window),
         Ok(Err(err)) => {
             debug!("niri: {err}");
             None
