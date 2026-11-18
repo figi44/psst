@@ -566,6 +566,8 @@ struct RewriteTarget {
     selection: String,
     /// Known only with niri.
     window: Option<u64>,
+    /// The paste's delay, once the window and its paste rule passed: the selection is read last.
+    paste_delay_ms: Option<u32>,
 }
 
 /// A command's rewrite on its way. One at a time, so answers can't land out of order.
@@ -1127,7 +1129,7 @@ impl Core {
         let Some(Rewriting { selection, .. }) = self.rewriting.take_if(|r| r.generation == generation) else { return };
         match result {
             Ok(text) => {
-                let target = RewriteTarget { selection, window };
+                let target = RewriteTarget { selection, window, paste_delay_ms: None };
                 self.queue_rewrite(text, false, Some(target), None);
             }
             Err(message) => self.error_notice(&message),
@@ -1189,7 +1191,11 @@ impl Core {
             if !same {
                 return self.redirect_rewrite(generation, "The selection changed: the rewrite is in the clipboard");
             }
-            return self.look_for_focus(generation, true);
+            let checked = self.rewrite_target(generation).and_then(|r| r.target.take()).and_then(|t| t.paste_delay_ms);
+            if let Some(delay_ms) = checked {
+                self.send_insert(generation, PasteAction::CtrlV, delay_ms);
+            }
+            return;
         }
         if !matches!(self.menu.selection, Selection::Reading(g) if g == generation) {
             return;
@@ -2266,12 +2272,8 @@ impl Core {
             self.send_insert(generation, PasteAction::CopyOnly, 0);
             return;
         }
-        // A rewrite checks its selection first, then its window.
-        if self.rewrite_target(generation).is_some() {
-            self.wayland(WaylandCmd::ReadSelection { generation });
-            return;
-        }
-        self.look_for_focus(generation, false);
+        let rewrite = self.rewrite_target(generation).is_some();
+        self.look_for_focus(generation, rewrite);
     }
 
     /// A rewrite waits out a layer surface, such as the menu it was chosen in: it would otherwise
@@ -2294,15 +2296,24 @@ impl Core {
     }
 
     fn on_focus(&mut self, generation: u64, window: Option<niri::Window>) {
-        if self.rewrite_target(generation).is_some() && self.requeue_for_menu(generation) {
+        if self.rewrite_target(generation).is_some() {
+            return self.rewrite_focus(generation, window);
+        }
+        let app_id = window.map(|w| w.app_id);
+        let rule = self.cfg.paste_for(app_id.as_deref());
+        debug!("pasting into {app_id:?} with {rule:?}");
+        self.send_insert(generation, rule.action, rule.delay_ms);
+    }
+
+    /// A rewrite's window and paste rule, checked before its selection is read, last, so that the
+    /// window lookup's wait can't hide a selection changed meanwhile.
+    fn rewrite_focus(&mut self, generation: u64, window: Option<niri::Window>) {
+        if self.requeue_for_menu(generation) {
             return;
         }
-        let niri = self.deps.niri_socket.is_some();
-        if let Some(r) = self.rewrite_target(generation)
-            && let Some(target) = r.target.take()
-            && niri
-        {
-            let note = match (target.window, window.as_ref().and_then(|w| w.id)) {
+        let asked = self.rewrite_target(generation).and_then(|r| r.target.as_ref()).and_then(|t| t.window);
+        if self.deps.niri_socket.is_some() {
+            let note = match (asked, window.as_ref().and_then(|w| w.id)) {
                 (Some(asked), Some(now)) if asked == now => None,
                 (Some(_), Some(_)) => Some("The window changed: the rewrite is in the clipboard"),
                 _ => Some("Couldn't check the window: the rewrite is in the clipboard"),
@@ -2311,26 +2322,25 @@ impl Core {
                 return self.redirect_rewrite(generation, note);
             }
         }
-        let app_id = window.map(|w| w.app_id);
-        let rule = self.cfg.paste_for(app_id.as_deref());
-        if self.inserting_rewrite(generation).is_some() {
-            match rule.action {
-                PasteAction::CtrlV => {}
-                // A terminal's paste goes in at its prompt, the selection untouched.
-                PasteAction::CtrlShiftV => {
-                    return self.redirect_rewrite(
-                        generation,
-                        "Pasting here can't replace a selection: the rewrite is in the clipboard",
-                    );
-                }
-                PasteAction::CopyOnly => {
-                    return self
-                        .redirect_rewrite(generation, "Pasting is off for this app: the rewrite is in the clipboard");
-                }
+        let rule = self.cfg.paste_for(window.map(|w| w.app_id).as_deref());
+        match rule.action {
+            PasteAction::CtrlV => {}
+            // A terminal's paste goes in at its prompt, the selection untouched.
+            PasteAction::CtrlShiftV => {
+                return self.redirect_rewrite(
+                    generation,
+                    "Pasting here can't replace a selection: the rewrite is in the clipboard",
+                );
+            }
+            PasteAction::CopyOnly => {
+                return self
+                    .redirect_rewrite(generation, "Pasting is off for this app: the rewrite is in the clipboard");
             }
         }
-        debug!("pasting into {app_id:?} with {rule:?}");
-        self.send_insert(generation, rule.action, rule.delay_ms);
+        if let Some(target) = self.rewrite_target(generation).and_then(|r| r.target.as_mut()) {
+            target.paste_delay_ms = Some(rule.delay_ms);
+        }
+        self.wayland(WaylandCmd::ReadSelection { generation });
     }
 
     fn send_insert(&mut self, generation: u64, action: PasteAction, delay_ms: u32) {
