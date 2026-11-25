@@ -643,9 +643,10 @@ impl SessionJob {
                 let started = Instant::now();
                 let mut fin = psst_pipeline::run(&done.result.trace, &self.profile, &self.dictionary, &self.pipeline);
                 let pipeline_ms = millis(started.elapsed());
-                if let Some(style) = &self.post_processing {
-                    crate::tidy::dictation(&state, style, self.target.as_ref(), &mut fin).await;
-                }
+                let warning = match &self.post_processing {
+                    Some(style) => crate::tidy::dictation(&state, style, self.target.as_ref(), &mut fin).await,
+                    None => None,
+                };
                 let timings = ServerTimings {
                     audio_ms: self.audio_ms,
                     queue_ms: done.queue_ms,
@@ -663,6 +664,7 @@ impl SessionJob {
                     r#final: fin.clone(),
                     timings,
                     trace: state.server.eval_mode.then(|| trace.clone()),
+                    warning,
                 };
                 if state.registry.finish(&self.key, self.epoch, msg) {
                     tracing::info!(

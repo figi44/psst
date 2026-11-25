@@ -687,6 +687,19 @@ async fn post_processing_hears_where_the_text_goes_only_when_asked() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_dictation_the_server_warns_about_is_pasted_and_the_overlay_says_why() {
+    let server = FakeServer::start(FakeServerConfig::default());
+    server.push_outcome(Outcome::Warned { text: "Hi Anna. ".into(), warning: "ChatGPT not connected".into() });
+    let d = daemon(&server, |cfg, _| cfg.post_processing = "polished".into()).await;
+    d.dictate(200).await;
+    d.idle().await;
+    assert_eq!(d.wayland.inserted(), vec![paste("Hi Anna. ")]);
+    assert!(d.wayland.showed(|s| matches!(s, OverlayState::Warning { message } if message == "ChatGPT not connected")));
+    assert!(!d.wayland.showed(|s| matches!(s, OverlayState::Done)));
+    d.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_niri_that_never_answers_holds_the_start_only_until_the_lookup_gives_up() {
     let dir = tempfile::tempdir().unwrap();
     let niri = dir.path().join("niri.sock");

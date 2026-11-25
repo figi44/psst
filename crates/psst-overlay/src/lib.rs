@@ -31,6 +31,10 @@ pub enum OverlayState {
     WaitingForServer,
     NothingHeard,
     Done,
+    /// Done, but the text isn't what the user asked for.
+    Warning {
+        message: String,
+    },
     Error {
         message: String,
     },

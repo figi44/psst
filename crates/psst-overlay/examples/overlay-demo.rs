@@ -43,6 +43,7 @@ fn main() {
         ("waiting-for-server", OverlayState::WaitingForServer),
         ("nothing-heard", OverlayState::NothingHeard),
         ("done", OverlayState::Done),
+        ("warning", OverlayState::Warning { message: "ChatGPT not connected".into() }),
         ("error", OverlayState::Error { message: "Saved \u{b7} psst retry".into() }),
         ("flash", OverlayState::Flash { message: "Recording had a gap".into() }),
     ];

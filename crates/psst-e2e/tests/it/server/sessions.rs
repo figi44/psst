@@ -421,3 +421,33 @@ async fn a_rejected_start_leaves_no_session_behind() {
     client.stop(id, SECOND as u64).await;
     client.final_msg().await;
 }
+
+#[tokio::test]
+async fn a_dictation_post_processing_cannot_run_on_keeps_its_text_and_warns_why() {
+    let server = default_server();
+    let mut client = Client::connect(&server).await;
+    let plain = new_id();
+    client.upload(plain, SECOND).await;
+    let expected = client.final_msg().await;
+    assert_eq!(expected.warning, None);
+
+    let id = new_id();
+    client
+        .start_with(StartMsg {
+            post_processing: Some("light".into()),
+            target: None,
+            session_id: id,
+            profile: None,
+            audio: AudioFormat::default(),
+            mode: Mode::Upload,
+            resume: false,
+            eval: None,
+        })
+        .await;
+    client.ready().await;
+    client.audio(SECOND).await;
+    client.stop(id, SECOND as u64).await;
+    let fin = client.final_msg().await;
+    assert_eq!(fin.r#final.text, expected.r#final.text);
+    assert_eq!(fin.warning.as_deref(), Some("ChatGPT not connected"));
+}

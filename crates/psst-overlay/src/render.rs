@@ -112,7 +112,7 @@ enum Icon {
     Clock,
     Flat,
     Check,
-    Bang,
+    Bang(Rgba),
     Info,
 }
 
@@ -148,7 +148,10 @@ impl Frame<'_> {
             OverlayState::NothingHeard => (None, Icon::Flat, Content::Label { text: "Nothing heard", color: muted }),
             OverlayState::Done => (Some(SUCCESS.faded(0.2)), Icon::Check, Content::Label { text: "Done", color: fg }),
             OverlayState::Error { message } => {
-                (Some(ERROR.faded(0.22)), Icon::Bang, Content::Label { text: message, color: fg })
+                (Some(ERROR.faded(0.22)), Icon::Bang(ERROR), Content::Label { text: message, color: fg })
+            }
+            OverlayState::Warning { message } => {
+                (Some(WARNING.faded(0.2)), Icon::Bang(WARNING), Content::Label { text: message, color: fg })
             }
             OverlayState::Flash { message } => (None, Icon::Info, Content::Label { text: message, color: fg }),
             OverlayState::LimitWarning { seconds_left, .. } => {
@@ -373,9 +376,9 @@ impl Frame<'_> {
             Icon::Check => {
                 self.polyline(&[at(-5.0, 0.5), at(-1.5, 4.0), at(5.5, -3.8)], SUCCESS, 2.3 * u);
             }
-            Icon::Bang => {
-                self.polyline(&[at(0.0, -5.5), at(0.0, 1.2)], ERROR, 2.3 * u);
-                self.circle(at(0.0, 5.0), 1.35 * u, ERROR);
+            Icon::Bang(color) => {
+                self.polyline(&[at(0.0, -5.5), at(0.0, 1.2)], color, 2.3 * u);
+                self.circle(at(0.0, 5.0), 1.35 * u, color);
             }
             Icon::Info => {
                 self.circle(at(0.0, -5.0), 1.35 * u, fg);

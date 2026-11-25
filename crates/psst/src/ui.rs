@@ -258,6 +258,7 @@ fn overlay_json(state: &OverlayState) -> Value {
         OverlayState::WaitingForServer => json!({"kind": "waiting_for_server"}),
         OverlayState::NothingHeard => json!({"kind": "nothing_heard"}),
         OverlayState::Done => json!({"kind": "done"}),
+        OverlayState::Warning { message } => json!({"kind": "warning", "message": message}),
         OverlayState::Error { message } => json!({"kind": "error", "message": message}),
         OverlayState::Flash { message } => json!({"kind": "flash", "message": message}),
         OverlayState::LimitWarning { level, seconds_left } => {

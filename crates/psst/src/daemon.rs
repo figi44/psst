@@ -2406,15 +2406,16 @@ impl Core {
 
     fn delivered(&mut self, generation: u64) {
         let Some(inserting) = self.inserting.take_if(|i| i.generation == generation) else { return };
-        let (delete, note) = match &inserting.what {
+        let (delete, notice) = match &inserting.what {
             Delivering::Dictation(d) => {
                 self.report(d, Some(Instant::now()));
                 if self.stop_chime.take_if(|(id, _)| *id == d.id).is_some() {
                     self.sound(Sound::Stop);
                 }
-                (Some(d.id), None)
+                let warning = d.result.as_ref().and_then(|r| r.warning.clone());
+                (Some(d.id), warning.map(|message| OverlayState::Warning { message }))
             }
-            Delivering::Redelivery(r) => (r.delete, r.note),
+            Delivering::Redelivery(r) => (r.delete, r.note.map(|note| OverlayState::Flash { message: note.into() })),
         };
         if let Some(id) = delete
             && let Err(err) = self.store.delete(id)
@@ -2427,8 +2428,8 @@ impl Core {
             store::sync_files(&files, &dirs.1);
             store::sync_dir(&dirs.0);
         });
-        match note {
-            Some(note) => self.notice(OverlayState::Flash { message: note.into() }, self.t.notice_shown),
+        match notice {
+            Some(notice) => self.notice(notice, self.t.notice_shown),
             None => self.notice(OverlayState::Done, self.t.done_shown),
         }
     }
@@ -2528,7 +2529,9 @@ impl Core {
         if let Some(rec) = self.recording.as_ref().filter(|rec| rec.tap_until.is_none()) {
             if let Some(notice) = notice {
                 let message = match notice {
-                    OverlayState::Flash { message } | OverlayState::Error { message } => message,
+                    OverlayState::Flash { message }
+                    | OverlayState::Warning { message }
+                    | OverlayState::Error { message } => message,
                     OverlayState::Done | OverlayState::NothingHeard => return self.recording_overlay(rec),
                     _ => String::new(),
                 };
