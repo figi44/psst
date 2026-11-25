@@ -31,7 +31,7 @@
         {%- endfor -%}
         </p>
         {%- endif %}
-        <p class="meta"><span>{{ e.device }}</span>{% if e.profile %}<span class="sep"></span><span>{{ e.profile }} profile</span>{% endif %}{% if e.audio %}<span class="sep"></span><a class="play" href="/history/{{ e.id }}/audio" data-play aria-label="Play the recording from {{ e.ago }}">Play</a>{% endif %}</p>
+        <p class="meta"><span>{{ e.device }}</span>{% if e.profile %}<span class="sep"></span><span>{{ e.profile }} profile</span>{% endif %}{% if e.audio %}<span class="sep"></span><a class="play" href="/history/{{ e.id }}/audio" hx-boost="false" data-play aria-label="Play the recording from {{ e.ago }}">Play</a>{% endif %}</p>
         {%- if e.done %}
         <div class="done" role="status">
           <p class="done-h" tabindex="-1">{{ icon("check") }}<span>{{ e.done.text }}</span></p>
@@ -80,7 +80,7 @@
   {%- if more %}
   <a class="btn more" href="/history?all=1">Show older dictations</a>
   {%- elif days %}
-  <p class="keep">psst keeps the last {{ kept_days }} days{% if audio_days %}, and their recordings for {{ audio_days }}{% endif %}.</p>
+  <p class="keep">psst keeps the last {{ kept_days }} days{% if audio_days %}, with recordings for {{ audio_days }} days{% endif %}.</p>
   {%- endif %}
 </div>
 {% endblock %}

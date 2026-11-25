@@ -145,6 +145,6 @@ async fn the_history_page_plays_a_kept_recording_to_logged_in_browsers_only() {
 
     let page = logged_in(&server).await.get("/history").await;
     assert!(page.body.contains(&format!("href=\"{play}\"")), "{}", page.body);
-    assert!(page.body.contains("and their recordings for 30"), "{}", page.body);
+    assert!(page.body.contains("with recordings for 30 days"), "{}", page.body);
     assert_ne!(Browser::new(server.tcp_addr().unwrap()).get(&play).await.status, 200);
 }
