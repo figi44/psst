@@ -502,7 +502,7 @@ pub struct Socket {
 
 /// A request OpenAI read ahead, for the next request with the same settings to chain on.
 struct Prepared {
-    /// The settings, as sent.
+    /// What the request was asked with but its text: [`key`].
     key: String,
     id: String,
 }
@@ -567,7 +567,7 @@ pub async fn respond_on(
     ask: &Ask<'_>,
 ) -> Result<Answer> {
     let settings = settings(ask);
-    let key = settings.to_string();
+    let key = key(ask);
     let (mut refreshed, mut reopened, mut unchained) = (false, false, false);
     loop {
         let token = access_token(state, refreshed).await?;
@@ -632,6 +632,12 @@ pub async fn respond_on(
     }
 }
 
+/// Requests chain only onto a preparation with the same key. The lab's `extra` can change anything,
+/// so it counts too, though only dictations prepare.
+fn key(ask: &Ask<'_>) -> String {
+    json!([settings(ask), ask.extra]).to_string()
+}
+
 /// Everything a request sends but its input.
 fn settings(ask: &Ask<'_>) -> Value {
     let mut settings = json!({
@@ -653,7 +659,7 @@ fn settings(ask: &Ask<'_>) -> Value {
 /// will ask: OpenAI then reads the instructions while the user talks, and the request chains on.
 pub fn warm(state: &Arc<AppState>, ask: Option<&Ask<'_>>) -> tokio::task::JoinHandle<()> {
     let state = state.clone();
-    let settings = ask.map(settings);
+    let prepare = ask.map(|ask| (settings(ask), key(ask)));
     tokio::spawn(async move {
         let Ok(token) = access_token(&state, false).await else { return };
         let mut slot = state.tidy.socket.lock().await;
@@ -675,7 +681,7 @@ pub fn warm(state: &Arc<AppState>, ask: Option<&Ask<'_>>) -> tokio::task::JoinHa
                 }
             }
         }
-        let Some(settings) = settings else { return };
+        let Some((settings, key)) = prepare else { return };
         let mut socket = slot.take().expect("a socket is ready");
         let mut event = settings.clone();
         event["type"] = json!("response.create");
@@ -683,7 +689,7 @@ pub fn warm(state: &Arc<AppState>, ask: Option<&Ask<'_>>) -> tokio::task::JoinHa
         event["generate"] = json!(false);
         match tokio::time::timeout(PREPARE_TIMEOUT, turn(&mut socket, &event.to_string())).await {
             Ok(Ok(answer)) => {
-                socket.prepared = Some(Prepared { key: settings.to_string(), id: answer.id });
+                socket.prepared = Some(Prepared { key, id: answer.id });
                 *slot = Some(socket);
             }
             Ok(Err(Exchange::Failed(err))) => {
