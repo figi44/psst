@@ -96,6 +96,13 @@ async fn a_finished_session_is_resumed_from_memory_and_after_a_restart_from_hist
     assert!(ready.resumed && !ready.need_audio, "{ready:?}");
     assert_eq!(other.final_msg().await, fin);
 
+    // The final goes out before its history row is written, and the restart kills the server.
+    let deadline = Instant::now() + MESSAGE_TIMEOUT;
+    let stored = |row: &serde_json::Value| row["id"] == fin.history_id && !row["final"].is_null();
+    while !admin_json(&server, &["history"]).as_array().unwrap().iter().any(stored) {
+        assert!(Instant::now() < deadline, "history row {} was never stored", fin.history_id);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     server.restart();
     let mut third = Client::connect(&server).await;
     third.start(id, Mode::Upload, true).await;
