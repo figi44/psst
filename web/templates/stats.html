@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Stats · psst{% endblock %}
+
+{% block main %}
+<div class="page">
+  <div class="head">
+    <h1>Stats</h1>
+    <p class="sub">How long you waited for your dictations in the history psst keeps ({{ days }} days){% if sessions %}: <span class="num">{{ sessions }}</span> dictations, typically {{ audio }} long{% endif %}. Medians, with the 95th percentile beside them.</p>
+  </div>
+  {%- if tiles %}
+  <ul class="lat-tiles">
+    {%- for t in tiles %}
+    <li class="lat-tile">
+      <p class="lat-tile-h">{{ t.label }}</p>
+      <p class="lat-tile-v num">{{ t.p50 }}</p>
+      <p class="lat-tile-s">p95 <span class="num">{{ t.p95 }}</span> · {{ t.hint }}</p>
+      <p class="lat-tile-s"><span class="num">{{ t.count }}</span> dictation{% if t.count != 1 %}s{% endif %}</p>
+    </li>
+    {%- endfor %}
+  </ul>
+  {%- endif %}
+  {%- if steps %}
+  <section class="lat-steps" aria-labelledby="steps-h">
+    <div class="lat-head">
+      <h2 id="steps-h">Each step</h2>
+      <p class="lat-legend" aria-hidden="true"><span><i class="lat-key p50"></i>Median</span><span><i class="lat-key p95"></i>95th percentile</span></p>
+    </div>
+    <ul class="lat-rows">
+      {%- for s in steps %}
+      <li class="lat-row">
+        <span class="lat-name">{{ s.label }}</span>
+        <span class="lat-num num">{{ s.p50 }}<span class="lat-p95"> · p95 {{ s.p95 }}</span></span>
+        <svg class="lat-bar" width="100%" height="8" aria-hidden="true"><title>{{ s.tip }}</title><rect class="track" x="0" y="0" width="100%" height="8" rx="4"/><rect class="r95" x="0" y="0" width="{{ s.w95 }}" height="8" rx="4"/><rect class="r50" x="0" y="0" width="{{ s.w50 }}" height="8" rx="4"/></svg>
+      </li>
+      {%- endfor %}
+    </ul>
+  </section>
+  {%- else %}
+  <p class="sub">No dictations yet. Dictate something with <code>psst toggle</code>, and its timings show up here.</p>
+  {%- endif %}
+</div>
+{% endblock %}

@@ -21,7 +21,7 @@
 <header class="side">
   <a class="brand" href="/history">psst<i aria-hidden="true"></i></a>
   <nav class="nav" aria-label="Pages">
-    {%- for item in [("history", "History"), ("dictionary", "Dictionary"), ("profiles", "Profiles"), ("post-processing", "Post-processing"), ("devices", "Devices"), ("settings", "Settings")] %}
+    {%- for item in [("history", "History"), ("dictionary", "Dictionary"), ("profiles", "Profiles"), ("post-processing", "Post-processing"), ("devices", "Devices"), ("stats", "Stats"), ("settings", "Settings")] %}
     <a href="/{{ item[0] }}"{% if page == item[0] %} aria-current="page"{% endif %}>{{ icon(item[0]) }}<span>{{ item[1] }}</span></a>
     {%- endfor %}
   </nav>

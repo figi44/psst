@@ -6,6 +6,7 @@ mod login;
 mod pair;
 mod profiles;
 mod settings;
+mod stats;
 mod tidy;
 
 use std::sync::{Arc, OnceLock};
@@ -53,6 +54,7 @@ const TEMPLATES: &[(&str, &str)] = &[
     ("devices.html", include_str!("../../../../web/templates/devices.html")),
     ("pairing.html", include_str!("../../../../web/templates/pairing.html")),
     ("device.html", include_str!("../../../../web/templates/device.html")),
+    ("stats.html", include_str!("../../../../web/templates/stats.html")),
 ];
 
 const ASSETS: &[(&str, &str, &[u8])] = &[
@@ -97,6 +99,7 @@ pub fn router() -> Router<AppRef> {
         .route("/post-processing/runs/clear", post(tidy::clear))
         .route("/post-processing/eval", post(tidy::eval))
         .route("/post-processing/eval/models", get(tidy::eval_models))
+        .route("/stats", get(stats::show))
         .route("/settings", get(settings::show))
         .route("/settings.toml", get(settings::export))
         .route("/settings/{key}", post(settings::set))

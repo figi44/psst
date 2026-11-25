@@ -347,6 +347,31 @@ details.hidden-words { border-top: 0; margin-top: 4px; }
 .prow .pdesc { color: var(--muted); font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .prow .icon { color: var(--faint); }
 @media (max-width: 600px) { .prow { grid-template-columns: minmax(0, 1fr) auto; } .prow .pdesc { grid-column: 1; grid-row: 2; } .prow .icon { grid-row: 1 / span 2; grid-column: 2; } }
+
+/* Stats: the waits as tiles, then every step's bar on one scale. */
+.lat-tiles { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: 12px; }
+.lat-tile { background: var(--well); border-radius: 18px; padding: 16px 18px; display: grid; gap: 2px; align-content: start; }
+.lat-tile-h { color: var(--muted); font-size: 14px; }
+.lat-tile-v { font-size: 32px; line-height: 1.2; letter-spacing: -0.02em; }
+.lat-tile-s { color: var(--faint); font-size: 13px; }
+.lat-steps { display: grid; gap: 16px; }
+.lat-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; }
+.lat-head h2 { font-size: 17px; }
+.lat-legend { display: flex; gap: 16px; color: var(--muted); font-size: 13px; }
+.lat-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.lat-key { width: 14px; height: 8px; border-radius: 4px; display: inline-block; }
+.lat-key.p50 { background: var(--fg); }
+.lat-key.p95 { background: var(--faint); }
+.lat-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 16px; }
+.lat-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 16px; align-items: baseline; }
+.lat-name { color: var(--fg-2); font-size: 15px; }
+.lat-num { font-size: 15px; white-space: nowrap; }
+.lat-p95 { color: var(--faint); }
+.lat-bar { grid-column: 1 / -1; display: block; overflow: visible; }
+.lat-bar .track { fill: var(--well); }
+.lat-bar .r95 { fill: var(--faint); }
+/* The ring keeps the median's end visible on top of the 95th percentile. */
+.lat-bar .r50 { fill: var(--fg); stroke: var(--bg); stroke-width: 2px; }
 .tokens { display: flex; align-items: center; gap: 12px; font-size: 13px; color: var(--muted); padding-left: 2px; }
 .tokens .meter { flex: 1; max-width: 10rem; }
 .tokens.over { color: var(--warn); }
