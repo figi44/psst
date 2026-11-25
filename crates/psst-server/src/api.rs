@@ -847,6 +847,16 @@ mod tests {
     }
 
     #[test]
+    fn stats_count_post_processing_only_where_it_ran() {
+        let tidied = ServerTimings { tidy_ms: Some(900), tidy_first_token_ms: Some(700), ..server(1_100, 200) };
+        let failed = ServerTimings { tidy_ms: Some(6_000), ..server(6_200, 200) };
+        let stats = compute_stats(&[(tidied, None), (failed, None), (server(200, 200), None)]);
+        assert_eq!(stats.timings["server.tidy_ms"], Percentiles { count: 2, p50: 900, p95: 6_000 });
+        assert_eq!(stats.timings["server.tidy_first_token_ms"], Percentiles { count: 1, p50: 700, p95: 700 });
+        assert_eq!(stats.timings["server.stop_to_final_ms"].count, 3);
+    }
+
+    #[test]
     fn stats_estimate_the_network_from_client_reports() {
         let client =
             ClientTimings { stop_to_final_ms: Some(130), stop_to_dispatch_ms: Some(140), ..Default::default() };

@@ -450,4 +450,5 @@ async fn a_dictation_post_processing_cannot_run_on_keeps_its_text_and_warns_why(
     let fin = client.final_msg().await;
     assert_eq!(fin.r#final.text, expected.r#final.text);
     assert_eq!(fin.warning.as_deref(), Some("ChatGPT not connected"));
+    assert_eq!((fin.timings.tidy_ms, fin.timings.tidy_first_token_ms), (None, None), "nothing went to ChatGPT");
 }

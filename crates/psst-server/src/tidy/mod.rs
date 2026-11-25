@@ -267,33 +267,55 @@ fn ask<'a>(style: &'a Style, instructions: &'a str, text: &'a str) -> Ask<'a> {
 /// The client gives up on a dictation 10 s after it stops; past this, it gets the text as it was.
 const DICTATION_BUDGET: Duration = Duration::from_secs(6);
 
+pub struct Spent {
+    pub total: Duration,
+    pub first_token: Option<Duration>,
+}
+
+#[derive(Default)]
+pub struct Tidied {
+    /// Why the text stayed as it was, short enough for the overlay.
+    pub warning: Option<String>,
+    /// `None` when nothing went to ChatGPT.
+    pub spent: Option<Spent>,
+}
+
 /// Post-processes a dictation's final text with `style_id`, keeping the text as it was when that
-/// fails or takes too long. Then it says why, short enough for the overlay.
-pub async fn dictation(
-    state: &Arc<AppState>,
-    style_id: &str,
-    target: Option<&Target>,
-    fin: &mut Final,
-) -> Option<String> {
+/// fails or takes too long.
+pub async fn dictation(state: &Arc<AppState>, style_id: &str, target: Option<&Target>, fin: &mut Final) -> Tidied {
     let Some(Entry { style, .. }) = entry(state, style_id) else {
         tracing::warn!("unknown post-processing style {style_id:?}; the dictation stays as it was");
-        return Some(format!("No style called {style_id}"));
+        return Tidied { warning: Some(format!("No style called {style_id}")), spent: None };
     };
     let text = fin.text.trim();
     if text.is_empty() {
-        return None;
+        return Tidied::default();
+    }
+    // Before the clock starts: a dictation that never reaches ChatGPT would drag its percentiles to 0.
+    if chatgpt::credentials(state).is_none() {
+        tracing::warn!(
+            "post-processing a dictation with {style_id} failed, so it stays as it was: ChatGPT isn't connected"
+        );
+        return Tidied { warning: Some("ChatGPT not connected".into()), spent: None };
     }
     let instructions = instructions(state, &style, target);
     // Only the app: a window title can be an email's subject.
     let into = target.map_or(String::new(), |t| format!(" for {}", t.app));
     let started = Instant::now();
-    match tokio::time::timeout(DICTATION_BUDGET, chatgpt::respond(state, &ask(&style, &instructions, text))).await {
+    let mut first_token = None;
+    let warning = match tokio::time::timeout(
+        DICTATION_BUDGET,
+        chatgpt::respond(state, &ask(&style, &instructions, text)),
+    )
+    .await
+    {
         Ok(Ok(answer)) => {
             tracing::info!(
                 "post-processed a dictation with {style_id}{into} in {} ms (first token after {} ms)",
                 started.elapsed().as_millis(),
                 answer.first_token.map_or(0, |d| d.as_millis())
             );
+            first_token = answer.first_token;
             // The rules' trailing space keeps the next dictation from running into this one.
             let trailing = &fin.text[fin.text.trim_end().len()..];
             fin.text = format!("{}{trailing}", answer.text);
@@ -315,7 +337,8 @@ pub async fn dictation(
             tracing::warn!("post-processing a dictation took over {DICTATION_BUDGET:?}, so it stays as it was");
             Some("Post-processing timed out".into())
         }
-    }
+    };
+    Tidied { warning, spent: Some(Spent { total: started.elapsed(), first_token }) }
 }
 
 const COMMAND_PROMPT: &str = include_str!("../../tidy-prompts/command.txt");
