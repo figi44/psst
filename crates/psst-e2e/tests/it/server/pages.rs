@@ -1,7 +1,10 @@
 use psst_client::api::{ApiClient, Method};
 use psst_config::{ConfigFile, DictionaryFile, ProfilesFile};
 use psst_engine_proto::fake::Script;
-use psst_proto::api::{DictionaryView, ProfileLayer, ProfilesView, TermLayer, routes};
+use psst_proto::{
+    SessionId,
+    api::{DictionaryView, ProfileLayer, ProfilesView, TermLayer, routes},
+};
 use psst_testkit::TestServer;
 use serde_json::json;
 
@@ -319,4 +322,31 @@ async fn the_post_processing_lab_runs_a_style_as_if_dictating_into_an_app() {
     ] {
         assert!(page.body.contains(text), "{text} on the page: {}", page.body);
     }
+}
+
+#[tokio::test]
+async fn the_stats_page_shows_each_step_once_there_are_dictations() {
+    let server = web_server();
+    let browser = logged_in(&server).await;
+    let empty = browser.get("/stats").await;
+    assert_eq!(empty.status, 200, "{}", empty.body);
+    assert!(empty.body.contains("No dictations yet"), "{}", empty.body);
+
+    let mut client = Client::connect(&server).await;
+    client.upload(SessionId::new_v4(), SECOND).await;
+    client.final_msg().await;
+    // The history row is written after the final goes out.
+    let deadline = std::time::Instant::now() + MESSAGE_TIMEOUT;
+    let page = loop {
+        let page = browser.get("/stats").await;
+        if !page.body.contains("No dictations yet") || std::time::Instant::now() > deadline {
+            break page;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    assert_eq!(page.status, 200);
+    for seen in ["Server", "Speech model", "over 1 dictation", r#"aria-current="page""#] {
+        assert!(page.body.contains(seen), "{seen}: {}", page.body);
+    }
+    assert!(!page.body.contains("Post-processing,"), "no step that didn't run: {}", page.body);
 }

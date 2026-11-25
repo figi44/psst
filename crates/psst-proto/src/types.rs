@@ -88,6 +88,12 @@ pub struct ServerTimings {
     pub engine_ms: u32,
     pub attempts: u32,
     pub pipeline_ms: u32,
+    /// What post-processing added, also when it failed or ran out of time; absent without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tidy_ms: Option<u32>,
+    /// Only when the model answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tidy_first_token_ms: Option<u32>,
     pub stop_to_final_ms: u32,
 }
 

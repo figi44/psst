@@ -240,6 +240,8 @@ fn final_carries_result_timings_and_optional_trace_and_warning() {
             engine_ms: 180,
             attempts: 1,
             pipeline_ms: 2,
+            tidy_ms: None,
+            tidy_first_token_ms: None,
             stop_to_final_ms: 190,
         },
         trace: Some(trace()),

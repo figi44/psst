@@ -643,9 +643,9 @@ impl SessionJob {
                 let started = Instant::now();
                 let mut fin = psst_pipeline::run(&done.result.trace, &self.profile, &self.dictionary, &self.pipeline);
                 let pipeline_ms = millis(started.elapsed());
-                let warning = match &self.post_processing {
+                let tidy = match &self.post_processing {
                     Some(style) => crate::tidy::dictation(&state, style, self.target.as_ref(), &mut fin).await,
-                    None => None,
+                    None => crate::tidy::Tidied::default(),
                 };
                 let timings = ServerTimings {
                     audio_ms: self.audio_ms,
@@ -654,6 +654,8 @@ impl SessionJob {
                     engine_ms: done.engine_ms,
                     attempts: done.attempts,
                     pipeline_ms,
+                    tidy_ms: tidy.spent.as_ref().map(|spent| millis(spent.total)),
+                    tidy_first_token_ms: tidy.spent.as_ref().and_then(|spent| spent.first_token).map(millis),
                     stop_to_final_ms: millis(self.stop_at.elapsed()),
                 };
                 let engine = done.result.timings;
@@ -664,7 +666,7 @@ impl SessionJob {
                     r#final: fin.clone(),
                     timings,
                     trace: state.server.eval_mode.then(|| trace.clone()),
-                    warning,
+                    warning: tidy.warning,
                 };
                 if state.registry.finish(&self.key, self.epoch, msg) {
                     tracing::info!(
