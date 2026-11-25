@@ -516,6 +516,8 @@ impl fmt::Debug for Socket {
 /// OpenAI closes sockets at 60 minutes.
 const SOCKET_AGE: Duration = Duration::from_secs(55 * 60);
 const PONG_WAIT: Duration = Duration::from_secs(2);
+/// It holds the socket, so a dictation that stops meanwhile waits for it. It takes 0.2 s or so.
+const PREPARE_TIMEOUT: Duration = Duration::from_secs(2);
 
 impl Socket {
     fn fresh_for(&self, token: &str) -> bool {
@@ -599,6 +601,11 @@ pub async fn respond_on(
         if let Some(prepared) = &chained {
             event["previous_response_id"] = json!(prepared.id);
         }
+        if let Some(Value::Object(extra)) = ask.extra {
+            for (key, value) in extra {
+                event[key] = value.clone();
+            }
+        }
         match tokio::time::timeout(REQUEST_TIMEOUT, turn(&mut socket, &event.to_string())).await {
             Ok(Ok(mut answer)) => {
                 *slot = Some(socket);
@@ -638,11 +645,6 @@ fn settings(ask: &Ask<'_>) -> Value {
     if let Some(tier) = ask.tier {
         settings["service_tier"] = json!(tier);
     }
-    if let Some(Value::Object(extra)) = ask.extra {
-        for (key, value) in extra {
-            settings[key] = value.clone();
-        }
-    }
     settings
 }
 
@@ -679,7 +681,7 @@ pub fn warm(state: &Arc<AppState>, ask: Option<&Ask<'_>>) -> tokio::task::JoinHa
         event["type"] = json!("response.create");
         event["input"] = json!([]);
         event["generate"] = json!(false);
-        match tokio::time::timeout(REQUEST_TIMEOUT, turn(&mut socket, &event.to_string())).await {
+        match tokio::time::timeout(PREPARE_TIMEOUT, turn(&mut socket, &event.to_string())).await {
             Ok(Ok(answer)) => {
                 socket.prepared = Some(Prepared { key: settings.to_string(), id: answer.id });
                 *slot = Some(socket);
@@ -689,7 +691,7 @@ pub fn warm(state: &Arc<AppState>, ask: Option<&Ask<'_>>) -> tokio::task::JoinHa
                 *slot = Some(socket);
             }
             Ok(Err(Exchange::Broken { err, .. })) => tracing::debug!("post-processing: preparing broke: {err:#}"),
-            Err(_) => tracing::debug!("post-processing: OpenAI didn't prepare within {REQUEST_TIMEOUT:?}"),
+            Err(_) => tracing::debug!("post-processing: OpenAI didn't prepare within {PREPARE_TIMEOUT:?}"),
         }
     })
 }
@@ -1027,6 +1029,30 @@ mod tests {
         let [_, chained, again] = requests("Tidy it up.", "Tidy it up.", false).await.try_into().unwrap();
         assert_eq!(chained["previous_response_id"], "resp_1");
         assert_eq!((&again["previous_response_id"], &again["instructions"]), (&Value::Null, &json!("Tidy it up.")));
+    }
+
+    #[tokio::test]
+    async fn a_preparation_openai_never_answers_holds_a_dictation_back_only_briefly() {
+        let (_dir, server) = serve().await;
+        let state = server.state.clone();
+        sign_in(&state);
+        let stalled = openai(&state);
+        let fresh = openai(&state);
+        tokio::spawn(async move {
+            let mut ws = stalled.await.unwrap();
+            // Answers pings, never the request.
+            while let Some(Ok(_)) = ws.next().await {}
+        });
+        tokio::spawn(async move { answer(fresh.await.unwrap(), true, ignored()).await });
+        let warming = warm(&state, Some(&tidy_up("Tidy it up.", "")));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let asked = Instant::now();
+        let ask = tidy_up("Tidy it up.", "tidy");
+        let answer = tokio::time::timeout(Duration::from_secs(5), respond(&state, &ask)).await;
+        assert_eq!(answer.expect("the dictation isn't held up").unwrap().text, "Tidy.");
+        assert!(asked.elapsed() < PREPARE_TIMEOUT + Duration::from_secs(1), "{:?}", asked.elapsed());
+        warming.await.unwrap();
+        server.shutdown().await.unwrap();
     }
 
     #[tokio::test]
