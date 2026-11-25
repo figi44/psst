@@ -293,7 +293,7 @@ async fn page(state: &AppRef, viewer: &Viewer, error: Option<String>) -> Respons
     let draft = state.tidy.draft();
     let email = chatgpt::credentials(state).map(|c| c.email);
     if email.is_some() {
-        chatgpt::warm(state);
+        chatgpt::warm(state, None);
     }
     let pending =
         state.tidy.sign_in().pending.as_ref().map(|p| context! { url => p.url.clone(), listening => p.listening });

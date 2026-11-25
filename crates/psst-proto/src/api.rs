@@ -22,6 +22,8 @@ pub mod routes {
     pub const STATS: &str = "/api/stats";
     /// Newest first.
     pub const HISTORY: &str = "/api/history";
+    /// `GET` answers a dictation's recording as Ogg Opus, while the server's `audio_days` keeps it.
+    pub const HISTORY_AUDIO: &str = "/api/history/{id}/audio";
     pub const DICTIONARY: &str = "/api/dictionary";
     pub const DICTIONARY_TERMS: &str = "/api/dictionary/terms";
     /// `{id}` is any spelling with the term's identity. `DELETE` hides a file term, or removes an

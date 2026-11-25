@@ -249,6 +249,8 @@ details.adv > summary:hover { color: var(--fg); }
 .entry.boxed { background: var(--well); box-shadow: inset 0 0 0 1px var(--line); }
 .meta { font-size: 13px; color: var(--faint); display: flex; flex-wrap: wrap; gap: 0 6px; }
 .meta .sep::before { content: "·"; }
+.meta .play { color: inherit; text-decoration: underline; text-decoration-color: var(--faint); text-underline-offset: 3px; }
+.meta .play:hover { color: var(--fg); text-decoration-color: var(--fg); }
 .text { font-size: 18px; line-height: 1.7; color: var(--fg-2); overflow-wrap: anywhere; letter-spacing: -0.005em; }
 .entry.latest .text { font-size: 22px; line-height: 1.6; color: var(--fg); letter-spacing: -0.012em; }
 @media (pointer: coarse) { .text, .entry.latest .text { line-height: 2; } }

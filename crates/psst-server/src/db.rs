@@ -41,6 +41,11 @@ CREATE TABLE IF NOT EXISTS history (
     UNIQUE (device, session_id)
 );
 CREATE INDEX IF NOT EXISTS history_created ON history (created_ms);
+CREATE TABLE IF NOT EXISTS history_audio (
+    id INTEGER PRIMARY KEY,
+    created_ms INTEGER NOT NULL,
+    ogg BLOB NOT NULL
+);
 CREATE TABLE IF NOT EXISTS state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -494,6 +499,39 @@ impl Db {
     pub fn prune_history(&self, days: u32) -> Result<usize> {
         let cutoff = now_ms() - i64::from(days) * 86_400_000;
         Ok(self.conn().execute("DELETE FROM history WHERE created_ms < ?1", params![cutoff])?)
+    }
+
+    /// `id` is the dictation's history row; once it's pruned, the audio isn't kept.
+    pub fn save_audio(&self, id: HistoryId, ogg: &[u8]) -> Result<()> {
+        self.conn().execute(
+            "INSERT OR REPLACE INTO history_audio (id, created_ms, ogg)
+             SELECT ?1, ?2, ?3 WHERE EXISTS (SELECT 1 FROM history WHERE id = ?1)",
+            params![id as i64, now_ms(), ogg],
+        )?;
+        Ok(())
+    }
+
+    pub fn audio(&self, id: HistoryId) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .conn()
+            .query_row("SELECT ogg FROM history_audio WHERE id = ?1", params![id as i64], |row| row.get(0))
+            .optional()?)
+    }
+
+    pub fn audio_ids(&self) -> Result<std::collections::HashSet<HistoryId>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT id FROM history_audio")?;
+        let ids = stmt.query_map([], |row| row.get::<_, i64>(0))?;
+        Ok(ids.map(|id| id.map(|id| id as HistoryId)).collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Also drops the audio of dictations no longer in the history.
+    pub fn prune_audio(&self, days: u32) -> Result<usize> {
+        let cutoff = now_ms() - i64::from(days) * 86_400_000;
+        Ok(self.conn().execute(
+            "DELETE FROM history_audio WHERE created_ms < ?1 OR id NOT IN (SELECT id FROM history)",
+            params![cutoff],
+        )?)
     }
 
     pub fn get_state(&self, key: &str) -> Result<Option<String>> {

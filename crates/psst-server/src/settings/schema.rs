@@ -142,6 +142,13 @@ pub const SERVER: &[Group] = &[
                 Kind::Int { min: 1, max: 3650, unit: "days" },
                 Applies::Now,
             ),
+            editable(
+                "audio_days",
+                "Keep audio",
+                "Each dictation's recording, to play back from its history; 0 keeps none.",
+                Kind::Int { min: 0, max: 3650, unit: "days" },
+                Applies::Now,
+            ),
         ],
     },
     Group {

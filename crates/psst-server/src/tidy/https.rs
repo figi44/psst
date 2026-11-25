@@ -12,7 +12,11 @@ use hyper::{
     header::{self, HeaderName},
 };
 use hyper_util::rt::TokioIo;
-use tokio::{net::TcpStream, sync::Mutex};
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    net::TcpStream,
+    sync::Mutex,
+};
 use tokio_rustls::{
     TlsConnector,
     client::TlsStream,
@@ -21,9 +25,15 @@ use tokio_rustls::{
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// What a socket to OpenAI runs over: TLS, or in tests a pipe to a fake.
+pub trait Io: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
+
 pub struct Https {
     tls: TlsConnector,
     idle: Mutex<HashMap<String, SendRequest<Full<Bytes>>>>,
+    #[cfg(test)]
+    streams: std::sync::Mutex<std::collections::VecDeque<tokio::io::DuplexStream>>,
 }
 
 impl fmt::Debug for Https {
@@ -40,7 +50,12 @@ impl Https {
             .expect("ring supports TLS 1.2 and 1.3")
             .with_root_certificates(roots)
             .with_no_client_auth();
-        Https { tls: TlsConnector::from(Arc::new(config)), idle: Mutex::default() }
+        Https {
+            tls: TlsConnector::from(Arc::new(config)),
+            idle: Mutex::default(),
+            #[cfg(test)]
+            streams: std::sync::Mutex::default(),
+        }
     }
 
     pub async fn send(
@@ -83,7 +98,15 @@ impl Https {
         Ok(response)
     }
 
-    pub async fn tls(&self, host: &str, port: u16) -> Result<TlsStream<TcpStream>> {
+    pub async fn stream(&self, host: &str, port: u16) -> Result<Box<dyn Io>> {
+        #[cfg(test)]
+        if let Some(io) = self.streams.lock().unwrap().pop_front() {
+            return Ok(Box::new(io));
+        }
+        Ok(Box::new(self.tls(host, port).await?))
+    }
+
+    async fn tls(&self, host: &str, port: u16) -> Result<TlsStream<TcpStream>> {
         let timeout = || anyhow!("no connection to {host} within {CONNECT_TIMEOUT:?}");
         let tcp = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect((host, port)))
             .await
@@ -103,6 +126,17 @@ impl Https {
         let (sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(io)).await.unwrap();
         tokio::spawn(connection);
         self.idle.lock().await.insert(origin.to_owned(), sender);
+    }
+
+    /// The next [`stream`](Https::stream) runs over `io` instead of a TLS connection.
+    #[cfg(test)]
+    pub fn stream_to(&self, io: tokio::io::DuplexStream) {
+        self.streams.lock().unwrap().push_back(io);
+    }
+
+    #[cfg(test)]
+    pub fn unused_streams(&self) -> usize {
+        self.streams.lock().unwrap().len()
     }
 
     async fn connect(&self, host: &str, port: u16) -> Result<SendRequest<Full<Bytes>>> {

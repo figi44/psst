@@ -22,6 +22,7 @@ use tokio::{
 };
 
 use crate::{
+    audio::Recorded,
     auth::{Identity, Refusal},
     engine::{JobOutcome, JobPhase, JobRequest, JobStatus, Stream, pcm_to_payload},
     registry::{Attachment, Cancel, ConnEvent, Rejection, SessionKey, Start, StartRequest},
@@ -182,6 +183,10 @@ enum Phase {
 struct Recording {
     pcm: Vec<u8>,
     opus: Option<Decoder>,
+    /// As they came, while `keep_audio`.
+    packets: Vec<Vec<u8>>,
+    /// As at `start`.
+    keep_audio: bool,
     /// Fed a frame behind: the last frame is padded, so only its real samples are sent, at `stop`.
     stream: Option<Stream>,
     streamed: usize,
@@ -314,15 +319,21 @@ impl Conn {
                 let stream = (start.mode == Mode::Live && self.state.model_loaded()).then(|| {
                     self.state.engine.open_stream(profile.language.clone(), engine_bias(&profile, &dictionary, bias))
                 });
+                let post_processing = start.post_processing.clone().filter(|style| style != "none");
+                if let Some(style) = &post_processing {
+                    crate::tidy::prepare(&self.state, style, start.target.as_ref());
+                }
                 let recording = Recording {
                     pcm: Vec::with_capacity(10 * SAMPLE_RATE as usize * 2),
                     opus,
+                    packets: Vec::new(),
+                    keep_audio: self.state.live.server().audio_days > 0,
                     stream,
                     streamed: 0,
                     last_frame: Instant::now(),
                     history_id,
                     profile,
-                    post_processing: start.post_processing.clone().filter(|style| style != "none"),
+                    post_processing,
                     target: start.target.clone(),
                     dictionary,
                     bias,
@@ -362,6 +373,9 @@ impl Conn {
         let (key, epoch) = (active.key.clone(), active.epoch);
         if let Err(message) = append_frame(&mut recording.pcm, recording.opus.as_mut(), bytes) {
             return self.end_recording(ws, &key, epoch, ErrorCode::BadAudio, &message).await;
+        }
+        if recording.keep_audio && recording.opus.is_some() {
+            recording.packets.push(bytes.to_vec());
         }
         if let Some(stream) = &recording.stream {
             let upto = recording.pcm.len().saturating_sub(FRAME_SAMPLES * 2);
@@ -439,6 +453,14 @@ impl Conn {
         else {
             unreachable!()
         };
+        let mut recording = *recording;
+        let audio = recording.keep_audio.then(|| match recording.opus {
+            Some(_) => Recorded::Opus(std::mem::take(&mut recording.packets)),
+            None => {
+                recording.pcm.truncate(stop.samples as usize * 2);
+                Recorded::Pcm(std::mem::take(&mut recording.pcm))
+            }
+        });
         let job = SessionJob {
             key,
             epoch,
@@ -450,6 +472,8 @@ impl Conn {
             pipeline: PipelineOptions { dictionary: recording.bias },
             audio_ms,
             stop_at,
+            audio,
+            samples: stop.samples,
         };
         tokio::spawn(job.finish(self.state.clone(), handle.outcome));
         Flow::Continue
@@ -622,6 +646,8 @@ struct SessionJob {
     pipeline: PipelineOptions,
     audio_ms: u32,
     stop_at: Instant,
+    audio: Option<Recorded>,
+    samples: u64,
 }
 
 impl SessionJob {
@@ -683,10 +709,27 @@ impl SessionJob {
                     {
                         tracing::error!("cannot store history row {}: {err:#}", self.history_id);
                     }
+                    if let Some(audio) = self.audio {
+                        keep_audio(state.clone(), self.history_id, audio, self.samples);
+                    }
                 }
             }
         }
     }
+}
+
+/// Off the dictation's path: the final text is already out.
+fn keep_audio(state: Arc<AppState>, id: HistoryId, audio: Recorded, samples: u64) {
+    tokio::task::spawn_blocking(move || {
+        // `audio_days` may have dropped to 0 since the recording started.
+        if state.live.server().audio_days == 0 {
+            return;
+        }
+        let kept = crate::audio::ogg(audio, samples, id as u32).and_then(|ogg| state.db.save_audio(id, &ogg));
+        if let Err(err) = kept {
+            tracing::warn!("cannot keep the audio of history row {id}: {err:#}");
+        }
+    });
 }
 
 fn millis(duration: Duration) -> u32 {

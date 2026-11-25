@@ -1,5 +1,6 @@
 mod admin;
 mod api;
+mod audio;
 mod auth;
 mod conn;
 mod db;
@@ -27,7 +28,7 @@ use std::{
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use psst_config::{Network, ServerFiles};
+use psst_config::{Network, ServerConfig, ServerFiles};
 use psst_dict::Dictionary;
 use tokio::{sync::watch, task::JoinHandle};
 
@@ -101,6 +102,19 @@ pub async fn serve_in_process(cfg: ServeConfig) -> anyhow::Result<ServerHandle> 
     start(cfg, None).await
 }
 
+fn prune_history(db: &Db, server: &ServerConfig) {
+    match db.prune_history(server.history_days) {
+        Ok(0) => {}
+        Ok(pruned) => tracing::info!("pruned {pruned} history rows older than {} days", server.history_days),
+        Err(err) => tracing::warn!("cannot prune history: {err:#}"),
+    }
+    match db.prune_audio(server.audio_days) {
+        Ok(0) => {}
+        Ok(pruned) => tracing::info!("deleted the audio of {pruned} dictations"),
+        Err(err) => tracing::warn!("cannot prune dictations' audio: {err:#}"),
+    }
+}
+
 fn boot_id() -> String {
     fs::read_to_string("/proc/sys/kernel/random/boot_id").map(|id| id.trim().to_owned()).unwrap_or_default()
 }
@@ -132,11 +146,7 @@ async fn start(cfg: ServeConfig, systemd: Option<std::os::unix::net::UnixListene
     for warning in dictionary.warnings() {
         tracing::warn!("{warning}");
     }
-    match db.prune_history(server.history_days) {
-        Ok(0) => {}
-        Ok(pruned) => tracing::info!("pruned {pruned} history rows older than {} days", server.history_days),
-        Err(err) => tracing::warn!("cannot prune history: {err:#}"),
-    }
+    prune_history(&db, &server);
 
     let unloaded = match db.get_state(UNLOADED_BOOT_ID)? {
         Some(boot) if boot == boot_id() => {
@@ -219,9 +229,7 @@ async fn start(cfg: ServeConfig, systemd: Option<std::os::unix::net::UnixListene
             maintenance.registry.sweep();
             ticks += 1;
             if ticks.is_multiple_of(720) {
-                if let Err(err) = maintenance.db.prune_history(maintenance.live.server().history_days) {
-                    tracing::warn!("cannot prune history: {err:#}");
-                }
+                prune_history(&maintenance.db, &maintenance.live.server());
                 if let Err(err) = maintenance.db.prune_web_sessions() {
                     tracing::warn!("cannot prune browser sessions: {err:#}");
                 }

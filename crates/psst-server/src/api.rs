@@ -59,6 +59,7 @@ pub fn router(state: AppRef) -> Router {
         .route(routes::DEVICE, delete(revoke))
         .route(routes::STATS, get(stats))
         .route(routes::HISTORY, get(history))
+        .route(routes::HISTORY_AUDIO, get(history_audio))
         .route(routes::DICTIONARY, get(dictionary_view))
         .route(routes::DICTIONARY_TERMS, post(add_term))
         .route(routes::DICTIONARY_TERM, put(replace_term).delete(remove_term))
@@ -567,6 +568,17 @@ async fn history(
     let Query(query) = query.map_err(|err| ApiErr::new(ApiErrorCode::BadRequest, err.body_text()))?;
     let limit = query.limit.unwrap_or(HISTORY_DEFAULT).min(HISTORY_MAX);
     Ok(Json(state.db.history(limit, query.device.as_deref())?))
+}
+
+async fn history_audio(
+    _: Admin,
+    State(state): State<AppRef>,
+    Id(id): Id<psst_proto::HistoryId>,
+) -> Result<Response, ApiErr> {
+    match state.db.audio(id)? {
+        Some(ogg) => Ok(crate::audio::response(ogg)),
+        None => Err(ApiErr::new(ApiErrorCode::NotFound, format!("no recording is kept for dictation {id}"))),
+    }
 }
 
 async fn dictionary_view(_: Admin, State(state): State<AppRef>) -> Json<DictionaryView> {

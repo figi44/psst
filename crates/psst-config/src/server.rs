@@ -31,6 +31,8 @@ pub struct ServerConfig {
     /// Longest an accepted session waits for the model, reloads between attempts included.
     pub load_deadline_s: u32,
     pub history_days: u32,
+    /// Dictations' audio is kept this long, at most as long as their history; 0 keeps none.
+    pub audio_days: u32,
     /// Accept `start.eval` and send `trace` with every `final`. For evals only.
     pub eval_mode: bool,
     /// The start of every login link. Unset, a link uses the address the client reached the
@@ -55,6 +57,7 @@ impl Default for ServerConfig {
             tailscale_socket: PathBuf::from("/run/tailscale/tailscaled.sock"),
             load_deadline_s: 120,
             history_days: 30,
+            audio_days: 30,
             eval_mode: false,
             web_url: None,
             limits: Limits::default(),

@@ -256,6 +256,10 @@ fn page(state: &AppState, viewer: &Viewer, query: &PageQuery, refusal: Option<Re
         }
     };
     let more = !all && rows.len() > SHOWN as usize;
+    let recorded = state.db.audio_ids().unwrap_or_else(|err| {
+        tracing::error!("cannot read which dictations have audio: {err:#}");
+        Default::default()
+    });
     let devices: HashMap<String, String> =
         state.db.devices().unwrap_or_default().into_iter().map(|device| (device.id, device.name)).collect();
     let dictionary = state.live.dictionary();
@@ -296,6 +300,7 @@ fn page(state: &AppState, viewer: &Viewer, query: &PageQuery, refusal: Option<Re
             latest => Some(row.id) == newest,
             boxed => Some(row.id) == active,
             empty => fin.text.trim().is_empty(),
+            audio => recorded.contains(&row.id),
             pieces => Value::from(Serde(shown)),
             refusal => refusal.as_ref().filter(|r| r.row == row.id).map(|r| Value::from(Serde(r.clone()))),
             done => confirm.map(|done| context! {
@@ -317,6 +322,7 @@ fn page(state: &AppState, viewer: &Viewer, query: &PageQuery, refusal: Option<Re
         all,
         known,
         kept_days => state.live.server().history_days,
+        audio_days => state.live.server().audio_days.min(state.live.server().history_days),
         ..chrome(state, viewer, "history")
     };
     render(status, "history.html", ctx)
@@ -405,6 +411,19 @@ fn claimant<'a>(view: &'a DictionaryView, heard: &str, except: &str) -> Option<&
             .as_ref()
             .is_some_and(|term| norm(&term.text) == heard || term.sounds_like.iter().any(|s| norm(s) == heard))
     })
+}
+
+pub async fn audio(_: Viewer, State(state): State<AppRef>, Path(id): Path<HistoryId>) -> Response {
+    match state.db.audio(id) {
+        Ok(Some(ogg)) => crate::audio::response(ogg),
+        Ok(None) => {
+            message(StatusCode::NOT_FOUND, "Not found", "That dictation's recording isn't kept any more.", None)
+        }
+        Err(err) => {
+            tracing::error!("cannot read the audio of history row {id}: {err:#}");
+            message(StatusCode::INTERNAL_SERVER_ERROR, "Recording unavailable", "See the server's log.", None)
+        }
+    }
 }
 
 pub async fn fix(
