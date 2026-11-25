@@ -83,7 +83,7 @@ async fn a_rewrite_never_replaces_text_selected_since() {
 async fn a_rewrite_never_lands_in_another_window() {
     let dir = tempfile::tempdir().unwrap();
     let window = Arc::new(Mutex::new(serde_json::json!({ "id": 1, "app_id": "org.gnome.TextEditor" })));
-    let niri = fake_niri(dir.path(), window.clone());
+    let (niri, answered) = fake_niri(dir.path(), window.clone());
     let server = FakeServer::start(FakeServerConfig::default());
     server.push_rewrite(Ok(REWRITTEN.into()));
     server.set_stalled(true);
@@ -93,11 +93,11 @@ async fn a_rewrite_never_lands_in_another_window() {
     })
     .await;
 
+    let before = answered.load(Ordering::SeqCst);
     choose(&d, Command::Instruction("make it polite".into()));
-    wait_until(|| {
-        d.wayland.showed(|s| matches!(s, OverlayState::Flash { message } if message.starts_with("Rewriting")))
-    })
-    .await;
+    // The rewrite asks niri for the window it started in alongside the request: the window changes
+    // only once niri has told it.
+    wait_until(|| answered.load(Ordering::SeqCst) > before).await;
     *window.lock().unwrap() = serde_json::json!({ "id": 2, "app_id": "org.gnome.TextEditor" });
     server.set_stalled(false);
     wait_until(|| !d.wayland.inserted().is_empty()).await;

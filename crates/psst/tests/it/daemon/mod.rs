@@ -603,14 +603,16 @@ async fn paste_last_and_copy_last_redeliver_the_last_text() {
     d.stop().await;
 }
 
-/// Answers each `FocusedWindow` request with the window as it is then.
-fn fake_niri(dir: &Path, window: Arc<Mutex<serde_json::Value>>) -> PathBuf {
+/// Answers each `FocusedWindow` request with the window as it is then, and counts the answers.
+fn fake_niri(dir: &Path, window: Arc<Mutex<serde_json::Value>>) -> (PathBuf, Arc<AtomicU64>) {
     use tokio::{
         io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
         net::UnixListener,
     };
     let niri = dir.join("niri.sock");
     let listener = UnixListener::bind(&niri).unwrap();
+    let answered = Arc::new(AtomicU64::new(0));
+    let count = answered.clone();
     tokio::spawn(async move {
         loop {
             let (stream, _) = listener.accept().await.unwrap();
@@ -618,18 +620,19 @@ fn fake_niri(dir: &Path, window: Arc<Mutex<serde_json::Value>>) -> PathBuf {
             let mut line = String::new();
             BufReader::new(read).read_line(&mut line).await.unwrap();
             let window = window.lock().unwrap().clone();
+            count.fetch_add(1, Ordering::SeqCst);
             let reply = serde_json::json!({ "Ok": { "FocusedWindow": window } });
             write.write_all(format!("{reply}\n").as_bytes()).await.unwrap();
         }
     });
-    niri
+    (niri, answered)
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_chord_follows_the_focused_window_and_app_rules() {
     let dir = tempfile::tempdir().unwrap();
     let window = Arc::new(Mutex::new(serde_json::json!({ "id": 1, "app_id": "com.mitchellh.ghostty" })));
-    let niri = fake_niri(dir.path(), window.clone());
+    let (niri, _) = fake_niri(dir.path(), window.clone());
     let server = FakeServer::start(FakeServerConfig::default());
     server.push_outcome(Outcome::Final("terminal ".into()));
     server.push_outcome(Outcome::Final("secret ".into()));
@@ -659,7 +662,7 @@ async fn the_chord_follows_the_focused_window_and_app_rules() {
 async fn post_processing_hears_where_the_text_goes_only_when_asked() {
     let dir = tempfile::tempdir().unwrap();
     let gmail = serde_json::json!({ "id": 1, "app_id": "firefox", "title": "Inbox - Gmail" });
-    let niri = fake_niri(dir.path(), Arc::new(Mutex::new(gmail)));
+    let (niri, _) = fake_niri(dir.path(), Arc::new(Mutex::new(gmail)));
     let app = Target { app: "firefox".into(), title: None };
     let window = Target { title: Some("Inbox - Gmail".into()), ..app.clone() };
     let cases = [
