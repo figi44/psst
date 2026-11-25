@@ -230,6 +230,7 @@ impl Registry {
                     r#final: fin,
                     timings,
                     trace: None,
+                    warning: None,
                 };
                 return Ok(Start::Finished(Arc::new(msg)));
             }

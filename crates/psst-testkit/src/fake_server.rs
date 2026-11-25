@@ -31,6 +31,11 @@ use tokio_tungstenite::tungstenite::{
 pub enum Outcome {
     /// `""` is "nothing heard".
     Final(String),
+    /// A final the user should be warned about, such as one post-processing failed on.
+    Warned {
+        text: String,
+        warning: String,
+    },
     Error(ErrorCode),
     /// `progress` keeps coming.
     Hang,
@@ -674,31 +679,27 @@ fn finish(inner: &Inner, id: SessionId) -> Option<ServerMsg> {
     let mut state = inner.state();
     let reg = state.registry.get_mut(&id)?;
     let RegState::Running { outcome, .. } = reg.state.clone() else { return None };
-    match outcome {
-        Outcome::Final(text) => {
-            let fin = Box::new(FinalMsg {
-                session_id: id,
-                history_id: reg.history_id,
-                r#final: Final {
-                    text: text.clone(),
-                    raw_text: text.trim().into(),
-                    edits: vec![],
-                    language: "en".into(),
-                },
-                timings: ServerTimings { attempts: 1, ..ServerTimings::default() },
-                trace: None,
-            });
-            reg.state = RegState::Finished(fin.clone());
-            reg.conn = None;
-            state.seen(id).final_text = Some(text);
-            Some(ServerMsg::Final(fin))
-        }
+    let (text, warning) = match outcome {
+        Outcome::Final(text) => (text, None),
+        Outcome::Warned { text, warning } => (text, Some(warning)),
         Outcome::Error(code) => {
             state.registry.remove(&id);
-            Some(ServerMsg::Error(ErrorMsg::new(Some(id), code, format!("failed: {code:?}"))))
+            return Some(ServerMsg::Error(ErrorMsg::new(Some(id), code, format!("failed: {code:?}"))));
         }
-        Outcome::Hang => None,
-    }
+        Outcome::Hang => return None,
+    };
+    let fin = Box::new(FinalMsg {
+        session_id: id,
+        history_id: reg.history_id,
+        r#final: Final { text: text.clone(), raw_text: text.trim().into(), edits: vec![], language: "en".into() },
+        timings: ServerTimings { attempts: 1, ..ServerTimings::default() },
+        trace: None,
+        warning,
+    });
+    reg.state = RegState::Finished(fin.clone());
+    reg.conn = None;
+    state.seen(id).final_text = Some(text);
+    Some(ServerMsg::Final(fin))
 }
 
 async fn read_request<S: AsyncRead + Unpin>(stream: &mut S) -> Option<(String, Vec<u8>)> {

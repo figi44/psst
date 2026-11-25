@@ -215,7 +215,7 @@ fn ready_and_progress() {
 }
 
 #[test]
-fn final_carries_result_timings_and_optional_trace() {
+fn final_carries_result_timings_and_optional_trace_and_warning() {
     let msg = ServerMsg::Final(Box::new(FinalMsg {
         session_id: sid(),
         history_id: 7,
@@ -243,6 +243,7 @@ fn final_carries_result_timings_and_optional_trace() {
             stop_to_final_ms: 190,
         },
         trace: Some(trace()),
+        warning: Some("ChatGPT not connected".into()),
     }));
     assert_wire(
         &msg,
@@ -252,7 +253,7 @@ fn final_carries_result_timings_and_optional_trace() {
                                     "before": "", "after": " "}]},
                "timings": {"audio_ms": 2100, "queue_ms": 1, "load_wait_ms": 0, "engine_ms": 180, "attempts": 1,
                            "pipeline_ms": 2, "stop_to_final_ms": 190},
-               "trace": trace_json()}),
+               "trace": trace_json(), "warning": "ChatGPT not connected"}),
     );
 }
 

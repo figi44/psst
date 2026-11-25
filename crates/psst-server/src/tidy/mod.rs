@@ -268,15 +268,20 @@ fn ask<'a>(style: &'a Style, instructions: &'a str, text: &'a str) -> Ask<'a> {
 const DICTATION_BUDGET: Duration = Duration::from_secs(6);
 
 /// Post-processes a dictation's final text with `style_id`, keeping the text as it was when that
-/// fails or takes too long.
-pub async fn dictation(state: &Arc<AppState>, style_id: &str, target: Option<&Target>, fin: &mut Final) {
+/// fails or takes too long. Then it says why, short enough for the overlay.
+pub async fn dictation(
+    state: &Arc<AppState>,
+    style_id: &str,
+    target: Option<&Target>,
+    fin: &mut Final,
+) -> Option<String> {
     let Some(Entry { style, .. }) = entry(state, style_id) else {
         tracing::warn!("unknown post-processing style {style_id:?}; the dictation stays as it was");
-        return;
+        return Some(format!("No style called {style_id}"));
     };
     let text = fin.text.trim();
     if text.is_empty() {
-        return;
+        return None;
     }
     let instructions = instructions(state, &style, target);
     // Only the app: a window title can be an email's subject.
@@ -292,11 +297,24 @@ pub async fn dictation(state: &Arc<AppState>, style_id: &str, target: Option<&Ta
             // The rules' trailing space keeps the next dictation from running into this one.
             let trailing = &fin.text[fin.text.trim_end().len()..];
             fin.text = format!("{}{trailing}", answer.text);
+            None
         }
         Ok(Err(err)) => {
-            tracing::warn!("post-processing a dictation with {style_id} failed, so it stays as it was: {err:#}")
+            tracing::warn!("post-processing a dictation with {style_id} failed, so it stays as it was: {err:#}");
+            // A sign-in that expired is forgotten, so this covers it too.
+            let warning = if chatgpt::credentials(state).is_none() {
+                "ChatGPT not connected"
+            } else if err.downcast_ref::<ApiError>().is_some_and(ApiError::usage_limit) {
+                "ChatGPT usage limit reached"
+            } else {
+                "Post-processing failed"
+            };
+            Some(warning.into())
         }
-        Err(_) => tracing::warn!("post-processing a dictation took over {DICTATION_BUDGET:?}, so it stays as it was"),
+        Err(_) => {
+            tracing::warn!("post-processing a dictation took over {DICTATION_BUDGET:?}, so it stays as it was");
+            Some("Post-processing timed out".into())
+        }
     }
 }
 

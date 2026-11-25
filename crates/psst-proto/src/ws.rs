@@ -238,6 +238,10 @@ pub struct FinalMsg {
     pub timings: ServerTimings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace: Option<EngineTrace>,
+    /// Short enough for the overlay: what the user should know about a text that is still usable,
+    /// such as post-processing having failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 /// Terminal for its session when `session_id` is set.

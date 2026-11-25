@@ -37,6 +37,7 @@ fn cases() -> Vec<(&'static str, OverlayState, Wave)> {
         ("waiting-for-server", OverlayState::WaitingForServer, still),
         ("nothing-heard", OverlayState::NothingHeard, still),
         ("done", OverlayState::Done, still),
+        ("warning", OverlayState::Warning { message: "ChatGPT not connected".into() }, still),
         ("error", OverlayState::Error { message: "Saved \u{b7} psst retry".into() }, still),
         (
             "error-long",
