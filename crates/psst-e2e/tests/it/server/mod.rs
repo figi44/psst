@@ -1,4 +1,5 @@
 mod access;
+mod audio;
 mod auto_pair;
 mod browser;
 mod dict_cli;

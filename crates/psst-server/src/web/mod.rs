@@ -72,6 +72,7 @@ pub fn router() -> Router<AppRef> {
         .route("/", get(|| async { Redirect::to("/history") }))
         .route("/history", get(history::show))
         .route("/history/{id}/fix", post(history::fix))
+        .route("/history/{id}/audio", get(history::audio))
         .route("/history/{id}/undo", post(history::undo))
         .route("/login", get(login::page))
         .route(routes::LOGIN_REDEEM, post(login::redeem))

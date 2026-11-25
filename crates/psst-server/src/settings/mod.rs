@@ -371,12 +371,8 @@ fn apply_server(state: &AppState, old: &ServerConfig, new: &ServerConfig, layers
         let told = state.conns.push_limits(ServerLimits { max_recording_s: new.limits.max_recording_s });
         tracing::info!("limits.max_recording_s is now {} s; told {told} connections", new.limits.max_recording_s);
     }
-    if old.history_days != new.history_days {
-        match state.db.prune_history(new.history_days) {
-            Ok(0) => {}
-            Ok(pruned) => tracing::info!("pruned {pruned} history rows older than {} days", new.history_days),
-            Err(err) => tracing::warn!("cannot prune history: {err:#}"),
-        }
+    if (old.history_days, old.audio_days) != (new.history_days, new.audio_days) {
+        crate::prune_history(&state.db, new);
     }
 }
 

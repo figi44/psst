@@ -410,6 +410,27 @@
     form.elements.tier.value = to.tier;
     refreshStyle(form);
   });
+  // Without this, the link opens the recording in the browser's own player.
+  var playing = null;
+  function stopPlaying() {
+    if (!playing) return;
+    playing.audio.pause();
+    playing.link.textContent = "Play";
+    playing = null;
+  }
+  document.addEventListener("click", function (e) {
+    var link = e.target.closest && e.target.closest("[data-play]");
+    if (!link) return;
+    e.preventDefault();
+    var again = playing && playing.link === link;
+    stopPlaying();
+    if (again) return;
+    var audio = new Audio(link.href);
+    playing = { audio: audio, link: link };
+    link.textContent = "Stop";
+    audio.addEventListener("ended", function () { if (playing && playing.audio === audio) stopPlaying(); });
+    audio.play().catch(function () { if (playing && playing.audio === audio) stopPlaying(); });
+  });
   document.addEventListener("htmx:afterSettle", initStyles);
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initStyles);
   else initStyles();
