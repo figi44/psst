@@ -314,6 +314,10 @@ impl Conn {
                 let stream = (start.mode == Mode::Live && self.state.model_loaded()).then(|| {
                     self.state.engine.open_stream(profile.language.clone(), engine_bias(&profile, &dictionary, bias))
                 });
+                let post_processing = start.post_processing.clone().filter(|style| style != "none");
+                if post_processing.is_some() {
+                    crate::tidy::chatgpt::warm(&self.state);
+                }
                 let recording = Recording {
                     pcm: Vec::with_capacity(10 * SAMPLE_RATE as usize * 2),
                     opus,
@@ -322,7 +326,7 @@ impl Conn {
                     last_frame: Instant::now(),
                     history_id,
                     profile,
-                    post_processing: start.post_processing.clone().filter(|style| style != "none"),
+                    post_processing,
                     target: start.target.clone(),
                     dictionary,
                     bias,

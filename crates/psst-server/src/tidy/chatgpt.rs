@@ -28,12 +28,12 @@ use tokio::{
     net::{TcpListener, TcpStream},
     task::AbortHandle,
 };
-use tokio_rustls::client::TlsStream;
 use tokio_tungstenite::{
     WebSocketStream,
     tungstenite::{Error as WsError, Message, client::IntoClientRequest},
 };
 
+use super::https::Io;
 use crate::state::AppState;
 
 pub const MANAGE_USAGE: &str = "https://chatgpt.com/settings/usage";
@@ -493,7 +493,7 @@ pub async fn models(state: &Arc<AppState>) -> Result<Vec<Model>> {
 /// One kept-open socket. Plan usage pays a ~1 s admission per HTTP request, but only once per
 /// socket, when it opens.
 pub struct Socket {
-    ws: WebSocketStream<TlsStream<TcpStream>>,
+    ws: WebSocketStream<Box<dyn Io>>,
     token: String,
     opened: Instant,
 }
@@ -506,10 +506,30 @@ impl fmt::Debug for Socket {
 
 /// OpenAI closes sockets at 60 minutes.
 const SOCKET_AGE: Duration = Duration::from_secs(55 * 60);
+const PONG_WAIT: Duration = Duration::from_secs(2);
 
 impl Socket {
     fn fresh_for(&self, token: &str) -> bool {
         self.token == token && self.opened.elapsed() < SOCKET_AGE
+    }
+
+    /// An idle socket can be closed, or dropped on the way, without the client hearing of it
+    /// until it next sends.
+    async fn answers_ping(&mut self) -> bool {
+        if self.ws.send(Message::Ping(Bytes::new())).await.is_err() {
+            return false;
+        }
+        let pong = async {
+            while let Some(Ok(message)) = self.ws.next().await {
+                match message {
+                    Message::Pong(_) => return true,
+                    Message::Close(_) => return false,
+                    _ => {}
+                }
+            }
+            false
+        };
+        tokio::time::timeout(PONG_WAIT, pong).await.unwrap_or(false)
     }
 }
 
@@ -601,30 +621,37 @@ pub async fn respond_on(
     }
 }
 
-/// Opens the socket ahead of a run, so the first run doesn't wait for the admission.
-pub fn warm(state: &Arc<AppState>) {
+/// Readies the dictations' socket ahead of a request: opens it, or replaces one OpenAI dropped,
+/// so the request waits for neither. A dictation calls it as it starts recording.
+pub fn warm(state: &Arc<AppState>) -> tokio::task::JoinHandle<()> {
     let state = state.clone();
     tokio::spawn(async move {
         let Ok(token) = access_token(&state, false).await else { return };
         let mut slot = state.tidy.socket.lock().await;
-        if slot.as_ref().is_some_and(|socket| socket.fresh_for(&token)) {
-            return;
+        if let Some(socket) = slot.as_mut()
+            && socket.fresh_for(&token)
+        {
+            if socket.answers_ping().await {
+                return;
+            }
+            tracing::info!("post-processing: OpenAI dropped the idle socket, so it opens another");
         }
+        *slot = None;
         match open(&state, &token).await {
             Ok(socket) => *slot = Some(socket),
-            Err(Open::Failed(err)) => tracing::debug!("tidy-up lab: cannot open a socket: {err:#}"),
-            Err(Open::Unauthorized) => tracing::debug!("tidy-up lab: OpenAI refused the socket's token"),
+            Err(Open::Failed(err)) => tracing::debug!("post-processing: cannot open a socket: {err:#}"),
+            Err(Open::Unauthorized) => tracing::debug!("post-processing: OpenAI refused the socket's token"),
         }
-    });
+    })
 }
 
 async fn open(state: &AppState, token: &str) -> Result<Socket, Open> {
     let failed = |err: anyhow::Error| Open::Failed(err);
-    let tls = state.tidy.https.tls("api.openai.com", 443).await.map_err(failed)?;
+    let stream = state.tidy.https.stream("api.openai.com", 443).await.map_err(failed)?;
     let mut request = "wss://api.openai.com/v1/responses".into_client_request().map_err(|e| failed(e.into()))?;
     let auth = format!("Bearer {token}").parse().map_err(|_| failed(anyhow!("the access token isn't a header")))?;
     request.headers_mut().insert(header::AUTHORIZATION, auth);
-    match tokio::time::timeout(REQUEST_TIMEOUT, tokio_tungstenite::client_async(request, tls)).await {
+    match tokio::time::timeout(REQUEST_TIMEOUT, tokio_tungstenite::client_async(request, stream)).await {
         Err(_) => Err(failed(anyhow!("OpenAI didn't open a socket within {REQUEST_TIMEOUT:?}"))),
         Ok(Ok((ws, _))) => Ok(Socket { ws, token: token.to_owned(), opened: Instant::now() }),
         Ok(Err(WsError::Http(response))) if response.status() == StatusCode::UNAUTHORIZED => Err(Open::Unauthorized),
@@ -804,11 +831,12 @@ fn escape(text: &str) -> String {
 mod tests {
     use std::fs;
 
-    use super::*;
-    use crate::{ServeConfig, serve_in_process};
+    use tokio::io::DuplexStream;
 
-    #[tokio::test]
-    async fn cancelling_while_openai_exchanges_the_code_leaves_chatgpt_disconnected() {
+    use super::*;
+    use crate::{ServeConfig, ServerHandle, serve_in_process};
+
+    async fn serve() -> (tempfile::TempDir, ServerHandle) {
         let dir = tempfile::tempdir().unwrap();
         let config_dir = dir.path().join("config");
         fs::create_dir(&config_dir).unwrap();
@@ -821,6 +849,83 @@ mod tests {
         })
         .await
         .unwrap();
+        (dir, server)
+    }
+
+    fn sign_in(state: &AppState) {
+        let credentials = Credentials {
+            email: "me@example.com".into(),
+            subject: "me".into(),
+            client_id: "app".into(),
+            id_token: String::new(),
+            access_token: "access".into(),
+            refresh_token: "refresh".into(),
+            expires_at: Timestamp::now().as_second() + 3600,
+            scopes: Vec::new(),
+        };
+        save(state, CREDENTIALS_KEY, &credentials).unwrap();
+    }
+
+    /// OpenAI's end of the next socket the server opens, once it has.
+    fn openai(state: &AppState) -> tokio::task::JoinHandle<WebSocketStream<DuplexStream>> {
+        let (client, openai) = tokio::io::duplex(64 * 1024);
+        state.tidy.https.stream_to(client);
+        tokio::spawn(async move { tokio_tungstenite::accept_async(openai).await.unwrap() })
+    }
+
+    /// Answers every request with `text`. Reading also answers the server's pings.
+    async fn answer(mut ws: WebSocketStream<DuplexStream>, text: &'static str) {
+        while let Some(Ok(message)) = ws.next().await {
+            if message.is_text() {
+                let delta = json!({ "type": "response.output_text.delta", "delta": text });
+                let completed = json!({ "type": "response.completed", "response": { "usage": {} } });
+                ws.send(Message::text(delta.to_string())).await.unwrap();
+                ws.send(Message::text(completed.to_string())).await.unwrap();
+            }
+        }
+    }
+
+    fn tidy_up(text: &str) -> Ask<'_> {
+        Ask { model: "model", effort: None, tier: None, instructions: "Tidy it up.", text, extra: None }
+    }
+
+    #[tokio::test]
+    async fn a_dictation_after_openai_dropped_the_idle_socket_waits_for_no_new_one() {
+        let (_dir, server) = serve().await;
+        let state = server.state.clone();
+        sign_in(&state);
+        let dropped = openai(&state);
+        warm(&state).await.unwrap();
+        drop(dropped.await.unwrap());
+
+        let fresh = openai(&state);
+        warm(&state).await.unwrap();
+        tokio::spawn(async move { answer(fresh.await.unwrap(), "Tidy.").await });
+        let answer = respond(&state, &tidy_up("tidy")).await.unwrap();
+        assert_eq!(answer.text, "Tidy.");
+        assert_eq!(answer.connect, None, "the dictation opened the socket itself");
+        server.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn warming_keeps_a_socket_openai_still_answers_on() {
+        let (_dir, server) = serve().await;
+        let state = server.state.clone();
+        sign_in(&state);
+        let kept = openai(&state);
+        warm(&state).await.unwrap();
+        tokio::spawn(answer(kept.await.unwrap(), "Tidy."));
+
+        let _spare = openai(&state);
+        warm(&state).await.unwrap();
+        assert_eq!(respond(&state, &tidy_up("tidy")).await.unwrap().text, "Tidy.");
+        assert_eq!(state.tidy.https.unused_streams(), 1, "warming opened a second socket");
+        server.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelling_while_openai_exchanges_the_code_leaves_chatgpt_disconnected() {
+        let (_dir, server) = serve().await;
         let state = server.state.clone();
 
         start(&state, None).await.unwrap();
