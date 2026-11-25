@@ -10,8 +10,7 @@ pub use sandbox::{Compositor, Sandbox, headless_sway, nested_niri};
 use std::{
     ffi::OsString,
     fs,
-    hash::{BuildHasher, RandomState},
-    net::{SocketAddr, TcpListener},
+    net::SocketAddr,
     os::unix::net::UnixStream,
     path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
@@ -68,7 +67,9 @@ pub fn spawn_server(bin: &Path, cfg: TestServerConfig) -> TestServer {
     fs::write(&script, serde_json::to_vec_pretty(&cfg.script).expect("script serialises")).expect("write script");
 
     let socket = root.join("client.sock");
-    let tcp = cfg.tcp.then(|| SocketAddr::from(([127, 0, 0, 1], free_port())));
+    // Port 0, so the kernel hands the server a free port as it binds: a port picked for it here could
+    // be taken by another test before the server binds it. Each start learns its port from the log.
+    let tcp = cfg.tcp.then(|| SocketAddr::from(([127, 0, 0, 1], 0)));
     let mut server = cfg.server;
     server.socket = socket.clone();
     server.listen = tcp.into_iter().collect();
@@ -99,6 +100,7 @@ impl TestServer {
         let root = self.dir.path();
         let log_path = root.join("server.log");
         let log = fs::OpenOptions::new().create(true).append(true).open(&log_path).expect("open log");
+        let starts = self.log().matches(LISTENING).count();
         let mut child = Command::new(&self.bin)
             .arg("serve")
             .arg("--config-dir")
@@ -115,6 +117,15 @@ impl TestServer {
             .spawn()
             .unwrap_or_else(|err| panic!("cannot start {}: {err}", self.bin.display()));
         wait_for_socket(&mut child, &self.socket, &log_path);
+        if self.tcp.is_some() {
+            let tcp = wait_for(&mut child, &log_path, "the TCP listener", || {
+                let log = self.log();
+                let line = log.lines().filter(|line| line.contains(LISTENING)).nth(starts)?;
+                let addr = line.rsplit_once(" and ").and_then(|(_, addr)| addr.trim().parse().ok());
+                Some(addr.unwrap_or_else(|| panic!("no TCP address in `{line}`")))
+            });
+            self.tcp = Some(tcp);
+        }
         self.child = Some(child);
     }
 
@@ -279,34 +290,26 @@ impl Drop for TestDaemon {
     }
 }
 
-/// Below the kernel's ephemeral range, which binding port 0 picks from: the server binds the port a
-/// moment later, and by then another test's port 0 or a connection's source port may have it.
-fn free_port() -> u16 {
-    let ephemeral: u16 = fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
-        .ok()
-        .and_then(|range| range.split_whitespace().next()?.parse().ok())
-        .unwrap_or(32_768);
-    let ports = 1_024..ephemeral.max(1_025);
-    let random = RandomState::new();
-    (0..1_000)
-        .map(|n: u64| ports.start + (random.hash_one(n) % ports.len() as u64) as u16)
-        .find(|&port| TcpListener::bind(("127.0.0.1", port)).is_ok())
-        .expect("a free port below the ephemeral range")
-}
+/// What psst-server logs once it's up, ending with its TCP addresses.
+const LISTENING: &str = " listening on ";
 
 fn wait_for_socket(child: &mut Child, socket: &Path, log: &Path) {
+    wait_for(child, log, &socket.display().to_string(), || UnixStream::connect(socket).ok().map(drop));
+}
+
+fn wait_for<T>(child: &mut Child, log: &Path, what: &str, mut ready: impl FnMut() -> Option<T>) -> T {
     let deadline = Instant::now() + STARTUP_TIMEOUT;
     loop {
-        if UnixStream::connect(socket).is_ok() {
-            return;
+        if let Some(found) = ready() {
+            return found;
         }
         let log_text = || fs::read_to_string(log).unwrap_or_default();
         if let Ok(Some(status)) = child.try_wait() {
-            panic!("process exited with {status} before {} came up; log:\n{}", socket.display(), log_text());
+            panic!("process exited with {status} before {what} came up; log:\n{}", log_text());
         }
         if Instant::now() > deadline {
             let _ = child.kill();
-            panic!("{} didn't come up within {STARTUP_TIMEOUT:?}; log:\n{}", socket.display(), log_text());
+            panic!("{what} didn't come up within {STARTUP_TIMEOUT:?}; log:\n{}", log_text());
         }
         thread::sleep(Duration::from_millis(20));
     }
