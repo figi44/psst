@@ -42,7 +42,9 @@ pub fn ogg(recorded: Recorded, samples: u64, serial: u32) -> Result<Vec<u8>> {
         Recorded::Pcm(pcm) => {
             let samples: Vec<u16> = pcm.as_chunks::<2>().0.iter().map(|b| u16::from_le_bytes(*b)).collect();
             let mut packets = Vec::with_capacity(samples.len().div_ceil(FRAME_SAMPLES));
-            for chunk in samples.chunks(FRAME_SAMPLES) {
+            // A frame of silence past the end flushes the lookahead, so the audio's end is decoded.
+            let silence = [0u16; FRAME_SAMPLES];
+            for chunk in samples.chunks(FRAME_SAMPLES).chain([&silence[..]]) {
                 let mut frame = [0u16; FRAME_SAMPLES];
                 frame[..chunk.len()].copy_from_slice(chunk);
                 let mut packet = [0u8; MAX_PACKET];

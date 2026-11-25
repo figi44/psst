@@ -721,6 +721,10 @@ impl SessionJob {
 /// Off the dictation's path: the final text is already out.
 fn keep_audio(state: Arc<AppState>, id: HistoryId, audio: Recorded, samples: u64) {
     tokio::task::spawn_blocking(move || {
+        // `audio_days` may have dropped to 0 since the recording started.
+        if state.live.server().audio_days == 0 {
+            return;
+        }
         let kept = crate::audio::ogg(audio, samples, id as u32).and_then(|ogg| state.db.save_audio(id, &ogg));
         if let Err(err) = kept {
             tracing::warn!("cannot keep the audio of history row {id}: {err:#}");

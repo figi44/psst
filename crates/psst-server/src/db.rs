@@ -501,10 +501,11 @@ impl Db {
         Ok(self.conn().execute("DELETE FROM history WHERE created_ms < ?1", params![cutoff])?)
     }
 
-    /// `id` is the dictation's history row.
+    /// `id` is the dictation's history row; once it's pruned, the audio isn't kept.
     pub fn save_audio(&self, id: HistoryId, ogg: &[u8]) -> Result<()> {
         self.conn().execute(
-            "INSERT OR REPLACE INTO history_audio (id, created_ms, ogg) VALUES (?1, ?2, ?3)",
+            "INSERT OR REPLACE INTO history_audio (id, created_ms, ogg)
+             SELECT ?1, ?2, ?3 WHERE EXISTS (SELECT 1 FROM history WHERE id = ?1)",
             params![id as i64, now_ms(), ogg],
         )?;
         Ok(())

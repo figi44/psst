@@ -69,9 +69,9 @@ async fn history(server: &TestServer) -> Vec<HistoryRow> {
 }
 
 /// Over the harness's client, which sends PCM.
-async fn dictate_pcm(server: &TestServer) {
+async fn dictate_pcm(server: &TestServer, ms: u32) {
     let mut client = Client::connect(server).await;
-    client.upload(SessionId::new_v4(), MS as usize * 16).await;
+    client.upload(SessionId::new_v4(), ms as usize * 16).await;
     client.final_msg().await;
 }
 
@@ -108,19 +108,18 @@ async fn dictate_opus(server: &TestServer) {
 async fn a_dictation_plays_back_as_long_as_it_was_sent_as_pcm_or_opus() {
     let server = default_server();
     wait_model(&server, ModelState::Loaded).await;
-    dictate_pcm(&server).await;
+    // Whole frames: the end is decoded only if the encoder's lookahead was flushed.
+    dictate_pcm(&server, 1_000).await;
     dictate_opus(&server).await;
-    let rows = history(&server).await;
-    assert_eq!(rows.len(), 2);
-    for row in rows {
-        assert_eq!(plays_ms(&recording(&server, row.id).await), u64::from(MS), "dictation {}", row.id);
-    }
+    let [opus, pcm] = history(&server).await.try_into().unwrap();
+    assert_eq!(plays_ms(&recording(&server, pcm.id).await), 1_000);
+    assert_eq!(plays_ms(&recording(&server, opus.id).await), u64::from(MS));
 }
 
 #[tokio::test]
 async fn with_audio_days_at_zero_recordings_go_and_history_stays() {
     let server = default_server();
-    dictate_pcm(&server).await;
+    dictate_pcm(&server, MS).await;
     let id = history(&server).await[0].id;
     recording(&server, id).await;
 
@@ -129,7 +128,7 @@ async fn with_audio_days_at_zero_recordings_go_and_history_stays() {
     let _: Setting = api.call(Method::Put, &path, Some(&json!({ "value": "0" }))).await.unwrap();
     assert_eq!(get(&server, &audio_path(id)).await.0, 404);
 
-    dictate_pcm(&server).await;
+    dictate_pcm(&server, MS).await;
     let rows = history(&server).await;
     assert_eq!(rows.len(), 2, "the history stays");
     assert_eq!(get(&server, &audio_path(rows[0].id)).await.0, 404, "a new dictation's recording isn't kept");
@@ -138,7 +137,7 @@ async fn with_audio_days_at_zero_recordings_go_and_history_stays() {
 #[tokio::test]
 async fn the_history_page_plays_a_kept_recording_to_logged_in_browsers_only() {
     let server = server(script(vec![]), |cfg| cfg.tcp = true);
-    dictate_pcm(&server).await;
+    dictate_pcm(&server, MS).await;
     let id = history(&server).await[0].id;
     recording(&server, id).await;
     let play = format!("/history/{id}/audio");
