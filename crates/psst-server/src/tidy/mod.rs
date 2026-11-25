@@ -264,6 +264,16 @@ fn ask<'a>(style: &'a Style, instructions: &'a str, text: &'a str) -> Ask<'a> {
     Ask { model: &style.model, effort: sent(&style.effort), tier: sent(&style.tier), instructions, text, extra: None }
 }
 
+/// Readies post-processing as a dictation starts, so its request at stop waits for less.
+pub fn prepare(state: &Arc<AppState>, style_id: &str, target: Option<&Target>) {
+    let Some(Entry { style, .. }) = entry(state, style_id) else {
+        chatgpt::warm(state, None);
+        return;
+    };
+    let instructions = instructions(state, &style, target);
+    chatgpt::warm(state, Some(&ask(&style, &instructions, "")));
+}
+
 /// The client gives up on a dictation 10 s after it stops; past this, it gets the text as it was.
 const DICTATION_BUDGET: Duration = Duration::from_secs(6);
 

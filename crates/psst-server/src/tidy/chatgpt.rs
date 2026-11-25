@@ -145,6 +145,7 @@ pub struct Answer {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub reasoning_tokens: u64,
+    pub id: String,
 }
 
 #[derive(Debug)]
@@ -496,6 +497,14 @@ pub struct Socket {
     ws: WebSocketStream<Box<dyn Io>>,
     token: String,
     opened: Instant,
+    prepared: Option<Prepared>,
+}
+
+/// A request OpenAI read ahead, for the next request with the same settings to chain on.
+struct Prepared {
+    /// The settings, as sent.
+    key: String,
+    id: String,
 }
 
 impl fmt::Debug for Socket {
@@ -555,26 +564,9 @@ pub async fn respond_on(
     socket: &tokio::sync::Mutex<Option<Socket>>,
     ask: &Ask<'_>,
 ) -> Result<Answer> {
-    let mut event = json!({
-        "type": "response.create",
-        "model": ask.model,
-        "instructions": ask.instructions,
-        "input": [{"role": "user", "content": ask.text}],
-        "store": false,
-    });
-    if let Some(effort) = ask.effort {
-        event["reasoning"] = json!({ "effort": effort });
-    }
-    if let Some(tier) = ask.tier {
-        event["service_tier"] = json!(tier);
-    }
-    if let Some(Value::Object(extra)) = ask.extra {
-        for (key, value) in extra {
-            event[key] = value.clone();
-        }
-    }
-    let event = event.to_string();
-    let (mut refreshed, mut reopened) = (false, false);
+    let settings = settings(ask);
+    let key = settings.to_string();
+    let (mut refreshed, mut reopened, mut unchained) = (false, false, false);
     loop {
         let token = access_token(state, refreshed).await?;
         let mut slot = socket.lock().await;
@@ -599,7 +591,15 @@ pub async fn respond_on(
                 }
             }
         };
-        match tokio::time::timeout(REQUEST_TIMEOUT, turn(&mut socket, &event)).await {
+        // Any request replaces the one OpenAI remembers, so a preparation serves one request.
+        let chained = socket.prepared.take().filter(|prepared| prepared.key == key && !unchained);
+        let mut event = settings.clone();
+        event["type"] = json!("response.create");
+        event["input"] = json!([{"role": "user", "content": ask.text}]);
+        if let Some(prepared) = &chained {
+            event["previous_response_id"] = json!(prepared.id);
+        }
+        match tokio::time::timeout(REQUEST_TIMEOUT, turn(&mut socket, &event.to_string())).await {
             Ok(Ok(mut answer)) => {
                 *slot = Some(socket);
                 answer.connect = connect;
@@ -607,7 +607,11 @@ pub async fn respond_on(
             }
             Ok(Err(Exchange::Failed(err))) => {
                 *slot = Some(socket);
-                return Err(err);
+                let forgotten = err.downcast_ref::<ApiError>().is_some_and(|e| e.code == "previous_response_not_found");
+                if chained.is_none() || !forgotten {
+                    return Err(err);
+                }
+                unchained = true;
             }
             Ok(Err(Exchange::Broken { err, retry })) => {
                 // OpenAI may have closed an idle socket; one fresh socket tries the request again.
@@ -621,26 +625,71 @@ pub async fn respond_on(
     }
 }
 
+/// Everything a request sends but its input.
+fn settings(ask: &Ask<'_>) -> Value {
+    let mut settings = json!({
+        "model": ask.model,
+        "instructions": ask.instructions,
+        "store": false,
+    });
+    if let Some(effort) = ask.effort {
+        settings["reasoning"] = json!({ "effort": effort });
+    }
+    if let Some(tier) = ask.tier {
+        settings["service_tier"] = json!(tier);
+    }
+    if let Some(Value::Object(extra)) = ask.extra {
+        for (key, value) in extra {
+            settings[key] = value.clone();
+        }
+    }
+    settings
+}
+
 /// Readies the dictations' socket ahead of a request: opens it, or replaces one OpenAI dropped,
-/// so the request waits for neither. A dictation calls it as it starts recording.
-pub fn warm(state: &Arc<AppState>) -> tokio::task::JoinHandle<()> {
+/// so the request waits for neither. A dictation calls it as it starts recording, with what it
+/// will ask: OpenAI then reads the instructions while the user talks, and the request chains on.
+pub fn warm(state: &Arc<AppState>, ask: Option<&Ask<'_>>) -> tokio::task::JoinHandle<()> {
     let state = state.clone();
+    let settings = ask.map(settings);
     tokio::spawn(async move {
         let Ok(token) = access_token(&state, false).await else { return };
         let mut slot = state.tidy.socket.lock().await;
-        if let Some(socket) = slot.as_mut()
-            && socket.fresh_for(&token)
-        {
-            if socket.answers_ping().await {
-                return;
-            }
+        let fresh = slot.as_ref().is_some_and(|socket| socket.fresh_for(&token));
+        let alive = match slot.as_mut().filter(|_| fresh) {
+            Some(socket) => socket.answers_ping().await,
+            None => false,
+        };
+        if fresh && !alive {
             tracing::info!("post-processing: OpenAI dropped the idle socket, so it opens another");
         }
-        *slot = None;
-        match open(&state, &token).await {
-            Ok(socket) => *slot = Some(socket),
-            Err(Open::Failed(err)) => tracing::debug!("post-processing: cannot open a socket: {err:#}"),
-            Err(Open::Unauthorized) => tracing::debug!("post-processing: OpenAI refused the socket's token"),
+        if !alive {
+            *slot = None;
+            match open(&state, &token).await {
+                Ok(socket) => *slot = Some(socket),
+                Err(Open::Failed(err)) => return tracing::debug!("post-processing: cannot open a socket: {err:#}"),
+                Err(Open::Unauthorized) => {
+                    return tracing::debug!("post-processing: OpenAI refused the socket's token");
+                }
+            }
+        }
+        let Some(settings) = settings else { return };
+        let mut socket = slot.take().expect("a socket is ready");
+        let mut event = settings.clone();
+        event["type"] = json!("response.create");
+        event["input"] = json!([]);
+        event["generate"] = json!(false);
+        match tokio::time::timeout(REQUEST_TIMEOUT, turn(&mut socket, &event.to_string())).await {
+            Ok(Ok(answer)) => {
+                socket.prepared = Some(Prepared { key: settings.to_string(), id: answer.id });
+                *slot = Some(socket);
+            }
+            Ok(Err(Exchange::Failed(err))) => {
+                tracing::debug!("post-processing: OpenAI didn't prepare the request: {err:#}");
+                *slot = Some(socket);
+            }
+            Ok(Err(Exchange::Broken { err, .. })) => tracing::debug!("post-processing: preparing broke: {err:#}"),
+            Err(_) => tracing::debug!("post-processing: OpenAI didn't prepare within {REQUEST_TIMEOUT:?}"),
         }
     })
 }
@@ -653,7 +702,7 @@ async fn open(state: &AppState, token: &str) -> Result<Socket, Open> {
     request.headers_mut().insert(header::AUTHORIZATION, auth);
     match tokio::time::timeout(REQUEST_TIMEOUT, tokio_tungstenite::client_async(request, stream)).await {
         Err(_) => Err(failed(anyhow!("OpenAI didn't open a socket within {REQUEST_TIMEOUT:?}"))),
-        Ok(Ok((ws, _))) => Ok(Socket { ws, token: token.to_owned(), opened: Instant::now() }),
+        Ok(Ok((ws, _))) => Ok(Socket { ws, token: token.to_owned(), opened: Instant::now(), prepared: None }),
         Ok(Err(WsError::Http(response))) if response.status() == StatusCode::UNAUTHORIZED => Err(Open::Unauthorized),
         Ok(Err(WsError::Http(response))) => {
             let body = response.body().as_deref().unwrap_or_default();
@@ -701,6 +750,7 @@ async fn turn(socket: &mut Socket, event: &str) -> Result<Answer, Exchange> {
                     input_tokens: count(&usage["input_tokens"]),
                     output_tokens: count(&usage["output_tokens"]),
                     reasoning_tokens: count(&usage["output_tokens_details"]["reasoning_tokens"]),
+                    id: response["id"].as_str().unwrap_or_default().to_owned(),
                 });
             }
             "response.failed" => return Err(Exchange::Failed(api_error(&event["response"]["error"]).into())),
@@ -831,7 +881,7 @@ fn escape(text: &str) -> String {
 mod tests {
     use std::fs;
 
-    use tokio::io::DuplexStream;
+    use tokio::{io::DuplexStream, sync::mpsc::UnboundedSender};
 
     use super::*;
     use crate::{ServeConfig, ServerHandle, serve_in_process};
@@ -873,20 +923,41 @@ mod tests {
         tokio::spawn(async move { tokio_tungstenite::accept_async(openai).await.unwrap() })
     }
 
-    /// Answers every request with `text`. Reading also answers the server's pings.
-    async fn answer(mut ws: WebSocketStream<DuplexStream>, text: &'static str) {
+    /// Answers every request with "Tidy.", but one with `generate: false` with no text, and sends
+    /// each request to `asked`. A request can chain onto the one before only if it `remembers`.
+    /// Reading also answers the server's pings.
+    async fn answer(mut ws: WebSocketStream<DuplexStream>, remembers: bool, asked: UnboundedSender<Value>) {
+        let (mut answered, mut last) = (0, None);
         while let Some(Ok(message)) = ws.next().await {
-            if message.is_text() {
-                let delta = json!({ "type": "response.output_text.delta", "delta": text });
-                let completed = json!({ "type": "response.completed", "response": { "usage": {} } });
-                ws.send(Message::text(delta.to_string())).await.unwrap();
-                ws.send(Message::text(completed.to_string())).await.unwrap();
+            let Message::Text(text) = message else { continue };
+            let event: Value = serde_json::from_str(&text).unwrap();
+            let _ = asked.send(event.clone());
+            let chains = event["previous_response_id"].as_str();
+            let mut events = Vec::new();
+            if chains.is_some() && !(remembers && chains == last.as_deref()) {
+                let error = json!({ "code": "previous_response_not_found", "message": "Not found." });
+                events.push(json!({ "type": "error", "error": error }));
+            } else {
+                answered += 1;
+                let id = format!("resp_{answered}");
+                if event["generate"] != json!(false) {
+                    events.push(json!({ "type": "response.output_text.delta", "delta": "Tidy." }));
+                }
+                events.push(json!({ "type": "response.completed", "response": { "id": id, "usage": {} } }));
+                last = Some(id);
+            }
+            for event in events {
+                ws.send(Message::text(event.to_string())).await.unwrap();
             }
         }
     }
 
-    fn tidy_up(text: &str) -> Ask<'_> {
-        Ask { model: "model", effort: None, tier: None, instructions: "Tidy it up.", text, extra: None }
+    fn tidy_up<'a>(instructions: &'a str, text: &'a str) -> Ask<'a> {
+        Ask { model: "model", effort: None, tier: None, instructions, text, extra: None }
+    }
+
+    fn ignored() -> UnboundedSender<Value> {
+        tokio::sync::mpsc::unbounded_channel().0
     }
 
     #[tokio::test]
@@ -895,13 +966,13 @@ mod tests {
         let state = server.state.clone();
         sign_in(&state);
         let dropped = openai(&state);
-        warm(&state).await.unwrap();
+        warm(&state, None).await.unwrap();
         drop(dropped.await.unwrap());
 
         let fresh = openai(&state);
-        warm(&state).await.unwrap();
-        tokio::spawn(async move { answer(fresh.await.unwrap(), "Tidy.").await });
-        let answer = respond(&state, &tidy_up("tidy")).await.unwrap();
+        warm(&state, None).await.unwrap();
+        tokio::spawn(async move { answer(fresh.await.unwrap(), true, ignored()).await });
+        let answer = respond(&state, &tidy_up("Tidy it up.", "tidy")).await.unwrap();
         assert_eq!(answer.text, "Tidy.");
         assert_eq!(answer.connect, None, "the dictation opened the socket itself");
         server.shutdown().await.unwrap();
@@ -913,14 +984,55 @@ mod tests {
         let state = server.state.clone();
         sign_in(&state);
         let kept = openai(&state);
-        warm(&state).await.unwrap();
-        tokio::spawn(answer(kept.await.unwrap(), "Tidy."));
+        warm(&state, None).await.unwrap();
+        tokio::spawn(answer(kept.await.unwrap(), true, ignored()));
 
         let _spare = openai(&state);
-        warm(&state).await.unwrap();
-        assert_eq!(respond(&state, &tidy_up("tidy")).await.unwrap().text, "Tidy.");
+        warm(&state, None).await.unwrap();
+        assert_eq!(respond(&state, &tidy_up("Tidy it up.", "tidy")).await.unwrap().text, "Tidy.");
         assert_eq!(state.tidy.https.unused_streams(), 1, "warming opened a second socket");
         server.shutdown().await.unwrap();
+    }
+
+    /// What OpenAI was asked, after warming up for `prepared` and then asking `asked` of "tidy".
+    async fn requests(prepared: &str, asked: &str, remembers: bool) -> Vec<Value> {
+        let (_dir, server) = serve().await;
+        let state = server.state.clone();
+        sign_in(&state);
+        let ws = openai(&state);
+        let (sent, mut requests) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move { answer(ws.await.unwrap(), remembers, sent).await });
+        warm(&state, Some(&tidy_up(prepared, ""))).await.unwrap();
+        assert_eq!(respond(&state, &tidy_up(asked, "tidy")).await.unwrap().text, "Tidy.");
+        server.shutdown().await.unwrap();
+        let mut out = Vec::new();
+        while let Ok(request) = requests.try_recv() {
+            out.push(request);
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn a_dictation_chains_onto_the_request_openai_read_while_it_was_recorded() {
+        let [warmup, request] = requests("Tidy it up.", "Tidy it up.", true).await.try_into().unwrap();
+        assert_eq!((&warmup["generate"], &warmup["input"]), (&json!(false), &json!([])));
+        assert_eq!(warmup["instructions"], "Tidy it up.");
+        assert_eq!(request["previous_response_id"], "resp_1");
+        assert_eq!(request["instructions"], "Tidy it up.", "a chained request doesn't inherit them");
+        assert_eq!(request["input"], json!([{ "role": "user", "content": "tidy" }]));
+    }
+
+    #[tokio::test]
+    async fn a_dictation_openai_forgot_the_preparation_of_is_asked_again_in_full() {
+        let [_, chained, again] = requests("Tidy it up.", "Tidy it up.", false).await.try_into().unwrap();
+        assert_eq!(chained["previous_response_id"], "resp_1");
+        assert_eq!((&again["previous_response_id"], &again["instructions"]), (&Value::Null, &json!("Tidy it up.")));
+    }
+
+    #[tokio::test]
+    async fn a_dictation_asked_differently_than_prepared_doesnt_chain() {
+        let [_, request] = requests("Tidy it up.", "Tidy it up for Slack.", true).await.try_into().unwrap();
+        assert_eq!(request["previous_response_id"], Value::Null);
     }
 
     #[tokio::test]
